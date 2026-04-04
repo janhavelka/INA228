@@ -1,0 +1,174 @@
+# INA228 Driver Library
+
+Production-grade INA228 85-V, 20-bit I2C power/energy/charge monitor driver for ESP32 (Arduino/PlatformIO).
+
+## Features
+
+- **Injected I2C transport** - no Wire dependency in library code
+- **Health monitoring** - automatic state tracking (READY/DEGRADED/OFFLINE)
+- **Deterministic behavior** - no unbounded loops, no heap allocations
+- **Managed synchronous lifecycle** - blocking I2C ops with tick-based architecture
+- **Full INA228 support** - all ADC modes, calibration, alerts, energy/charge accumulation
+
+## Installation
+
+### PlatformIO (recommended)
+
+Add to `platformio.ini`:
+
+```ini
+lib_deps = 
+  https://github.com/janhavelka/INA228.git
+```
+
+### Manual
+
+Copy `include/INA228/` and `src/` to your project.
+
+## Quick Start
+
+```cpp
+#include <Wire.h>
+#include "INA228/INA228.h"
+#include "common/I2cTransport.h"
+
+INA228::INA228 device;
+
+void setup() {
+  Serial.begin(115200);
+  transport::initWire(8, 9, 400000, 50);
+  
+  INA228::Config cfg;
+  cfg.i2cWrite = transport::wireWrite;
+  cfg.i2cWriteRead = transport::wireWriteRead;
+  cfg.i2cUser = &Wire;
+  cfg.i2cAddress = 0x40;
+  cfg.mode = INA228::Mode::CONT_ALL;
+  cfg.shuntResistanceOhm = 0.015f;  // 15 mΩ shunt
+  cfg.maxExpectedCurrentA = 10.0f;   // 10 A max
+  
+  auto status = device.begin(cfg);
+  if (!status.ok()) {
+    Serial.printf("Init failed: %s\n", status.msg);
+    return;
+  }
+  
+  Serial.println("INA228 initialized!");
+}
+
+void loop() {
+  device.tick(millis());
+  
+  INA228::Measurement m{};
+  auto st = device.readMeasurement(m);
+  if (st.ok()) {
+    Serial.printf("Vbus=%.3fV  I=%.4fA  P=%.3fW\n",
+                  m.busVoltageV, m.currentA, m.powerW);
+  }
+  
+  delay(1000);
+}
+```
+
+## API Overview
+
+### Lifecycle
+
+| Method | Description |
+|--------|-------------|
+| `begin(config)` | Initialize with configuration (validates, verifies device ID + MEMSTAT) |
+| `tick(nowMs)` | Process pending operations (call from loop) |
+| `end()` | Shutdown and release resources |
+
+### Measurements
+
+| Method | Description |
+|--------|-------------|
+| `readMeasurement(m)` | Read all channels (V, I, T, P, E, Q) |
+| `readBusVoltage(v)` | Bus voltage in volts (0–85 V) |
+| `readShuntVoltage(v)` | Shunt voltage in volts |
+| `readTemperature(t)` | Die temperature in °C |
+| `readCurrent(i)` | Current in amperes (requires calibration) |
+| `readPower(p)` | Power in watts (requires calibration) |
+| `readEnergy(e)` | Accumulated energy in joules |
+| `readCharge(q)` | Accumulated charge in coulombs |
+| `isConversionReady(r)` | Check CNVRF flag |
+
+### Configuration
+
+| Method | Description |
+|--------|-------------|
+| `setMode(mode)` | Set ADC operating mode |
+| `triggerConversion(mode)` | Start single-shot conversion |
+| `setVbusConvTime(ct)` | Bus voltage conversion time |
+| `setVshuntConvTime(ct)` | Shunt voltage conversion time |
+| `setTempConvTime(ct)` | Temperature conversion time |
+| `setAveraging(avg)` | Averaging count (1–1024) |
+| `setAdcRange(range)` | Shunt full-scale range (±163.84 or ±40.96 mV) |
+| `setCalibration(ohm, A)` | Update shunt calibration |
+| `setShuntTempCoeff(ppm)` | Shunt temperature coefficient |
+| `softReset()` | Full software reset |
+| `resetAccumulators()` | Clear energy/charge registers |
+
+### Health & Diagnostics
+
+| Method | Description |
+|--------|-------------|
+| `state()` | Current driver state (UNINIT/READY/DEGRADED/OFFLINE) |
+| `isOnline()` | True if READY or DEGRADED |
+| `probe()` | Check device presence (no health tracking) |
+| `recover()` | Attempt recovery (re-applies config) |
+| `readDiagAlert(diag)` | Read all diagnostic/alert flags |
+
+## Driver State Machine
+
+```
+begin() success --> READY
+         |            |
+         |       I2C failure
+         |            v
+         |        DEGRADED (1..N-1 failures)
+         |            |
+         |       threshold reached
+         |            v
+         |         OFFLINE
+         |
+end() --------> UNINIT
+```
+
+- Any success in DEGRADED/OFFLINE returns to READY.
+- `probe()` uses raw I2C and does NOT affect health counters.
+- `recover()` uses tracked I2C and updates health.
+
+## Behavioral Contracts
+
+1. **Threading model**: Single-threaded. All API calls from one task/loop.
+2. **Timing model**: `tick()` is bounded; all I2C operations are blocking.
+3. **Resource ownership**: I2C bus owned by application; library receives transport callbacks.
+4. **Memory behavior**: No heap allocation after `begin()`.
+5. **Error handling**: All fallible APIs return `Status`. Check with `st.ok()`.
+
+## INA228 Address Configuration
+
+| A1 | A0 | Address |
+|----|----|---------|
+| GND | GND | 0x40 |
+| GND | VS  | 0x41 |
+| GND | SDA | 0x42 |
+| GND | SCL | 0x43 |
+| VS  | GND | 0x44 |
+| VS  | VS  | 0x45 |
+| VS  | SDA | 0x46 |
+| VS  | SCL | 0x47 |
+| SDA | GND | 0x48 |
+| SDA | VS  | 0x49 |
+| SDA | SDA | 0x4A |
+| SDA | SCL | 0x4B |
+| SCL | GND | 0x4C |
+| SCL | VS  | 0x4D |
+| SCL | SDA | 0x4E |
+| SCL | SCL | 0x4F |
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.

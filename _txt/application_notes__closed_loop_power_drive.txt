@@ -1,0 +1,697 @@
+=== SOURCE: closed_loop_power_drive.pdf ===
+=== PAGES: 10 ===
+
+
+--- PAGE 1 ---
+Application Note
+Closed Loop Constant Power Drive to Simplify Heater 
+Element Control and Extend Battery Life
+Ivan De Padua, Chris Lande, Jim Perkins, and Dorian Brillet de Cande
+ABSTRACT
+Many applications require accurate temperature control of a heating element. Closed loop control based on 
+temperature requires measurement of the heater temperature using a thermistor or thermocouple. This can 
+sometimes be mechanically challenging and costly. Additionally, in battery powered applications, traditional 
+PWM drive and associated high current pulses, can reduce battery life and lifetime.
+Heater temperature is not linear with voltage or current due to changes in resistance with temperature. However, 
+temperature is close to linear with applied power. By implementing a closed loop constant power drive the 
+temperature can be controlled needing only to measure power and not temperature directly.
+This reference design uses a closed loop constant power topology to drive a low impedance heater element. 
+This application note includes the choices and challenges within the hardware and software implementation. The 
+document also shows initial results and discusses advantages of this method of temperature control.
+Table of Contents
+1 Traditional Heater Control......................................................................................................................................................2
+2 Constant Power Heater Control.............................................................................................................................................2
+3 Hardware Implementation......................................................................................................................................................3
+4 Software Implementation.......................................................................................................................................................5
+5 Software Algorithm Flow Chart.............................................................................................................................................6
+6 Results.....................................................................................................................................................................................7
+7 Summary and Adaptations.................................................................................................................................................... 9
+8 References.............................................................................................................................................................................. 9
+Trademarks
+All trademarks are the property of their respective owners.
+www.ti.com
+Table of Contents
+SLVAFK1 – JANUARY 2025
+Submit Document Feedback
+Closed Loop Constant Power Drive to Simplify Heater Element Control and 
+Extend Battery Life
+1
+Copyright © 2025 Texas Instruments Incorporated
+
+--- PAGE 2 ---
+1 Traditional Heater Control
+Traditional heater control uses a temperature sensor to measure the temperature of the heating element as 
+shown in Figure 1-1. This measurement is fed back and used to adjust the drive circuitry to alter the current 
+through the heating element maintaining the temperature at the required set point. This approach has a number 
+of challenges. Firstly, the temperature sensor must be mounted close to or in contact with the heating element, 
+which can be mechanically difficult. Secondly, high temperature measurement usually requires a thermocouple 
+that needs complex interface circuitry.
+Temperature responds relatively slowly compared to changes in the electrical signals, so it has been usual 
+to use a simple FET switch PWM to modulate the current through the heating element at a higher electrical 
+frequency and allow the slower thermal response to act as the loop low pass filter. This works perfectly well, but 
+the fast switching edges can result in electrical noise. In addition, in a battery powered system, the large current 
+pulses pulled from the source during the PWM pulses, can reduce battery life between charges and overall 
+battery lifetime.
+Control
+PWM
+Vbat
+Heater
+Temp 
+Sensor
+Figure 1-1. Traditional Heating Element Control Loop With Temperature Sensor
+2 Constant Power Heater Control
+The temperature of a resistive heating element is directly proportional to the power applied. Measuring the 
+electrical power can be mechanically much simpler than measuring the temperature. Driving the element with 
+constant power delivers constant temperature and adjusting the power adjusts the temperature. Unfortunately, 
+the resistance of the heating element can vary significantly between batches and also changes over 
+temperature. This means that both voltage and current need to be measured and the voltage applied needs 
+to be adjusted to maintain constant power as the heater element resistance changes as seen in Figure 2-1. The 
+DC/DC converter controlling the applied voltage draws an average current from the supply which can extend the 
+battery life.
+Traditional Heater Control
+www.ti.com
+2
+Closed Loop Constant Power Drive to Simplify Heater Element Control and 
+Extend Battery Life
+SLVAFK1 – JANUARY 2025
+Submit Document Feedback
+Copyright © 2025 Texas Instruments Incorporated
+
+--- PAGE 3 ---
+Control
+Vbat
+Heater
+DC/DC
+Power 
+sensing
+Figure 2-1. Constant Power Heater Control
+3 Hardware Implementation
+The constant power drive design requires hardware to measure the voltage across the heating element and the 
+current through the heating element to calculate the power. This is achieved using the INA234 which is a 28V, 
+12bit, I2C output current/voltage/power monitor. In this design the device measures the voltage directly across 
+the heating element and the current through a high-side 10mΩ, ± 1%, 1W sense resistor. The devices then 
+calculates the power and reports values for voltage, current and power via I2C.
+For this example, we assume a 1Ω heating element that can vary by ± 20% across temperature and batch 
+range. Table 3-1 shows the required voltage and current for different power levels across the resistance range. 
+The input voltage is 3.3V to 5.0V. This means a buck or step-down dc/dc regulator can be used for the whole 
+range required. The applied voltage is controlled using the TPS62868 which is a 2.4V to 5.5V input, synchronous 
+buck converter with 4A output capability. Importantly, this device is I2C controlled which allows the output voltage 
+to be easily adjusted.
+Table 3-1. Voltage and Current for Different Power Levels and Different Resistances
+Power (W)
+Current (A) at 
+0.8Ω
+Voltage (V) at 
+0.8Ω
+Current (A) at 
+1.0Ω
+Voltage (V) at 
+1.0Ω
+Current (A) at 
+1.2Ω
+Voltage (V) at 
+1.2Ω
+4.0
+2.24
+1.79
+2.00
+2.00
+1.83
+2.19
+5.0
+2.50
+2.00
+2.24
+2.24
+2.04
+2.45
+6.0
+2.74
+2.19
+2.45
+2.45
+2.24
+2.68
+7.0
+2.96
+2.37
+2.65
+2.65
+2.42
+2.90
+8.0
+3.16
+2.53
+2.83
+2.83
+2.58
+3.10
+9.0
+3.35
+2.68
+3.00
+3.00
+2.74
+3.29
+The voltage, current and power is read from the INA234 via I2C using an MSPM0L1306. This low cost 
+microprocessor is also responsible for adjusting the output voltage of the TPS62868 via I2C. The simplified 
+and full circuit schematic can be seen respectively in Figure 3-2 and Figure 3-3.
+www.ti.com
+Hardware Implementation
+SLVAFK1 – JANUARY 2025
+Submit Document Feedback
+Closed Loop Constant Power Drive to Simplify Heater Element Control and 
+Extend Battery Life
+3
+Copyright © 2025 Texas Instruments Incorporated
+
+--- PAGE 4 ---
+I2C
+H
+Rsense
+INA234
+GPIO
+MSPM0L1306
+Figure 3-1. Simplified Constant Power Control Schematic
+6.3V
+10µF
+C2
+6.3V
+10µF
+C3
+220nH
+L1
+IN+
+A1
+IN-
+B1
+A0
+B2
+ALERT
+A2
+SCL
+D2
+SDA
+C2
+VS
+D1
+GND
+C1
+INA234AIYBJR
+U1
+GND
+GND
+GND
+GND
+GND
+GND
+1
+2
+3
+J1
+GND
+GND
+A resistive load will be attached to this connector
+Vin: 2.4 - 5.5VDC
+VDD range is 1.62 - 3.6VDC
+1µF
+16V
+C6
+GND
+VS: 1.7 - 5.5VDC
+EN
+3
+IN
+1
+NC
+4
+OUT
+5
+GND
+2
+TPS7A2033PDBVR
+U4
+VIN
+3
+EN
+4
+SCL
+6
+SDA
+5
+SW
+7
+VOS
+8
+VSET/VID
+9
+AGND
+1
+PGND
+2
+TPS628682ARQY
+U2
+10.0k
+R5
+10m
+R2
+VIN
+VIN
+EN
+SCL
+SDA
+SCL
+SDA
+VIN
+VSET
+ALERT
+1
+2
+J3
+GND
+MCU_VDD
+VDD
+4
+PA.0/UART1_TX/I2C0_SDA/TIMG1_C0/SPI0_CS1
+1
+PA.1/UART1_RX/I2C0_SCL/TIMG1_C1
+2
+PA.10/UART1_TX/SPI0_POCI/I2C0_SDA/TIMG4_C0
+14
+PA.11/UART1_RX/SPI0_SCK/I2C0_SCL/TIMG4_C1/COMP0_OUT
+15
+PA.12/UART0_CTS/TIMG0_C0
+16
+PA.13/UART0_RTS/TIMG0_C1/UART1_RX
+17
+PA.14/UART1_CTS/CLK_OUT/UART1_TX/TIMG1_C0
+18
+PA.15/ADC0_9/UART1_RTS/I2C1_SCL/SPI0_CS2/TIMG4_C1
+19
+PA.16/ADC0_8/OPA1_OUT/COMP0_OUT/I2C1_SDA/SPI0_POCI/TIMG0_C0
+20
+PA.17/OPA1_IN1-/UART0_TX/I2C1_SCL/SPI0_SCK/TIMG4_C0/SPI0_CS1/OPA1_IN0-
+21
+PA.18/ADC0_7/OPA1_IN0+/GPAMP_IN-/UART0_RX/SPI0_PICO/I2C1_SDA/TIMG4_C1/BSL_invoke
+22
+PA.19/SWDIO/I2C1_SDA/SPI0_POCI
+23
+PA.2/ROSC/TIMG1_C1/SPI0_CS0
+6
+PA.20/ADC0_6/COMP0_IN1+/SWCLK/I2C1_SCL/TIMG4_C0
+24
+PA.21/ADC0_5/VeREF-/TIMG2_C0/UART0_CTS/UART0_TX
+25
+PA.22/ADC0_4/GPAMP_OUT/OPA0_OUT/UART0_RX/TIMG2_C1/UART0_RTS/CLK_OUT/UART1_RX
+26
+PA.23/VeREF+/COMP0_IN1-/UART0_TX/SPI0_CS3/TIMG0_C0/UART0_CTS/UART1_TX
+27
+PA.24/ADC0_3/OPA0_IN1-/SPI0_CS2/TIMG0_C1/UART0_RTS/OPA0_IN0-
+28
+PA.25/ADC0_2/OPA0_IN0+/TIMG4_C1/UART0_TX/SPI0_PICO
+29
+PA.26/ADC0_1/GPAMP_IN+/COMP0_IN0+/TIMG1_C0/UART0_RX/SPI0_POCI
+30
+PA.27/ADC0_0/COMP0_IN0-/TIMG1_C1/SPI0_CS3
+31
+PA.3/TIMG2_C0/SPI0_CS1/UART1_CTS/COMP0_OUT
+7
+PA.4/TIMG2_C1/SPI0_POCI/UART1_RTS
+8
+PA.5/TIMG0_C0/SPI0_PICO
+9
+PA.6/TIMG0_C1/SPI0_SCK
+10
+PA.7/COMP0_OUT/CLK_OUT/TIMG1_C0
+11
+PA.8/UART0_TX/SPI0_CS0/UART1_RTS/TIMG2_C0
+12
+PA.9/UART0_RX/SPI0_PICO/UART1_CTS/TIMG2_C1
+13
+Thermal_pad
+33
+RST
+3
+VCORE
+32
+VSS
+5
+MSPM0L1306TRHB
+U3
+1
+2
+3
+J4
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+J5
+FTSH-105-01-F-D-K
+GND
+TARGET_RXD
+TARGET_TXD
+TARGET_RXD
+TARGET_TXD
+MCU_VDD
+RST
+SWCLK
+SWDIO
+RST
+DNC
+C11
+25V
+1uF
+C12
+GND
+R9
+GND
+EN
+VSET
+ALERT
+RST
+47.0k
+R6
+25V
+1100pF
+C13
+MCU_VDD
+GND
+GND
+Keep R9 close to MCU pin
+Keep R6 close to MCU pin
+470
+R7
+470
+R8
+GND
+GND
+100k
+R10
+GND
+GND
+470nF
+25V
+C9
+25V
+10uF
+C7
+100nF
+25V
+C8
+GND
+TP8
+TP1
+TP2
+TP5
+SWDIO
+SWCLK
+TP6
+TP7
+TP3
+TP4
+SCL
+SDA
+GND
+GND
+SDA
+SCL
+1
+2
+3
+J8
+1
+2
+3
+J9
+A0_MSP
+A0
+A0
+A0_MSP
+A0
+VIN
+GND
+GND
+Blue
+2
+1
+D1
+6.3V
+22uF
+C4
+6.3V
+22uF
+C5
+Red
+2
+1
+D2
+TP9
+TP10
+10.0k
+R1
+10.0k
+R4
+10.0k
+R3
+GND
+GND
+TP11
+TP12
+TP13
+TP14
+1
+2
+3
+4
+SW1
+16V
+68uF
+C14
+GND
+0.1µF
+50V
+C1
+470nF
+25V
+C10
+Figure 3-2. Constant Power Control Schematic
+Hardware Implementation
+www.ti.com
+4
+Closed Loop Constant Power Drive to Simplify Heater Element Control and 
+Extend Battery Life
+SLVAFK1 – JANUARY 2025
+Submit Document Feedback
+Copyright © 2025 Texas Instruments Incorporated
+
+--- PAGE 5 ---
+Figure 3-3. Constant Power Control PCBA
+4 Software Implementation
+At start-up, the software running in the MSP0L1306 begins by initializing the I2C read/write function and then 
+configures the INA234 and TPS62868 via I2C. The MSPM0L1306 is then able to read the voltage, current and 
+power in the load resistor from the INA234 using I2C and control the output voltage of the TPS62868 also via 
+I2C.
+The constant power control algorithm is described in the flow chart shown in Figure 5-1. The first step is to read 
+the power INA234_getPOWER_W(INA234) through I2C and store it in the measuredP variable. The measured 
+power is compared with the target power and a power error calculated.
+The voltage change needed to correct the power error is calculated as the error scaled by a gain factor of 2. 
+There is a limit applied to prevent excessive voltage changes; it is clamped to a range of ±5.
+If the measured power is higher than the target power, the algorithm calculates a new voltage by decreasing the 
+measured output voltage by the calculated voltage step. If the measured power is lower than the target value, 
+the calculated voltage step is added to the measured output voltage. The output voltage of the TPS62868 is then 
+adjusted by writing the new voltage value to the output voltage register via I2C.
+www.ti.com
+Software Implementation
+SLVAFK1 – JANUARY 2025
+Submit Document Feedback
+Closed Loop Constant Power Drive to Simplify Heater Element Control and 
+Extend Battery Life
+5
+Copyright © 2025 Texas Instruments Incorporated
+
+--- PAGE 6 ---
+5 Software Algorithm Flow Chart
+Figure 5-1. Software Algorithm Flow Chart
+Software Algorithm Flow Chart
+www.ti.com
+6
+Closed Loop Constant Power Drive to Simplify Heater Element Control and Extend Battery Life
+SLVAFK1 – JANUARY 2025
+Submit Document Feedback
+Copyright © 2025 Texas Instruments Incorporated
+
+--- PAGE 7 ---
+6 Results
+Figure 6-1 shows the measured, steady-state temperature of a 1.5Ω nominal load resistor for different values of 
+applied constant power. The linear response shows that constant power can be used as the control method to 
+set the temperature in the resistive heating element.
+Figure 6-1. Load Resistor Temperature Versus Applied Constant Power
+Figure 6-2 shows the measured power for 1W steps from 1W to 9W with a 1.5Ω nominal load resistor. The 
+loop is held running in constant power at each level for 50 seconds and the power measured every 1 second. 
+The absolute variation in measured power increases as the requested power level increases but the percentage 
+variation stays pretty constant as can be seen in Table 6-1 which shows the measured levels and variation for 
+each power level from nominal. The constant power control loop maintains the power applied to the load within 
+±3.0% of the set level.
+Figure 6-2. Constant Power Control Steps. 1W to 9W in 1W Steps. 50 Seconds at Each Power Level
+www.ti.com
+Results
+SLVAFK1 – JANUARY 2025
+Submit Document Feedback
+Closed Loop Constant Power Drive to Simplify Heater Element Control and 
+Extend Battery Life
+7
+Copyright © 2025 Texas Instruments Incorporated
+
+--- PAGE 8 ---
+Table 6-1. Average Measured Power and Minimum or Maximum Variation for Requested Power Steps 
+From 1W to 9W
+Requested Power 
+(W)
+Average measured 
+power (W)
+Minimum measured 
+power (W)
+Maximum measured 
+power (W)
+Negative variation 
+(%)
+Positive variation 
+(%)
+1.0
+1.0008
+0.971
+1.029
+-2.90
+2.90
+2.0
+2.0073
+1.942
+2.059
+-2.90
+2.95
+3.0
+2.9913
+2.911
+3.081
+-3.00
+2.70
+4.0
+4.0123
+3.898
+4.116
+-2.55
+2.90
+5.0
+5.0108
+4.864
+5.145
+-2.72
+2.90
+6.0
+6.0146
+5.840
+6.174
+-2.67
+2.90
+7.0
+6.9999
+6.796
+7.204
+-2.91
+2.91
+8.0
+8.0209
+7.764
+8.235
+-2.95
+2.94
+9.0
+8.9982
+8.752
+9.251
+-2.76
+2.79
+Figure 6-3, Figure 6-4, and Figure 6-5 show more detailed plots of the measured power values for 1W, 5W and 
+9W constant power operation.
+Figure 6-3. Measured Power at 1 Second Intervals 
+for 1W Constant Power Operation
+Figure 6-4. Measured Power at 1 Second Intervals 
+for 5W Constant Power Operation
+Figure 6-5. Measured Power at 1 Second Intervals for 9W Constant Power Operation
+Results
+www.ti.com
+8
+Closed Loop Constant Power Drive to Simplify Heater Element Control and 
+Extend Battery Life
+SLVAFK1 – JANUARY 2025
+Submit Document Feedback
+Copyright © 2025 Texas Instruments Incorporated
+
+--- PAGE 9 ---
+As an additional test of the robustness of the constant power control, the load was driven at constant 4W across 
+a temperature range from around -18°C to +23°C. As the temperature increases the resistance of the nominal 
+1.5Ω load increases from around 1.33Ω at -18°C to 1.75Ω at +23°C. Figure 6-6 shows the measured current, 
+voltage and power across this temperature range. The constant power control algorithm adjusts the voltage as 
+the resistance changes to successfully keep the power constant across the temperature range. The variation in 
+measured power across this temperature range is +1.5% and -2.1%.
+Figure 6-6. Measured Current, Voltage and Power Across -18°C to +23°C Temperature Range
+7 Summary and Adaptations
+A resistive heating element can be driven with constant power to deliver a fixed temperature, without needing 
+to measure the temperature. The closed loop, constant power example design presented here maintains the 
+measured power in the load to within ±3.0% of the set level across power levels and variations in load resistance 
+due to temperature changes. In this case ±3.0% variation in power corresponds to a temperature tolerance of 
+about ±0.15°C at lower power (1W) and about ±0.75°C at higher power (9W). The temperature tolerance can 
+vary depending on he heating element used. but can be calibrated during product design.
+If the input voltage range, the heater resistance or the power required means higher current or a boost or 
+buck-boost topology are required, then other I2C controlled converter devices can be used. Alternatively, a 
+standard converter can be adjusted by summing a filtered PWM signal into the FB node.
+8 References
+•
+Texas Instruments, INA234 28-V, 12-Bit, Current, Voltage, and Power Monitor With an I2C Interface, data 
+sheet.
+•
+Texas Instruments, TPS62868x 2.4-V to 5.5-V Input, 4-A/6-A Synchronous Step-Down Converter with I2C 
+Interface in QFN Package
+•
+Texas Instruments, MSPM0 L-Series 32MHz Microcontrollers, technical reference manual.
+•
+Texas Instruments, I2C Introduction Lab
+•
+Texas Instruments, MSPM0 Ecosystem Training Series. MSPM0 academy trainings.
+www.ti.com
+Summary and Adaptations
+SLVAFK1 – JANUARY 2025
+Submit Document Feedback
+Closed Loop Constant Power Drive to Simplify Heater Element Control and 
+Extend Battery Life
+9
+Copyright © 2025 Texas Instruments Incorporated
+
+--- PAGE 10 ---
+IMPORTANT NOTICE AND DISCLAIMER
+TI PROVIDES TECHNICAL AND RELIABILITY DATA (INCLUDING DATA SHEETS), DESIGN RESOURCES (INCLUDING REFERENCE 
+DESIGNS), APPLICATION OR OTHER DESIGN ADVICE, WEB TOOLS, SAFETY INFORMATION, AND OTHER RESOURCES “AS IS” 
+AND WITH ALL FAULTS, AND DISCLAIMS ALL WARRANTIES, EXPRESS AND IMPLIED, INCLUDING WITHOUT LIMITATION ANY 
+IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT OF THIRD 
+PARTY INTELLECTUAL PROPERTY RIGHTS.
+These resources are intended for skilled developers designing with TI products. You are solely responsible for (1) selecting the appropriate 
+TI products for your application, (2) designing, validating and testing your application, and (3) ensuring your application meets applicable 
+standards, and any other safety, security, regulatory or other requirements.
+These resources are subject to change without notice. TI grants you permission to use these resources only for development of an 
+application that uses the TI products described in the resource. Other reproduction and display of these resources is prohibited. No license 
+is granted to any other TI intellectual property right or to any third party intellectual property right. TI disclaims responsibility for, and you 
+will fully indemnify TI and its representatives against, any claims, damages, costs, losses, and liabilities arising out of your use of these 
+resources.
+TI’s products are provided subject to TI’s Terms of Sale or other applicable terms available either on ti.com or provided in conjunction with 
+such TI products. TI’s provision of these resources does not expand or otherwise alter TI’s applicable warranties or warranty disclaimers for 
+TI products.
+TI objects to and rejects any additional or different terms you may have proposed. IMPORTANT NOTICE
+Mailing Address: Texas Instruments, Post Office Box 655303, Dallas, Texas 75265
+Copyright © 2025, Texas Instruments Incorporated

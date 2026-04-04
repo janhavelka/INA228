@@ -1,0 +1,331 @@
+=== SOURCE: digital_interfaces.pdf ===
+=== PAGES: 3 ===
+
+
+--- PAGE 1 ---
+Application Brief
+Digital Interfaces for Current Sensing Devices
+Dennis Hudgins, Mitch Morse
+Current Sensing Products
+Devices that monitor and report system current can 
+either provide an analog output that is proportional 
+to the sensed current, or communicate the current 
+to a host processor digitally. Use of a digital current 
+sense amplifier is sometimes preferred because 
+the integrated analog to digital conversion allows 
+data to be sent directly to the host controller or 
+processor. Interaction with a host processor requires 
+a digital interface that can both allow sending 
+and receiving of instructions as well as data. For 
+current sensing applications, the most commonly 
+used digital interfaces are I2C, SMBus, PMBus, 
+and SPI. Each interface has different strengths 
+and weaknesses; selecting the correct interface 
+for a given application can allow better system 
+optimization, faster system response time, and a 
+reduction in software development time.
+I2C, SMBus, and PMBus all utilize open drain clock 
+and data lines that require pull-up resistors to an 
+external power supply. SMBus and PMBus compatible 
+devices feature an active low alert output to notify the 
+host processor of fault conditions. I2C, SMBus, and 
+PMBus devices commonly exist on the same physical 
+bus; however, differences exist. Table 1 highlights 
+some of the key differences among I2C, SMBus, and 
+PMBUS devices.
+I2C, SMBus, and PMBus devices can easily co-exist 
+on the same bus since all logic low thresholds are at 
+0.4 V. Differences in the logic high thresholds usually 
+are not an issue since the open-drain clock and data 
+lines will go up to VDD when not held low. SMBus 
+expanded on the frame work laid by I2C by adding a 
+bus timeout requirement that prevents a device from 
+holding data lines low for extended amounts of time. 
+SMBus also clearly defined many different types of 
+transaction protocols that support the transmission of 
+data from the bit level to blocks of bytes. The SMBus 
+and PMBus specifications are very similar because 
+PMBus leverages the electrical characteristics 
+and communications protocols as defined by the 
+SMBus specification. PMBus incorporates the SMBus 
+electrical specification, while also standardizing the 
+address locations for common commands that are 
+used in power systems. The address/command 
+standardization allows one software driver to support 
+many devices without the need to be completely 
+rewritten to support new devices or devices from 
+different manufacturers.
+Table 1. Comparison of I2C, SMBus, and PMBus Interfaces
+Parameter
+I2C
+SMBus
+PMBus
+Electrical Levels
+Output Logic Low, VOL
+0.4 V, sinking 3 
+mA
+0.4 V, sinking 350 µA (Low 
+Power) sinking 4 mA (High 
+Power)
+Same as SMBus
+Input Logic Low, VIL
+0.3 x Vdd
+0.8 V
+Same as SMBus
+Input Logic High, VIH
+0.7 x Vdd
+2.1 V
+Same as SMBus
+Speed
+Minimum
+-
+100 kHz
+Same as SMBus
+Maximum
+5 MHz
+400 kHz, 1 MHz
+Same as SMBus
+Number of wires/pins
+2: SDA, SCL
+3: SDA, SCL, SMBALERT
+3-4: SDC, SCL, SMBALERT, 
+CONTROL(optional)
+Time-out requirement
+No
+Yes
+Yes
+Specified Transaction Protocols
+No
+Yes
+Yes
+Alert Capability
+No
+Yes
+Yes
+Address Resolution Protocol
+No
+Yes, but optional
+Yes, but optional
+CRC error checking support
+No
+Yes, but optional
+Yes, but optional
+Group Protocol support
+No
+Yes, but optional
+Yes, required for PMBus
+Standardized Commands / Register Set
+No
+No
+Yes, both standard and device 
+specific commands supported
+www.ti.com
+SBOA203A – JUNE 2017 – REVISED SEPTEMBER 2021
+Submit Document Feedback
+Digital Interfaces for Current Sensing Devices
+1
+Copyright © 2021 Texas Instruments Incorporated
+
+--- PAGE 2 ---
+SMBus adds support for dynamic address 
+resolution, CRC checking to increase communications 
+robustness, and group protocol that allows 
+communication to multiple devices within a single 
+transaction. Support for group protocol is optional for 
+SMBus devices but is required for all PMBus devices.
+Most digital current sense amplifiers available from 
+Texas Instruments are compatible with both I2C and 
+SMBus interfaces. For example, the INA228 supports 
+the high-speed mode (up to 2.94 MHz) offered by 
+I2C, but also features an Alert pin and error resolution 
+protocols as defined by SMBus. The device can 
+monitor and report the shunt voltage, bus voltage, 
+die temperature, current, power, energy accumulation, 
+and charge accumulation. The INA228 is available 
+in a VSSOP-10 package, is an ultra-precise digital 
+current monitor with a 20-bit delta-sigma ADC, has 
+a gain error of only 0.05%, and a maximum offset 
+voltage of 1 µV. Table 2 provides a summary of 
+current sense devices that are compatible with I2C 
+and SMBus.
+Table 2. I2C/SMBus Compatible Devices
+Device
+Optimized Parameters
+Performance Trade-Off
+INA209
+Internal analog 
+comparators for critical 
+over current detection
+26-V, 12-bit ADC, Large 
+TSSOP-16 package
+INA219
+Low pin count, SOT23-8 
+package
+No alert pin, 26-V, 12-bit 
+ADC, VBUS tied to IN-
+INA220
+Independent bus voltage 
+measurement
+No alert pin, 26-V, 12-bit 
+ADC,VSSOP-10 package
+INA226
+High accuracy, 16-bit 
+ADC, Current / Power 
+Monitor
+36-V, VSSOP-10 
+package
+INA228
+Highset Accuracy, 85-V, 
+20-Bit ADC, Power / 
+Energy / Charge / 
+Temperature Monitor
+VSSOP-10 package
+INA230
+High accuracy, 16-bit 
+ADC, 3mm x 3mm QFN
+28-V, Higher offset and 
+gain error than similar 
+device INA226
+INA231
+High Accuracy, 16-bit 
+ADC, Smallest Package 
+(WCSP-12), 1.8-V I2C 
+interface
+28-V, Higher offset and 
+gain error than similar 
+device INA226
+INA234
+Small DSBGA 8 package
+28-V, 12-bit ADC, One 
+address pin for a 
+maximum of 4 addresses
+INA236
+High accuracy, 48-V, 16-
+bit ADC, small DSBGA 8 
+package
+One address pin for a 
+maximum of 4 addresses
+INA237
+85-V, 16-Bit ADC, 
+Power / Energy / 
+Charge / Temperature 
+Monitor
+VSSOP-10 package, 
+Higher offset and gain 
+error than similar INA238 
+device
+INA238
+High Accuracy, 85-V, 
+16-Bit ADC, Power / 
+Energy / Charge / 
+Temperature Monitor
+VSSOP-10 package, 
+Higher offset and gain 
+error than similar INA228 
+device
+Table 2. I2C/SMBus Compatible Devices 
+(continued)
+Device
+Optimized Parameters
+Performance Trade-Off
+INA260
+Internal Shunt, high 
+accuracy (total solution), 
+16-bit ADC
+36-V, Large TSSOP-16 
+package, Maximum 
+current is 15A
+INA3221
+3 channel voltage and 
+current monitor
+26-V, 12-bit ADC, Lower 
+effective sample rate
+Texas Instruments also has the INA233, which 
+features a PMBus compatible interface and can 
+monitor current, voltage, power, and energy. The 
+INA233 is also available in a VSSOP-10 package, can 
+monitor current very accurately with a gain error of 
+only 0.1%, and has a maximum offset error of 10 µV. 
+Table 3 provides a summary of current sense devices 
+that are compatible with I2C, SMBus, and PMBus.
+Table 3. I2C/SMBus/PMBus Compatible Devices
+Device
+Optimized Parameters
+Performance Trade-Off
+INA233
+High accuracy, 16-bit 
+ADC, Fast Sampling 
+Rate, Energy Monitor / 
+Power Accumulator
+36-V, VSSOP-10 
+package
+Another digital interface that is used in current 
+monitoring devices is the SPI interface. The SPI 
+interface is a 4-wire interface that does not require 
+external pull-up resistors like I2C and can operate at 
+much higher clock frequencies. The pull-up resistors 
+used in I2C limit the operational speed due to the 
+RC time constant established by the value of the 
+pull-up resistor and bus capacitance. One example 
+is the INA229, which has the same current sensing 
+specifications as the INA228, but allows data clock 
+rates as high as 10 MHz. Table 4 provides a summary 
+of current sense devices that are compatible with SPI.
+Table 4. SPI Compatible Devices
+Device
+Optimized Parameters
+Performance Trade-Off
+INA229
+Highset Accuracy, 85-V, 
+20-Bit ADC, Power / 
+Energy / Charge / 
+Temperature Monitor
+VSSOP-10 package
+INA239
+High Accuracy, 85-V, 
+16-Bit ADC, Power / 
+Energy / Charge / 
+Temperature Monitor
+VSSOP-10 package, 
+higher offset and gain 
+error than similar INA229 
+device
+Table 5. Adjacent Application Briefs
+SBOA511
+Getting Started with Digital Power Monitors
+SBOA167
+Integrating the Current Sensing Signal Path
+SBOA179
+Integrated, Current Sensing Analog-to-
+Digital Converter
+SBOA194
+Power and Energy Monitoring with Digital 
+Current Sensors
+www.ti.com
+2
+Digital Interfaces for Current Sensing Devices
+SBOA203A – JUNE 2017 – REVISED SEPTEMBER 2021
+Submit Document Feedback
+Copyright © 2021 Texas Instruments Incorporated
+
+--- PAGE 3 ---
+IMPORTANT NOTICE AND DISCLAIMER
+TI PROVIDES TECHNICAL AND RELIABILITY DATA (INCLUDING DATA SHEETS), DESIGN RESOURCES (INCLUDING REFERENCE 
+DESIGNS), APPLICATION OR OTHER DESIGN ADVICE, WEB TOOLS, SAFETY INFORMATION, AND OTHER RESOURCES “AS IS” 
+AND WITH ALL FAULTS, AND DISCLAIMS ALL WARRANTIES, EXPRESS AND IMPLIED, INCLUDING WITHOUT LIMITATION ANY 
+IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT OF THIRD 
+PARTY INTELLECTUAL PROPERTY RIGHTS.
+These resources are intended for skilled developers designing with TI products. You are solely responsible for (1) selecting the appropriate 
+TI products for your application, (2) designing, validating and testing your application, and (3) ensuring your application meets applicable 
+standards, and any other safety, security, regulatory or other requirements.
+These resources are subject to change without notice. TI grants you permission to use these resources only for development of an 
+application that uses the TI products described in the resource. Other reproduction and display of these resources is prohibited. No license 
+is granted to any other TI intellectual property right or to any third party intellectual property right. TI disclaims responsibility for, and you 
+will fully indemnify TI and its representatives against, any claims, damages, costs, losses, and liabilities arising out of your use of these 
+resources.
+TI’s products are provided subject to TI’s Terms of Sale or other applicable terms available either on ti.com or provided in conjunction with 
+such TI products. TI’s provision of these resources does not expand or otherwise alter TI’s applicable warranties or warranty disclaimers for 
+TI products.
+TI objects to and rejects any additional or different terms you may have proposed. IMPORTANT NOTICE
+Mailing Address: Texas Instruments, Post Office Box 655303, Dallas, Texas 75265
+Copyright © 2022, Texas Instruments Incorporated

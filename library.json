@@ -1,0 +1,49 @@
+{
+  "name": "INA228",
+  "version": "1.0.0",
+  "description": "Production-grade INA228 85-V, 20-bit power/energy/charge monitor driver.",
+  "keywords": [
+    "ina228",
+    "power-monitor",
+    "current",
+    "voltage",
+    "energy",
+    "charge",
+    "i2c",
+    "esp32",
+    "arduino",
+    "platformio"
+  ],
+  "authors": [
+    {
+      "name": "Thymos Solution s.r.o",
+      "email": "info@thymos.cz",
+      "url": "https://www.thymos.cz"
+    },
+    {
+      "name": "Jan Havelka",
+      "email": "info@thymos.cz",
+      "url": "https://www.thymos.cz",
+      "maintainer": true
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/janhavelka/INA228.git"
+  },
+  "license": "MIT",
+  "homepage": "https://www.thymos.cz",
+  "frameworks": [
+    "arduino"
+  ],
+  "platforms": [
+    "espressif32"
+  ],
+  "headers": [
+    "INA228/INA228.h"
+  ],
+  "build": {
+    "includeDir": "include",
+    "srcDir": "src"
+  }
+}
