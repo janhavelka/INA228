@@ -7,10 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-07-04
+## [1.0.0] - 2026-04-05
 
 ### Added
-- Initial release of INA228 driver library.
+- Initial public release of the INA228 driver library.
 - Full register map support for all 20 INA228 registers.
 - Managed synchronous driver with 4-state health tracking (UNINIT/READY/DEGRADED/OFFLINE).
 - Injected I2C transport (no Wire dependency in library code).
@@ -32,3 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Example bringup CLI with interactive serial command interface.
 - Native Unity tests for lifecycle, health tracking, and transport layer.
 - Auto-generated Version.h from library.json.
+- Public lifecycle/config introspection helpers: `isInitialized()` and `getConfig()`.
+- Public tracked raw-register helpers: `readRegister16()`, `readRegister24()`, `readRegister40()`, and `writeRegister16()`.
+- `Err::CONVERSION_NOT_READY` alias for cross-library uniformity.
+- Bringup CLI address-selection, low-level register access, calibration, temperature-compensation, conversion-delay, and alert-threshold commands.
+
+### Changed
+- `recover()` now re-validates manufacturer ID, device ID, and MEMSTAT before reapplying cached configuration and calibration.
+- Bringup `scan` now includes an INA228-specific address probe, and startup can auto-detect a single healthy INA228 on `0x40..0x4F`.
+
+[Unreleased]: https://github.com/janhavelka/INA228/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/janhavelka/INA228/releases/tag/v1.0.0

@@ -232,7 +232,6 @@ Status INA228::recover() {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  // Use tracked reads to update health on success/failure
   uint16_t mfgId = 0;
   Status st = readReg16(cmd::REG_MANUFACTURER_ID, mfgId);
   if (!st.ok()) {
@@ -243,7 +242,28 @@ Status INA228::recover() {
                         static_cast<int32_t>(mfgId));
   }
 
-  // Re-apply configuration (device may have power-cycled)
+  uint16_t devId = 0;
+  st = readReg16(cmd::REG_DEVICE_ID, devId);
+  if (!st.ok()) {
+    return st;
+  }
+  if (devId != cmd::DEVICE_ID) {
+    return Status::Error(Err::DEVICE_ID_MISMATCH, "Device ID mismatch",
+                        static_cast<int32_t>(devId));
+  }
+
+  uint16_t diagAlrt = 0;
+  st = readReg16(cmd::REG_DIAG_ALRT, diagAlrt);
+  if (!st.ok()) {
+    return st;
+  }
+  if ((diagAlrt & cmd::DIAG_MEMSTAT) == 0) {
+    return Status::Error(Err::MEMORY_ERROR, "NV trim memory checksum error");
+  }
+
+  _trigPending = false;
+  _trigStartMs = 0;
+
   st = _applyConfig();
   if (!st.ok()) {
     return st;
@@ -963,6 +983,22 @@ Status INA228::writeReg16(uint8_t reg, uint16_t value) {
   return _i2cWriteTracked(payload, 3);
 }
 
+Status INA228::readRegister16(uint8_t reg, uint16_t& value) {
+  return readReg16(reg, value);
+}
+
+Status INA228::readRegister24(uint8_t reg, uint32_t& value) {
+  return readReg24(reg, value);
+}
+
+Status INA228::readRegister40(uint8_t reg, uint64_t& value) {
+  return readReg40(reg, value);
+}
+
+Status INA228::writeRegister16(uint8_t reg, uint16_t value) {
+  return writeReg16(reg, value);
+}
+
 Status INA228::_readReg16Raw(uint8_t reg, uint16_t& value) {
   uint8_t buf[2] = {};
   Status st = _i2cWriteReadRaw(&reg, 1, buf, 2);
@@ -977,21 +1013,21 @@ Status INA228::_readReg16Raw(uint8_t reg, uint16_t& value) {
 // ===========================================================================
 
 Status INA228::_updateHealth(const Status& st) {
-  if (!_initialized) {
-    return st;
-  }
-
   const uint32_t now = _nowMs();
   const uint32_t maxU32 = std::numeric_limits<uint32_t>::max();
   const uint8_t maxU8 = std::numeric_limits<uint8_t>::max();
+  const bool isSuccess = st.ok() || st.inProgress();
 
-  if (st.ok()) {
+  if (isSuccess) {
     _lastOkMs = now;
     if (_totalSuccess < maxU32) {
       _totalSuccess++;
     }
     _consecutiveFailures = 0;
-    _driverState = DriverState::READY;
+
+    if (_initialized) {
+      _driverState = DriverState::READY;
+    }
     return st;
   }
 
@@ -1004,10 +1040,12 @@ Status INA228::_updateHealth(const Status& st) {
     _consecutiveFailures++;
   }
 
-  if (_consecutiveFailures >= _config.offlineThreshold) {
-    _driverState = DriverState::OFFLINE;
-  } else {
-    _driverState = DriverState::DEGRADED;
+  if (_initialized) {
+    if (_consecutiveFailures >= _config.offlineThreshold) {
+      _driverState = DriverState::OFFLINE;
+    } else {
+      _driverState = DriverState::DEGRADED;
+    }
   }
 
   return st;

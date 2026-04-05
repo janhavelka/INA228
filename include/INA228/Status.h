@@ -18,6 +18,7 @@ enum class Err : uint8_t {
   DEVICE_ID_MISMATCH,        ///< Device/Manufacturer ID mismatch
   MEMORY_ERROR,              ///< MEMSTAT bit indicates NV trim checksum error
   MEASUREMENT_NOT_READY,     ///< Conversion not yet complete
+  CONVERSION_NOT_READY = MEASUREMENT_NOT_READY, ///< Alias for cross-library uniformity
   MATH_OVERFLOW,             ///< Internal arithmetic overflow detected
   BUSY,                      ///< Device or driver is busy
   IN_PROGRESS,               ///< Operation scheduled; call tick() to complete

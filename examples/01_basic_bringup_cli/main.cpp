@@ -3,6 +3,7 @@
 /// @note This is an EXAMPLE, not part of the library
 
 #include <Arduino.h>
+#include <cstdlib>
 #include <limits>
 #include "examples/common/Log.h"
 #include "examples/common/BoardConfig.h"
@@ -40,6 +41,19 @@ struct StressStats {
 INA228::INA228 device;
 bool verboseMode = false;
 StressStats stressStats;
+static constexpr uint8_t DEFAULT_I2C_ADDRESS = 0x40;
+static constexpr uint8_t INA228_ADDR_MIN = 0x40;
+static constexpr uint8_t INA228_ADDR_MAX = 0x4F;
+uint8_t selectedAddress = DEFAULT_I2C_ADDRESS;
+
+struct ProbeSnapshot {
+  uint8_t address = DEFAULT_I2C_ADDRESS;
+  uint16_t manufacturerId = 0;
+  uint16_t deviceId = 0;
+  uint16_t diagAlert = 0;
+};
+
+const char* errToStr(INA228::Err err);
 
 // ============================================================================
 // Helper Functions
@@ -47,6 +61,229 @@ StressStats stressStats;
 
 uint32_t exampleNowMs(void*) {
   return millis();
+}
+
+bool isValidIna228Address(uint8_t address) {
+  return address >= INA228_ADDR_MIN && address <= INA228_ADDR_MAX;
+}
+
+uint8_t configuredAddress() {
+  if (device.isInitialized()) {
+    return device.getConfig().i2cAddress;
+  }
+  return selectedAddress;
+}
+
+INA228::Config makeExampleConfig(uint8_t address) {
+  INA228::Config cfg;
+  cfg.i2cWrite = transport::wireWrite;
+  cfg.i2cWriteRead = transport::wireWriteRead;
+  cfg.i2cUser = &Wire;
+  cfg.nowMs = exampleNowMs;
+  cfg.i2cAddress = address;
+  cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
+  cfg.mode = INA228::Mode::CONT_ALL;
+  cfg.shuntResistanceOhm = 0.015f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  cfg.offlineThreshold = 5;
+  return cfg;
+}
+
+INA228::Status readRegister16AtAddress(uint8_t address, uint8_t reg, uint16_t& value) {
+  if (!isValidIna228Address(address)) {
+    return INA228::Status::Error(INA228::Err::INVALID_PARAM,
+                                 "Address must be 0x40-0x4F",
+                                 static_cast<int32_t>(address));
+  }
+
+  uint8_t tx = reg;
+  uint8_t rx[2] = {};
+  INA228::Status st = transport::wireWriteRead(address, &tx, 1, rx, sizeof(rx),
+                                               board::I2C_TIMEOUT_MS, &Wire);
+  if (!st.ok()) {
+    return st;
+  }
+
+  value = static_cast<uint16_t>((static_cast<uint16_t>(rx[0]) << 8) | rx[1]);
+  return INA228::Status::Ok();
+}
+
+INA228::Status probeAddressRaw(uint8_t address, ProbeSnapshot& out) {
+  out = {};
+  out.address = address;
+
+  INA228::Status st = readRegister16AtAddress(address, INA228::cmd::REG_MANUFACTURER_ID,
+                                              out.manufacturerId);
+  if (!st.ok()) {
+    return st;
+  }
+  if (out.manufacturerId != INA228::cmd::MANUFACTURER_ID) {
+    return INA228::Status::Error(INA228::Err::DEVICE_ID_MISMATCH,
+                                 "Manufacturer ID mismatch",
+                                 static_cast<int32_t>(out.manufacturerId));
+  }
+
+  st = readRegister16AtAddress(address, INA228::cmd::REG_DEVICE_ID, out.deviceId);
+  if (!st.ok()) {
+    return st;
+  }
+  if (out.deviceId != INA228::cmd::DEVICE_ID) {
+    return INA228::Status::Error(INA228::Err::DEVICE_ID_MISMATCH,
+                                 "Device ID mismatch",
+                                 static_cast<int32_t>(out.deviceId));
+  }
+
+  st = readRegister16AtAddress(address, INA228::cmd::REG_DIAG_ALRT, out.diagAlert);
+  if (!st.ok()) {
+    return st;
+  }
+  if ((out.diagAlert & INA228::cmd::DIAG_MEMSTAT) == 0U) {
+    return INA228::Status::Error(INA228::Err::MEMORY_ERROR,
+                                 "NV trim memory checksum error");
+  }
+
+  return INA228::Status::Ok();
+}
+
+void printProbeSnapshot(const ProbeSnapshot& snapshot) {
+  Serial.printf("  Address: 0x%02X\n", snapshot.address);
+  Serial.printf("  Manufacturer ID: 0x%04X\n", snapshot.manufacturerId);
+  Serial.printf("  Device ID: 0x%04X\n", snapshot.deviceId);
+  Serial.printf("  DIAG_ALRT: 0x%04X\n", snapshot.diagAlert);
+  Serial.printf("  MEMSTAT: %s\n",
+                ((snapshot.diagAlert & INA228::cmd::DIAG_MEMSTAT) != 0U) ? "OK" : "FAIL");
+}
+
+void scanIna228Addresses() {
+  Serial.println("=== INA228 Address Probe (0x40-0x4F) ===");
+  uint8_t healthyCount = 0;
+  for (uint8_t address = INA228_ADDR_MIN; address <= INA228_ADDR_MAX; ++address) {
+    ProbeSnapshot snapshot{};
+    const INA228::Status st = probeAddressRaw(address, snapshot);
+
+    Serial.printf("  0x%02X: ", address);
+    if (st.ok()) {
+      healthyCount++;
+      Serial.printf("%sINA228%s (MFG=0x%04X DEV=0x%04X MEMSTAT=OK)\n",
+                    LOG_COLOR_GREEN,
+                    LOG_COLOR_RESET,
+                    snapshot.manufacturerId,
+                    snapshot.deviceId);
+      continue;
+    }
+
+    switch (st.code) {
+      case INA228::Err::I2C_NACK_ADDR:
+        Serial.println("--");
+        break;
+      case INA228::Err::DEVICE_ID_MISMATCH:
+        if (snapshot.manufacturerId != 0U &&
+            snapshot.manufacturerId != INA228::cmd::MANUFACTURER_ID) {
+          Serial.printf("%snot INA228%s (MFG=0x%04X)\n",
+                        LOG_COLOR_YELLOW,
+                        LOG_COLOR_RESET,
+                        snapshot.manufacturerId);
+        } else {
+          Serial.printf("%sdevice ID mismatch%s (DEV=0x%04X)\n",
+                        LOG_COLOR_YELLOW,
+                        LOG_COLOR_RESET,
+                        snapshot.deviceId);
+        }
+        break;
+      case INA228::Err::MEMORY_ERROR:
+        Serial.printf("%sINA228 with MEMSTAT fault%s (DIAG_ALRT=0x%04X)\n",
+                      LOG_COLOR_RED,
+                      LOG_COLOR_RESET,
+                      snapshot.diagAlert);
+        break;
+      default:
+        Serial.printf("%s%s%s", LOG_COLOR_RED, errToStr(st.code), LOG_COLOR_RESET);
+        if (st.detail != 0) {
+          Serial.printf(" (detail=%ld)", static_cast<long>(st.detail));
+        }
+        Serial.println();
+        break;
+    }
+  }
+
+  Serial.printf("  Healthy INA228 devices: %u\n", healthyCount);
+}
+
+uint8_t detectHealthyIna228Addresses(ProbeSnapshot* matches, uint8_t maxMatches) {
+  uint8_t count = 0;
+  for (uint8_t address = INA228_ADDR_MIN; address <= INA228_ADDR_MAX; ++address) {
+    ProbeSnapshot snapshot{};
+    const INA228::Status st = probeAddressRaw(address, snapshot);
+    if (!st.ok()) {
+      continue;
+    }
+    if (count < maxMatches) {
+      matches[count] = snapshot;
+    }
+    count++;
+  }
+  return count;
+}
+
+bool parseAddressArg(const String& text, uint8_t& outAddress) {
+  String trimmed = text;
+  trimmed.trim();
+  if (trimmed.length() == 0) {
+    return false;
+  }
+
+  char* end = nullptr;
+  const unsigned long value = std::strtoul(trimmed.c_str(), &end, 0);
+  if (end == nullptr || *end != '\0' || value > 0xFFUL) {
+    return false;
+  }
+
+  const uint8_t address = static_cast<uint8_t>(value);
+  if (!isValidIna228Address(address)) {
+    return false;
+  }
+
+  outAddress = address;
+  return true;
+}
+
+INA228::Status initializeDevice(uint8_t address, bool allowAutoDetectFallback) {
+  selectedAddress = address;
+  device.end();
+
+  INA228::Status st = device.begin(makeExampleConfig(address));
+  if (st.ok()) {
+    selectedAddress = address;
+    return st;
+  }
+
+  if (!allowAutoDetectFallback) {
+    return st;
+  }
+
+  ProbeSnapshot matches[16] = {};
+  const uint8_t count = detectHealthyIna228Addresses(matches, 16);
+  if (count == 1U && matches[0].address != address) {
+    LOGW("Configured address 0x%02X failed; detected INA228 at 0x%02X",
+         address, matches[0].address);
+    selectedAddress = matches[0].address;
+    st = device.begin(makeExampleConfig(matches[0].address));
+    if (st.ok()) {
+      selectedAddress = matches[0].address;
+    }
+    return st;
+  }
+
+  if (count > 1U) {
+    LOGW("Multiple INA228 devices detected on the bus; choose address explicitly with init <addr>");
+    for (uint8_t i = 0; i < count; ++i) {
+      LOGI("INA228 candidate at 0x%02X", matches[i].address);
+    }
+  } else {
+    LOGW("No healthy INA228 detected on addresses 0x40-0x4F");
+  }
+
+  return st;
 }
 
 const char* errToStr(INA228::Err err) {
@@ -200,6 +437,7 @@ void printDriverHealth() {
   const bool online = device.isOnline();
 
   Serial.println("=== Driver Health ===");
+  Serial.printf("  Configured address: 0x%02X\n", configuredAddress());
   Serial.printf("  State: %s%s%s\n",
                 stateColor(st, online, device.consecutiveFailures()),
                 stateToStr(st),
@@ -262,6 +500,26 @@ void printVersionInfo() {
   Serial.printf("  INA228 library full: %s\n", INA228::VERSION_FULL);
   Serial.printf("  INA228 library build: %s\n", INA228::BUILD_TIMESTAMP);
   Serial.printf("  INA228 library commit: %s (%s)\n", INA228::GIT_COMMIT, INA228::GIT_STATUS);
+}
+
+bool parseU32(const String& token, uint32_t& out) {
+  char* end = nullptr;
+  const unsigned long value = strtoul(token.c_str(), &end, 0);
+  if (end == token.c_str() || *end != '\0') {
+    return false;
+  }
+  out = static_cast<uint32_t>(value);
+  return true;
+}
+
+bool parseFloat(const String& token, float& out) {
+  char* end = nullptr;
+  const float value = strtof(token.c_str(), &end);
+  if (end == token.c_str() || *end != '\0') {
+    return false;
+  }
+  out = value;
+  return true;
 }
 
 void printMeasurement() {
@@ -360,6 +618,7 @@ void printSettings() {
   }
 
   Serial.println("=== Active Settings ===");
+  Serial.printf("  Address:        0x%02X\n", configuredAddress());
   Serial.printf("  Mode:           %s (%u)\n", modeToStr(mode), static_cast<unsigned>(mode));
   Serial.printf("  Est. conv time: %lu us\n",
                 static_cast<unsigned long>(device.estimateConversionTimeUs()));
@@ -752,7 +1011,8 @@ void printHelp() {
   helpSection("Common");
   helpItem("help / ?", "Show this help");
   helpItem("version / ver", "Print firmware and library version info");
-  helpItem("scan", "Scan I2C bus");
+  helpItem("scan", "Scan I2C bus and probe 0x40-0x4F for INA228 IDs");
+  helpItem("scanina", "Probe 0x40-0x4F for valid INA228 IDs");
   helpItem("read", "Read all measurements");
   helpItem("raw", "Read raw register values");
   helpItem("timing", "Show conversion timing and calibration info");
@@ -773,8 +1033,13 @@ void printHelp() {
   helpItem("convtime [vbus|vsh|temp <0..7>]", "Set conversion time per channel");
   helpItem("averaging [0..7]", "Set averaging count");
   helpItem("adcrange [0|1]", "Set shunt ADC range");
+  helpItem("cal <shunt_ohm> <max_current_a>", "Show or update calibration");
+  helpItem("tempco [ppm]", "Show or set shunt temp coefficient");
+  helpItem("tempcomp [0|1]", "Show or enable temp compensation");
+  helpItem("delay [0..255]", "Show or set conversion delay (2 ms steps)");
   helpItem("cfg / settings", "Show active settings");
-  helpItem("init", "Re-initialize device");
+  helpItem("addr [0x40..0x4F]", "Show or set target INA228 address");
+  helpItem("init [0x40..0x4F]", "Re-initialize device at current or given address");
   helpItem("end", "Shutdown driver");
   helpItem("reset", "Software reset device");
   helpItem("rstacc", "Reset energy/charge accumulators");
@@ -782,8 +1047,22 @@ void printHelp() {
   helpSection("Alert & Diagnostics");
   helpItem("diag", "Read diagnostic/alert flags");
   helpItem("diagraw", "Read raw DIAG_ALRT register");
+  helpItem("alatch <0|1>", "Set alert latch mode");
+  helpItem("cnvralert <0|1>", "Enable conversion-ready alert output");
+  helpItem("alslow <0|1>", "Set slow-alert mode");
+  helpItem("apol <0|1>", "Set alert polarity");
+  helpItem("sovl <volts>", "Set shunt overvoltage threshold");
+  helpItem("suvl <volts>", "Set shunt undervoltage threshold");
+  helpItem("bovl <volts>", "Set bus overvoltage threshold");
+  helpItem("buvl <volts>", "Set bus undervoltage threshold");
+  helpItem("tmplim <degC>", "Set temperature over-limit threshold");
+  helpItem("pwrlim <watts>", "Set power over-limit threshold");
   helpItem("mfgid", "Read manufacturer ID (expect 0x5449)");
   helpItem("devid", "Read device ID (expect 0x2281)");
+  helpItem("reg16 <addr>", "Read 16-bit register");
+  helpItem("reg24 <addr>", "Read 24-bit register");
+  helpItem("reg40 <addr>", "Read 40-bit register");
+  helpItem("wreg16 <addr> <val>", "Write 16-bit register (diagnostic only; may desync cached config)");
 
   helpSection("Diagnostics");
   helpItem("drv", "Show driver state and health");
@@ -821,6 +1100,12 @@ void processCommand(const String& cmdLine) {
 
   if (cmd == "scan") {
     bus_diag::scan();
+    scanIna228Addresses();
+    return;
+  }
+
+  if (cmd == "scanina") {
+    scanIna228Addresses();
     return;
   }
 
@@ -1025,25 +1310,147 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd == "cal") {
+    const auto& cfg = device.getConfig();
+    Serial.printf("Calibration: Rshunt=%.6f ohm  MaxCurrent=%.6f A  CURRENT_LSB=%.9f A\n",
+                  cfg.shuntResistanceOhm,
+                  cfg.maxExpectedCurrentA,
+                  device.currentLsb());
+    return;
+  }
+
+  if (cmd.startsWith("cal ")) {
+    String args = cmd.substring(4);
+    args.trim();
+    const int split = args.indexOf(' ');
+    if (split < 0) {
+      LOGW("Usage: cal <shunt_ohm> <max_current_a>");
+      return;
+    }
+
+    float shuntOhm = 0.0f;
+    float maxCurrentA = 0.0f;
+    String shuntTok = args.substring(0, split);
+    String maxTok = args.substring(split + 1);
+    maxTok.trim();
+    if (!parseFloat(shuntTok, shuntOhm) ||
+        !parseFloat(maxTok, maxCurrentA) ||
+        shuntOhm <= 0.0f || maxCurrentA <= 0.0f) {
+      LOGW("Usage: cal <shunt_ohm> <max_current_a>");
+      return;
+    }
+
+    auto st = device.setCalibration(shuntOhm, maxCurrentA);
+    LOGI("setCalibration(%.6f, %.6f): %s%s%s",
+         shuntOhm, maxCurrentA,
+         LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd == "tempco") {
+    LOGI("Shunt temp coeff: %u ppm/degC", device.getConfig().shuntTempCoeffPpmC);
+    return;
+  }
+
+  if (cmd.startsWith("tempco ")) {
+    uint32_t ppm = 0;
+    if (!parseU32(cmd.substring(7), ppm) || ppm > INA228::cmd::TEMPCO_MAX) {
+      LOGW("Usage: tempco <0..16383>");
+      return;
+    }
+    auto st = device.setShuntTempCoeff(static_cast<uint16_t>(ppm));
+    LOGI("setShuntTempCoeff(%lu): %s%s%s",
+         static_cast<unsigned long>(ppm),
+         LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd == "tempcomp") {
+    LOGI("Temperature compensation: %s", log_bool_str(device.getConfig().tempCompEnabled));
+    return;
+  }
+
+  if (cmd.startsWith("tempcomp ")) {
+    const int val = cmd.substring(9).toInt();
+    if (val != 0 && val != 1) {
+      LOGW("Usage: tempcomp <0|1>");
+      return;
+    }
+    auto st = device.setTempCompensation(val != 0);
+    LOGI("setTempCompensation(%s): %s%s%s",
+         log_bool_str(val != 0),
+         LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd == "delay") {
+    const auto& cfg = device.getConfig();
+    LOGI("Conversion delay: %u x 2 ms (%u ms)",
+         cfg.convDelayMs2,
+         static_cast<unsigned>(cfg.convDelayMs2) * 2u);
+    return;
+  }
+
+  if (cmd.startsWith("delay ")) {
+    uint32_t steps = 0;
+    if (!parseU32(cmd.substring(6), steps) || steps > 255u) {
+      LOGW("Usage: delay <0..255>");
+      return;
+    }
+    auto st = device.setConversionDelay(static_cast<uint8_t>(steps));
+    LOGI("setConversionDelay(%lu): %s%s%s",
+         static_cast<unsigned long>(steps),
+         LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    if (!st.ok()) printStatus(st);
+    return;
+  }
+
   if (cmd == "settings" || cmd == "cfg") {
     printSettings();
     return;
   }
 
-  if (cmd == "init") {
-    Config cfg;
-    cfg.i2cWrite = transport::wireWrite;
-    cfg.i2cWriteRead = transport::wireWriteRead;
-    cfg.i2cUser = &Wire;
-    cfg.nowMs = exampleNowMs;
-    cfg.i2cAddress = 0x40;
-    cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
-    cfg.mode = Mode::CONT_ALL;
-    cfg.shuntResistanceOhm = 0.015f;
-    cfg.maxExpectedCurrentA = 10.0f;
-    cfg.offlineThreshold = 5;
-    auto st = device.begin(cfg);
-    LOGI("begin(): %s%s%s", LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+  if (cmd == "addr") {
+    Serial.printf("Target INA228 address: 0x%02X\n", selectedAddress);
+    if (device.isInitialized()) {
+      Serial.printf("Active driver address: 0x%02X\n", device.getConfig().i2cAddress);
+    } else {
+      Serial.println("Driver is not initialized");
+    }
+    return;
+  }
+
+  if (cmd.startsWith("addr ")) {
+    uint8_t address = 0;
+    if (!parseAddressArg(cmd.substring(5), address)) {
+      LOGW("Invalid address. Use 0x40-0x4F");
+      return;
+    }
+    selectedAddress = address;
+    LOGI("Selected INA228 address set to 0x%02X (run init to apply)", selectedAddress);
+    return;
+  }
+
+  if (cmd == "init" || cmd.startsWith("init ")) {
+    uint8_t address = selectedAddress;
+    bool allowAutoDetectFallback = true;
+    if (cmd.length() > 4) {
+      if (!parseAddressArg(cmd.substring(4), address)) {
+        LOGW("Invalid address. Use init 0x40-0x4F");
+        return;
+      }
+      allowAutoDetectFallback = false;
+    }
+
+    auto st = initializeDevice(address, allowAutoDetectFallback);
+    LOGI("begin(0x%02X): %s%s%s",
+         configuredAddress(),
+         LOG_COLOR_RESULT(st.ok()),
+         errToStr(st.code),
+         LOG_COLOR_RESET);
     if (!st.ok()) printStatus(st);
     return;
   }
@@ -1085,6 +1492,140 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd.startsWith("alatch ")) {
+    const int val = cmd.substring(7).toInt();
+    if (val != 0 && val != 1) {
+      LOGW("Usage: alatch <0|1>");
+      return;
+    }
+    auto st = device.setAlertLatch(val != 0);
+    LOGI("setAlertLatch(%s): %s%s%s",
+         log_bool_str(val != 0),
+         LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("cnvralert ")) {
+    const int val = cmd.substring(10).toInt();
+    if (val != 0 && val != 1) {
+      LOGW("Usage: cnvralert <0|1>");
+      return;
+    }
+    auto st = device.setConversionReadyAlert(val != 0);
+    LOGI("setConversionReadyAlert(%s): %s%s%s",
+         log_bool_str(val != 0),
+         LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("alslow ")) {
+    const int val = cmd.substring(7).toInt();
+    if (val != 0 && val != 1) {
+      LOGW("Usage: alslow <0|1>");
+      return;
+    }
+    auto st = device.setSlowAlert(val != 0);
+    LOGI("setSlowAlert(%s): %s%s%s",
+         log_bool_str(val != 0),
+         LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("apol ")) {
+    const int val = cmd.substring(5).toInt();
+    if (val != 0 && val != 1) {
+      LOGW("Usage: apol <0|1>");
+      return;
+    }
+    auto st = device.setAlertPolarity(val != 0);
+    LOGI("setAlertPolarity(%s): %s%s%s",
+         log_bool_str(val != 0),
+         LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("sovl ")) {
+    float value = 0.0f;
+    if (!parseFloat(cmd.substring(5), value)) {
+      LOGW("Usage: sovl <volts>");
+      return;
+    }
+    auto st = device.setShuntOvervoltageThreshold(value);
+    LOGI("setShuntOvervoltageThreshold(%.7f): %s%s%s",
+         value, LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("suvl ")) {
+    float value = 0.0f;
+    if (!parseFloat(cmd.substring(5), value)) {
+      LOGW("Usage: suvl <volts>");
+      return;
+    }
+    auto st = device.setShuntUndervoltageThreshold(value);
+    LOGI("setShuntUndervoltageThreshold(%.7f): %s%s%s",
+         value, LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("bovl ")) {
+    float value = 0.0f;
+    if (!parseFloat(cmd.substring(5), value)) {
+      LOGW("Usage: bovl <volts>");
+      return;
+    }
+    auto st = device.setBusOvervoltageThreshold(value);
+    LOGI("setBusOvervoltageThreshold(%.4f): %s%s%s",
+         value, LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("buvl ")) {
+    float value = 0.0f;
+    if (!parseFloat(cmd.substring(5), value)) {
+      LOGW("Usage: buvl <volts>");
+      return;
+    }
+    auto st = device.setBusUndervoltageThreshold(value);
+    LOGI("setBusUndervoltageThreshold(%.4f): %s%s%s",
+         value, LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("tmplim ")) {
+    float value = 0.0f;
+    if (!parseFloat(cmd.substring(7), value)) {
+      LOGW("Usage: tmplim <degC>");
+      return;
+    }
+    auto st = device.setTemperatureOverlimitThreshold(value);
+    LOGI("setTemperatureOverlimitThreshold(%.2f): %s%s%s",
+         value, LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("pwrlim ")) {
+    float value = 0.0f;
+    if (!parseFloat(cmd.substring(7), value)) {
+      LOGW("Usage: pwrlim <watts>");
+      return;
+    }
+    auto st = device.setPowerOverlimitThreshold(value);
+    LOGI("setPowerOverlimitThreshold(%.6f): %s%s%s",
+         value, LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    if (!st.ok()) printStatus(st);
+    return;
+  }
+
   if (cmd == "mfgid") {
     uint16_t id = 0;
     auto st = device.readManufacturerId(id);
@@ -1101,6 +1642,84 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd.startsWith("wreg16 ")) {
+    String args = cmd.substring(7);
+    args.trim();
+    const int split = args.indexOf(' ');
+    if (split < 0) {
+      LOGW("Usage: wreg16 <addr> <val>");
+      return;
+    }
+    uint32_t addr = 0;
+    uint32_t value = 0;
+    if (!parseU32(args.substring(0, split), addr) ||
+        !parseU32(args.substring(split + 1), value) ||
+        addr > 0xFFu || value > 0xFFFFu) {
+      LOGW("Usage: wreg16 <addr> <val>");
+      return;
+    }
+    auto st = device.writeRegister16(static_cast<uint8_t>(addr), static_cast<uint16_t>(value));
+    printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("reg16 ")) {
+    uint32_t addr = 0;
+    if (!parseU32(cmd.substring(6), addr) || addr > 0xFFu) {
+      LOGW("Usage: reg16 <addr>");
+      return;
+    }
+    uint16_t value = 0;
+    auto st = device.readRegister16(static_cast<uint8_t>(addr), value);
+    if (!st.ok()) {
+      printStatus(st);
+      return;
+    }
+    Serial.printf("  Reg 0x%02lX = 0x%04X (%u)\n",
+                  static_cast<unsigned long>(addr),
+                  value,
+                  value);
+    return;
+  }
+
+  if (cmd.startsWith("reg24 ")) {
+    uint32_t addr = 0;
+    if (!parseU32(cmd.substring(6), addr) || addr > 0xFFu) {
+      LOGW("Usage: reg24 <addr>");
+      return;
+    }
+    uint32_t value = 0;
+    auto st = device.readRegister24(static_cast<uint8_t>(addr), value);
+    if (!st.ok()) {
+      printStatus(st);
+      return;
+    }
+    Serial.printf("  Reg 0x%02lX = 0x%06lX (%lu)\n",
+                  static_cast<unsigned long>(addr),
+                  static_cast<unsigned long>(value),
+                  static_cast<unsigned long>(value));
+    return;
+  }
+
+  if (cmd.startsWith("reg40 ")) {
+    uint32_t addr = 0;
+    if (!parseU32(cmd.substring(6), addr) || addr > 0xFFu) {
+      LOGW("Usage: reg40 <addr>");
+      return;
+    }
+    uint64_t value = 0;
+    auto st = device.readRegister40(static_cast<uint8_t>(addr), value);
+    if (!st.ok()) {
+      printStatus(st);
+      return;
+    }
+    Serial.printf("  Reg 0x%02lX = 0x%02lX%08lX\n",
+                  static_cast<unsigned long>(addr),
+                  static_cast<unsigned long>((value >> 32) & 0xFFu),
+                  static_cast<unsigned long>(value & 0xFFFFFFFFu));
+    return;
+  }
+
   // --- Diagnostics ---
   if (cmd == "drv") {
     printDriverHealth();
@@ -1112,9 +1731,14 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "probe") {
-    LOGI("Probing device (no health tracking)...");
-    auto st = device.probe();
+    const uint8_t address = configuredAddress();
+    LOGI("Probing address 0x%02X (raw, no health tracking)...", address);
+    ProbeSnapshot snapshot{};
+    auto st = probeAddressRaw(address, snapshot);
     printStatus(st);
+    if (st.ok()) {
+      printProbeSnapshot(snapshot);
+    }
     return;
   }
 
@@ -1193,32 +1817,21 @@ void setup() {
   LOGI("I2C initialized (SDA=%d, SCL=%d)", board::I2C_SDA, board::I2C_SCL);
 
   bus_diag::scan();
+  scanIna228Addresses();
 
-  INA228::Config cfg;
-  cfg.i2cWrite = transport::wireWrite;
-  cfg.i2cWriteRead = transport::wireWriteRead;
-  cfg.i2cUser = &Wire;
-  cfg.nowMs = exampleNowMs;
-  cfg.i2cAddress = 0x40;
-  cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
-  cfg.mode = INA228::Mode::CONT_ALL;
-  cfg.shuntResistanceOhm = 0.015f;
-  cfg.maxExpectedCurrentA = 10.0f;
-  cfg.offlineThreshold = 5;
-
-  INA228::Status st = device.begin(cfg);
+  INA228::Status st = initializeDevice(selectedAddress, true);
   if (!st.ok()) {
     LOGE("Failed to initialize device");
     printStatus(st);
-    return;
+    LOGW("Device remains uninitialized. Use scanina, addr <0x40-0x4F>, and init [addr].");
+  } else {
+    LOGI("Device initialized successfully at 0x%02X", configuredAddress());
+    LOGI("CURRENT_LSB: %.9f A", device.currentLsb());
+    LOGI("Conv time: ~%lu ms",
+         static_cast<unsigned long>(device.estimateConversionTimeMs()));
+
+    printDriverHealth();
   }
-
-  LOGI("Device initialized successfully");
-  LOGI("CURRENT_LSB: %.9f A", device.currentLsb());
-  LOGI("Conv time: ~%lu ms",
-       static_cast<unsigned long>(device.estimateConversionTimeMs()));
-
-  printDriverHealth();
   printHelp();
   Serial.print("> ");
 }

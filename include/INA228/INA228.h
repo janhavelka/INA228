@@ -79,6 +79,12 @@ public:
   /// Shutdown the driver and release resources
   void end();
 
+  /// Check if begin() completed successfully and end() has not been called
+  bool isInitialized() const { return _initialized; }
+
+  /// Get the cached configuration snapshot currently owned by the driver
+  const Config& getConfig() const { return _config; }
+
   // =========================================================================
   // Diagnostics
   // =========================================================================
@@ -87,8 +93,8 @@ public:
   /// @return Status::Ok() if device responds with correct IDs
   Status probe();
 
-  /// Attempt to recover from DEGRADED/OFFLINE state
-  /// @return Status::Ok() if device now responsive, error otherwise
+  /// Attempt to recover from DEGRADED/OFFLINE state by re-validating IDs, MEMSTAT, and cached config
+  /// @return Status::Ok() if device now responsive and configuration is re-applied, error otherwise
   Status recover();
 
   // =========================================================================
@@ -295,6 +301,22 @@ public:
 
   /// Read device ID (expect 0x2281)
   Status readDeviceId(uint16_t& id);
+
+  // =========================================================================
+  // Raw Register Access
+  // =========================================================================
+
+  /// Read a 16-bit register using tracked transport
+  Status readRegister16(uint8_t reg, uint16_t& value);
+
+  /// Read a 24-bit register using tracked transport
+  Status readRegister24(uint8_t reg, uint32_t& value);
+
+  /// Read a 40-bit register using tracked transport
+  Status readRegister40(uint8_t reg, uint64_t& value);
+
+  /// Write a 16-bit register using tracked transport
+  Status writeRegister16(uint8_t reg, uint16_t value);
 
   // =========================================================================
   // Timing

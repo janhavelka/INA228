@@ -124,6 +124,7 @@ void test_status_in_progress() {
   Status st{Err::IN_PROGRESS, 0, "In progress"};
   TEST_ASSERT_FALSE(st.ok());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS), static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(st.inProgress());
 }
 
 // ===========================================================================
@@ -175,10 +176,10 @@ void test_begin_success_sets_ready_and_health() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
                           static_cast<uint8_t>(dev.state()));
   TEST_ASSERT_TRUE(dev.isOnline());
-  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalSuccess());
+  TEST_ASSERT_GREATER_THAN_UINT32(0u, dev.totalSuccess());
   TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
-  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
+  TEST_ASSERT_EQUAL_UINT32(bus.nowMs, dev.lastOkMs());
 }
 
 void test_begin_rejects_invalid_address() {
@@ -516,6 +517,27 @@ void test_read_device_id() {
   TEST_ASSERT_EQUAL_HEX16(0x2281, id);
 }
 
+void test_public_register_access_helpers() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  uint16_t mfgId = 0;
+  Status st = dev.readRegister16(cmd::REG_MANUFACTURER_ID, mfgId);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_HEX16(0x5449, mfgId);
+
+  uint32_t power = 0xFFFFFFFFu;
+  st = dev.readRegister24(cmd::REG_POWER, power);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(0u, power);
+
+  uint64_t energy = UINT64_MAX;
+  st = dev.readRegister40(cmd::REG_ENERGY, energy);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT64(0u, energy);
+}
+
 // ===========================================================================
 // Entry point
 // ===========================================================================
@@ -547,5 +569,6 @@ int main() {
   RUN_TEST(test_read_measurement_all_zero);
   RUN_TEST(test_read_manufacturer_id);
   RUN_TEST(test_read_device_id);
+  RUN_TEST(test_public_register_access_helpers);
   return UNITY_END();
 }

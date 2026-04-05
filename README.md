@@ -79,6 +79,8 @@ void loop() {
 | `begin(config)` | Initialize with configuration (validates, verifies device ID + MEMSTAT) |
 | `tick(nowMs)` | Process pending operations (call from loop) |
 | `end()` | Shutdown and release resources |
+| `isInitialized()` | True after successful `begin()` until `end()` |
+| `getConfig()` | Return the driver's cached configuration snapshot |
 
 ### Measurements
 
@@ -117,8 +119,17 @@ void loop() {
 | `state()` | Current driver state (UNINIT/READY/DEGRADED/OFFLINE) |
 | `isOnline()` | True if READY or DEGRADED |
 | `probe()` | Check device presence (no health tracking) |
-| `recover()` | Attempt recovery (re-applies config) |
+| `recover()` | Re-validate manufacturer ID, device ID, MEMSTAT, then re-apply config/calibration |
 | `readDiagAlert(diag)` | Read all diagnostic/alert flags |
+
+### Raw Register Access
+
+| Method | Description |
+|--------|-------------|
+| `readRegister16(reg, value)` | Read a tracked 16-bit register |
+| `readRegister24(reg, value)` | Read a tracked 24-bit register |
+| `readRegister40(reg, value)` | Read a tracked 40-bit register |
+| `writeRegister16(reg, value)` | Write a tracked 16-bit register |
 
 ## Driver State Machine
 
@@ -168,6 +179,18 @@ end() --------> UNINIT
 | SCL | VS  | 0x4D |
 | SCL | SDA | 0x4E |
 | SCL | SCL | 0x4F |
+
+## Bringup CLI Notes
+
+The canonical bringup example now includes address-aware diagnostics for shared buses:
+
+- `scan` prints the general I2C table and probes `0x40..0x4F` for valid INA228 identity/MEMSTAT
+- `scanina` probes only the INA228 address window
+- `addr [0x40..0x4F]` selects the target device address used by the example
+- `init [addr]` re-initializes at the selected address; startup can auto-detect a single healthy INA228 if the default address fails
+- `cal`, `tempco`, `tempcomp`, `delay`, alert-threshold commands, and `reg16` / `reg24` / `reg40` / `wreg16` expose service-level diagnostics
+
+Raw register writes are intended for diagnostics and bring-up. They bypass the typed config helpers, so use `recover()` or `begin()` to restore cached settings after manual register edits.
 
 ## License
 
