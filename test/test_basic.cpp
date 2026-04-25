@@ -475,10 +475,50 @@ void test_read_bus_voltage_zero_on_default() {
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, v);
 }
 
-void test_read_measurement_all_zero() {
+void test_uncalibrated_current_power_energy_charge_fail_without_i2c() {
   FakeBus bus;
   INA228::INA228 dev;
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint32_t readsAfterBegin = bus.readCalls;
+
+  float f = 0.0f;
+  Status st = dev.readCurrent(f);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+
+  st = dev.readPower(f);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+
+  double d = 0.0;
+  st = dev.readEnergy(d);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+
+  st = dev.readCharge(d);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+
+  Measurement m{};
+  m.busVoltageV = 99.9f;
+  st = dev.readMeasurement(m);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+}
+
+void test_read_measurement_all_zero_when_calibrated() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.1f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   Measurement m{};
   m.busVoltageV = 99.9f;
@@ -538,6 +578,36 @@ void test_public_register_access_helpers() {
   TEST_ASSERT_EQUAL_UINT64(0u, energy);
 }
 
+void test_register_access_after_end_does_not_touch_bus() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint32_t writesAfterBegin = bus.writeCalls;
+  const uint32_t readsAfterBegin = bus.readCalls;
+
+  dev.end();
+  TEST_ASSERT_EQUAL_UINT32(writesAfterBegin + 1u, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+
+  uint16_t mfgId = 0;
+  Status st = dev.readRegister16(cmd::REG_MANUFACTURER_ID, mfgId);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::NOT_INITIALIZED),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+
+  uint32_t power = 0;
+  st = dev.readRegister24(cmd::REG_POWER, power);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::NOT_INITIALIZED),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+
+  st = dev.writeRegister16(cmd::REG_CONFIG, 0);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::NOT_INITIALIZED),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(writesAfterBegin + 1u, bus.writeCalls);
+}
+
 // ===========================================================================
 // Entry point
 // ===========================================================================
@@ -566,9 +636,11 @@ int main() {
   RUN_TEST(test_conversion_time_with_averaging);
   RUN_TEST(test_read_bus_voltage_requires_init);
   RUN_TEST(test_read_bus_voltage_zero_on_default);
-  RUN_TEST(test_read_measurement_all_zero);
+  RUN_TEST(test_uncalibrated_current_power_energy_charge_fail_without_i2c);
+  RUN_TEST(test_read_measurement_all_zero_when_calibrated);
   RUN_TEST(test_read_manufacturer_id);
   RUN_TEST(test_read_device_id);
   RUN_TEST(test_public_register_access_helpers);
+  RUN_TEST(test_register_access_after_end_does_not_touch_bus);
   return UNITY_END();
 }

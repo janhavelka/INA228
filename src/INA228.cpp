@@ -285,6 +285,9 @@ Status INA228::readMeasurement(Measurement& out) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (_currentLsb <= 0.0f) {
+    return Status::Error(Err::INVALID_CONFIG, "Current calibration required");
+  }
 
   // Read shunt voltage (24-bit)
   uint32_t raw24 = 0;
@@ -422,6 +425,9 @@ Status INA228::readCurrent(float& out) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (_currentLsb <= 0.0f) {
+    return Status::Error(Err::INVALID_CONFIG, "Current calibration required");
+  }
 
   uint32_t raw24 = 0;
   Status st = readReg24(cmd::REG_CURRENT, raw24);
@@ -436,6 +442,9 @@ Status INA228::readPower(float& out) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (_currentLsb <= 0.0f) {
+    return Status::Error(Err::INVALID_CONFIG, "Current calibration required");
+  }
 
   uint32_t raw24 = 0;
   Status st = readReg24(cmd::REG_POWER, raw24);
@@ -448,6 +457,9 @@ Status INA228::readPower(float& out) {
 Status INA228::readEnergy(double& out) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (_currentLsb <= 0.0f) {
+    return Status::Error(Err::INVALID_CONFIG, "Current calibration required");
   }
 
   uint64_t raw40 = 0;
@@ -462,6 +474,9 @@ Status INA228::readEnergy(double& out) {
 Status INA228::readCharge(double& out) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (_currentLsb <= 0.0f) {
+    return Status::Error(Err::INVALID_CONFIG, "Current calibration required");
   }
 
   uint64_t raw40 = 0;
@@ -806,7 +821,7 @@ Status INA228::setPowerOverlimitThreshold(float powerW) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
   if (_currentLsb == 0.0f) {
-    return Status::Error(Err::INVALID_PARAM, "Calibration required for power threshold");
+    return Status::Error(Err::INVALID_CONFIG, "Current calibration required");
   }
 
   const double powerLsb = cmd::POWER_COEFF * _currentLsb;
@@ -984,18 +999,30 @@ Status INA228::writeReg16(uint8_t reg, uint16_t value) {
 }
 
 Status INA228::readRegister16(uint8_t reg, uint16_t& value) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
   return readReg16(reg, value);
 }
 
 Status INA228::readRegister24(uint8_t reg, uint32_t& value) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
   return readReg24(reg, value);
 }
 
 Status INA228::readRegister40(uint8_t reg, uint64_t& value) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
   return readReg40(reg, value);
 }
 
 Status INA228::writeRegister16(uint8_t reg, uint16_t value) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
   return writeReg16(reg, value);
 }
 
