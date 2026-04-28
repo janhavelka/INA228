@@ -27,6 +27,10 @@ static bool isValidAveraging(Averaging avg) {
   return static_cast<uint8_t>(avg) <= 0x07;
 }
 
+static bool isValidAdcRange(AdcRange range) {
+  return range == AdcRange::MV_163_84 || range == AdcRange::MV_40_96;
+}
+
 static bool isValidMode(Mode mode) {
   return static_cast<uint8_t>(mode) <= 0x0F;
 }
@@ -64,6 +68,55 @@ static bool modeHasBus(Mode mode) {
 static bool modeHasTemp(Mode mode) {
   const uint8_t m = static_cast<uint8_t>(mode) & 0x07;
   return m == 4 || m == 5 || m == 6 || m == 7;
+}
+
+static Status validatePositiveFinite(float value, const char* message) {
+  if (!std::isfinite(value) || value <= 0.0f) {
+    return Status::Error(Err::INVALID_PARAM, message);
+  }
+  return Status::Ok();
+}
+
+static Status computeCalibration(float shuntOhm, float maxCurrentA, AdcRange range,
+                                 uint16_t& shuntCal, float& currentLsb) {
+  Status st = validatePositiveFinite(shuntOhm, "Shunt must be finite and > 0");
+  if (!st.ok()) {
+    return st;
+  }
+  st = validatePositiveFinite(maxCurrentA, "Max current must be finite and > 0");
+  if (!st.ok()) {
+    return st;
+  }
+  if (!isValidAdcRange(range)) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid ADC range");
+  }
+
+  const double rangeMultiplier = (range == AdcRange::MV_40_96) ? 4.0 : 1.0;
+  const double requestedLsb = static_cast<double>(maxCurrentA) / 524288.0;
+  double calValue = cmd::SHUNT_CAL_FACTOR * requestedLsb *
+                    static_cast<double>(shuntOhm) * rangeMultiplier;
+  if (!std::isfinite(calValue) || calValue <= 0.0) {
+    return Status::Error(Err::INVALID_PARAM, "Calibration out of range");
+  }
+  if (calValue > static_cast<double>(cmd::MASK_SHUNT_CAL)) {
+    calValue = static_cast<double>(cmd::MASK_SHUNT_CAL);
+  }
+
+  const uint16_t roundedCal =
+      static_cast<uint16_t>(std::round(calValue)) & cmd::MASK_SHUNT_CAL;
+  if (roundedCal == 0) {
+    return Status::Error(Err::INVALID_PARAM, "Calibration underflows SHUNT_CAL");
+  }
+
+  const double actualLsb = static_cast<double>(roundedCal) /
+      (cmd::SHUNT_CAL_FACTOR * static_cast<double>(shuntOhm) * rangeMultiplier);
+  if (!std::isfinite(actualLsb) || actualLsb <= 0.0) {
+    return Status::Error(Err::INVALID_PARAM, "Calibration out of range");
+  }
+
+  shuntCal = roundedCal;
+  currentLsb = static_cast<float>(actualLsb);
+  return Status::Ok();
 }
 
 }  // namespace
@@ -108,8 +161,33 @@ Status INA228::begin(const Config& config) {
   if (!isValidAveraging(config.averaging)) {
     return Status::Error(Err::INVALID_CONFIG, "Invalid averaging count");
   }
+  if (!isValidAdcRange(config.adcRange)) {
+    return Status::Error(Err::INVALID_CONFIG, "Invalid ADC range");
+  }
   if (config.shuntTempCoeffPpmC > cmd::TEMPCO_MAX) {
     return Status::Error(Err::INVALID_CONFIG, "Shunt temp coeff exceeds 16383");
+  }
+  if (!std::isfinite(config.shuntResistanceOhm) ||
+      !std::isfinite(config.maxExpectedCurrentA)) {
+    return Status::Error(Err::INVALID_CONFIG, "Calibration values must be finite");
+  }
+  if ((config.shuntResistanceOhm > 0.0f) != (config.maxExpectedCurrentA > 0.0f)) {
+    return Status::Error(Err::INVALID_CONFIG, "Incomplete calibration values");
+  }
+  if (config.shuntResistanceOhm < 0.0f || config.maxExpectedCurrentA < 0.0f) {
+    return Status::Error(Err::INVALID_CONFIG, "Calibration values must be >= 0");
+  }
+  if (config.shuntResistanceOhm > 0.0f) {
+    uint16_t cal = 0;
+    float lsb = 0.0f;
+    Status calStatus = computeCalibration(config.shuntResistanceOhm,
+                                          config.maxExpectedCurrentA,
+                                          config.adcRange,
+                                          cal,
+                                          lsb);
+    if (!calStatus.ok()) {
+      return Status::Error(Err::INVALID_CONFIG, calStatus.msg, calStatus.detail);
+    }
   }
 
   _config = config;
@@ -167,9 +245,19 @@ Status INA228::begin(const Config& config) {
 }
 
 void INA228::tick(uint32_t nowMs) {
-  (void)nowMs;
-  // INA228 is fully synchronous - tick() is a no-op.
-  // Conversion readiness is checked explicitly via isConversionReady().
+  if (!_initialized || !_trigPending) {
+    return;
+  }
+  if ((nowMs - _trigStartMs) < estimateConversionTimeMs()) {
+    return;
+  }
+
+  bool ready = false;
+  Status st = isConversionReady(ready);
+  if (st.ok() && ready) {
+    _trigPending = false;
+    _config.mode = Mode::SHUTDOWN;
+  }
 }
 
 void INA228::end() {
@@ -238,8 +326,9 @@ Status INA228::recover() {
     return st;
   }
   if (mfgId != cmd::MANUFACTURER_ID) {
-    return Status::Error(Err::DEVICE_ID_MISMATCH, "Manufacturer ID mismatch",
-                        static_cast<int32_t>(mfgId));
+    return _recordFailure(
+        Status::Error(Err::DEVICE_ID_MISMATCH, "Manufacturer ID mismatch",
+                      static_cast<int32_t>(mfgId)));
   }
 
   uint16_t devId = 0;
@@ -248,8 +337,9 @@ Status INA228::recover() {
     return st;
   }
   if (devId != cmd::DEVICE_ID) {
-    return Status::Error(Err::DEVICE_ID_MISMATCH, "Device ID mismatch",
-                        static_cast<int32_t>(devId));
+    return _recordFailure(
+        Status::Error(Err::DEVICE_ID_MISMATCH, "Device ID mismatch",
+                      static_cast<int32_t>(devId)));
   }
 
   uint16_t diagAlrt = 0;
@@ -258,7 +348,8 @@ Status INA228::recover() {
     return st;
   }
   if ((diagAlrt & cmd::DIAG_MEMSTAT) == 0) {
-    return Status::Error(Err::MEMORY_ERROR, "NV trim memory checksum error");
+    return _recordFailure(
+        Status::Error(Err::MEMORY_ERROR, "NV trim memory checksum error"));
   }
 
   _trigPending = false;
@@ -285,6 +376,10 @@ Status INA228::readMeasurement(Measurement& out) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status readyStatus = _ensureMeasurementReadyForRead();
+  if (!readyStatus.ok()) {
+    return readyStatus;
+  }
   if (_currentLsb <= 0.0f) {
     return Status::Error(Err::INVALID_CONFIG, "Current calibration required");
   }
@@ -302,7 +397,7 @@ Status INA228::readMeasurement(Measurement& out) {
   // Read bus voltage (24-bit)
   st = readReg24(cmd::REG_VBUS, raw24);
   if (!st.ok()) return st;
-  int32_t vbusRaw = _signExtend20(raw24);
+  uint32_t vbusRaw = raw24 >> 4;
   out.busVoltageV = static_cast<float>(vbusRaw * cmd::VBUS_LSB);
 
   // Read temperature (16-bit)
@@ -342,6 +437,10 @@ Status INA228::readRawSample(RawSample& out) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status readyStatus = _ensureMeasurementReadyForRead();
+  if (!readyStatus.ok()) {
+    return readyStatus;
+  }
 
   uint32_t raw24 = 0;
   Status st = readReg24(cmd::REG_VSHUNT, raw24);
@@ -350,7 +449,7 @@ Status INA228::readRawSample(RawSample& out) {
 
   st = readReg24(cmd::REG_VBUS, raw24);
   if (!st.ok()) return st;
-  out.vbus = _signExtend20(raw24);
+  out.vbus = raw24 >> 4;
 
   uint16_t raw16 = 0;
   st = readReg16(cmd::REG_DIETEMP, raw16);
@@ -368,7 +467,7 @@ Status INA228::readRawSample(RawSample& out) {
   uint64_t raw40 = 0;
   st = readReg40(cmd::REG_ENERGY, raw40);
   if (!st.ok()) return st;
-  out.energy = static_cast<int64_t>(raw40);
+  out.energy = raw40;
 
   st = readReg40(cmd::REG_CHARGE, raw40);
   if (!st.ok()) return st;
@@ -380,6 +479,10 @@ Status INA228::readRawSample(RawSample& out) {
 Status INA228::readShuntVoltage(float& out) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  Status readyStatus = _ensureMeasurementReadyForRead();
+  if (!readyStatus.ok()) {
+    return readyStatus;
   }
 
   uint32_t raw24 = 0;
@@ -398,12 +501,16 @@ Status INA228::readBusVoltage(float& out) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status readyStatus = _ensureMeasurementReadyForRead();
+  if (!readyStatus.ok()) {
+    return readyStatus;
+  }
 
   uint32_t raw24 = 0;
   Status st = readReg24(cmd::REG_VBUS, raw24);
   if (!st.ok()) return st;
 
-  int32_t raw = _signExtend20(raw24);
+  uint32_t raw = raw24 >> 4;
   out = static_cast<float>(raw * cmd::VBUS_LSB);
   return Status::Ok();
 }
@@ -411,6 +518,10 @@ Status INA228::readBusVoltage(float& out) {
 Status INA228::readTemperature(float& out) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  Status readyStatus = _ensureMeasurementReadyForRead();
+  if (!readyStatus.ok()) {
+    return readyStatus;
   }
 
   uint16_t raw16 = 0;
@@ -424,6 +535,10 @@ Status INA228::readTemperature(float& out) {
 Status INA228::readCurrent(float& out) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  Status readyStatus = _ensureMeasurementReadyForRead();
+  if (!readyStatus.ok()) {
+    return readyStatus;
   }
   if (_currentLsb <= 0.0f) {
     return Status::Error(Err::INVALID_CONFIG, "Current calibration required");
@@ -442,6 +557,10 @@ Status INA228::readPower(float& out) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status readyStatus = _ensureMeasurementReadyForRead();
+  if (!readyStatus.ok()) {
+    return readyStatus;
+  }
   if (_currentLsb <= 0.0f) {
     return Status::Error(Err::INVALID_CONFIG, "Current calibration required");
   }
@@ -457,6 +576,10 @@ Status INA228::readPower(float& out) {
 Status INA228::readEnergy(double& out) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  Status readyStatus = _ensureMeasurementReadyForRead();
+  if (!readyStatus.ok()) {
+    return readyStatus;
   }
   if (_currentLsb <= 0.0f) {
     return Status::Error(Err::INVALID_CONFIG, "Current calibration required");
@@ -475,6 +598,10 @@ Status INA228::readCharge(double& out) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status readyStatus = _ensureMeasurementReadyForRead();
+  if (!readyStatus.ok()) {
+    return readyStatus;
+  }
   if (_currentLsb <= 0.0f) {
     return Status::Error(Err::INVALID_CONFIG, "Current calibration required");
   }
@@ -489,8 +616,12 @@ Status INA228::readCharge(double& out) {
 }
 
 Status INA228::isConversionReady(bool& ready) {
+  ready = false;
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (_trigPending && ((_nowMs() - _trigStartMs) < estimateConversionTimeMs())) {
+    return Status::Ok();
   }
 
   uint16_t diag = 0;
@@ -520,6 +651,12 @@ Status INA228::setMode(Mode mode) {
   if (!st.ok()) return st;
 
   _config.mode = mode;
+  if (isTriggeredMode(mode)) {
+    _trigPending = true;
+    _trigStartMs = _nowMs();
+    return Status{Err::IN_PROGRESS, 0, "Conversion started"};
+  }
+  _trigPending = false;
   return Status::Ok();
 }
 
@@ -548,7 +685,7 @@ Status INA228::triggerConversion(Mode mode) {
   _config.mode = mode;
   _trigPending = true;
   _trigStartMs = _nowMs();
-  return Status::Ok();
+  return Status{Err::IN_PROGRESS, 0, "Conversion started"};
 }
 
 Status INA228::setVbusConvTime(ConvTime ct) {
@@ -559,8 +696,13 @@ Status INA228::setVbusConvTime(ConvTime ct) {
     return Status::Error(Err::INVALID_PARAM, "Invalid conversion time");
   }
 
+  const ConvTime old = _config.vbusConvTime;
   _config.vbusConvTime = ct;
-  return writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
+  Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
+  if (!st.ok()) {
+    _config.vbusConvTime = old;
+  }
+  return st;
 }
 
 Status INA228::setVshuntConvTime(ConvTime ct) {
@@ -571,8 +713,13 @@ Status INA228::setVshuntConvTime(ConvTime ct) {
     return Status::Error(Err::INVALID_PARAM, "Invalid conversion time");
   }
 
+  const ConvTime old = _config.vshuntConvTime;
   _config.vshuntConvTime = ct;
-  return writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
+  Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
+  if (!st.ok()) {
+    _config.vshuntConvTime = old;
+  }
+  return st;
 }
 
 Status INA228::setTempConvTime(ConvTime ct) {
@@ -583,8 +730,13 @@ Status INA228::setTempConvTime(ConvTime ct) {
     return Status::Error(Err::INVALID_PARAM, "Invalid conversion time");
   }
 
+  const ConvTime old = _config.vtempConvTime;
   _config.vtempConvTime = ct;
-  return writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
+  Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
+  if (!st.ok()) {
+    _config.vtempConvTime = old;
+  }
+  return st;
 }
 
 Status INA228::setAveraging(Averaging avg) {
@@ -595,34 +747,70 @@ Status INA228::setAveraging(Averaging avg) {
     return Status::Error(Err::INVALID_PARAM, "Invalid averaging count");
   }
 
+  const Averaging old = _config.averaging;
   _config.averaging = avg;
-  return writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
+  Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
+  if (!st.ok()) {
+    _config.averaging = old;
+  }
+  return st;
 }
 
 Status INA228::setAdcRange(AdcRange range) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (!isValidAdcRange(range)) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid ADC range");
+  }
 
+  const AdcRange oldRange = _config.adcRange;
+  const float oldCurrentLsb = _currentLsb;
+  const uint16_t oldShuntCal = _shuntCal;
   _config.adcRange = range;
   Status st = writeReg16(cmd::REG_CONFIG, _buildConfig());
-  if (!st.ok()) return st;
+  if (!st.ok()) {
+    _config.adcRange = oldRange;
+    return st;
+  }
 
   // Range change requires recalibration
-  return _applyCalibration();
+  st = _applyCalibration();
+  if (!st.ok()) {
+    _config.adcRange = oldRange;
+    _currentLsb = oldCurrentLsb;
+    _shuntCal = oldShuntCal;
+  }
+  return st;
 }
 
 Status INA228::setCalibration(float shuntOhm, float maxCurrentA) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
-  if (shuntOhm <= 0.0f || maxCurrentA <= 0.0f) {
-    return Status::Error(Err::INVALID_PARAM, "Shunt/current must be > 0");
+  Status st = validatePositiveFinite(shuntOhm, "Shunt must be finite and > 0");
+  if (!st.ok()) {
+    return st;
+  }
+  st = validatePositiveFinite(maxCurrentA, "Max current must be finite and > 0");
+  if (!st.ok()) {
+    return st;
   }
 
+  const float oldShuntOhm = _config.shuntResistanceOhm;
+  const float oldMaxCurrentA = _config.maxExpectedCurrentA;
+  const float oldCurrentLsb = _currentLsb;
+  const uint16_t oldShuntCal = _shuntCal;
   _config.shuntResistanceOhm = shuntOhm;
   _config.maxExpectedCurrentA = maxCurrentA;
-  return _applyCalibration();
+  st = _applyCalibration();
+  if (!st.ok()) {
+    _config.shuntResistanceOhm = oldShuntOhm;
+    _config.maxExpectedCurrentA = oldMaxCurrentA;
+    _currentLsb = oldCurrentLsb;
+    _shuntCal = oldShuntCal;
+  }
+  return st;
 }
 
 Status INA228::setShuntTempCoeff(uint16_t ppmPerC) {
@@ -633,9 +821,14 @@ Status INA228::setShuntTempCoeff(uint16_t ppmPerC) {
     return Status::Error(Err::INVALID_PARAM, "Temp coeff exceeds 16383 ppm/C");
   }
 
+  const uint16_t old = _config.shuntTempCoeffPpmC;
   _config.shuntTempCoeffPpmC = ppmPerC;
   uint16_t val = ppmPerC & cmd::MASK_SHUNT_TEMPCO;
-  return writeReg16(cmd::REG_SHUNT_TEMPCO, val);
+  Status st = writeReg16(cmd::REG_SHUNT_TEMPCO, val);
+  if (!st.ok()) {
+    _config.shuntTempCoeffPpmC = old;
+  }
+  return st;
 }
 
 Status INA228::setTempCompensation(bool enable) {
@@ -643,8 +836,13 @@ Status INA228::setTempCompensation(bool enable) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
+  const bool old = _config.tempCompEnabled;
   _config.tempCompEnabled = enable;
-  return writeReg16(cmd::REG_CONFIG, _buildConfig());
+  Status st = writeReg16(cmd::REG_CONFIG, _buildConfig());
+  if (!st.ok()) {
+    _config.tempCompEnabled = old;
+  }
+  return st;
 }
 
 Status INA228::setConversionDelay(uint8_t steps2ms) {
@@ -652,8 +850,13 @@ Status INA228::setConversionDelay(uint8_t steps2ms) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
+  const uint8_t old = _config.convDelayMs2;
   _config.convDelayMs2 = steps2ms;
-  return writeReg16(cmd::REG_CONFIG, _buildConfig());
+  Status st = writeReg16(cmd::REG_CONFIG, _buildConfig());
+  if (!st.ok()) {
+    _config.convDelayMs2 = old;
+  }
+  return st;
 }
 
 // ===========================================================================
@@ -767,11 +970,18 @@ Status INA228::setShuntOvervoltageThreshold(float voltageV) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (!std::isfinite(voltageV)) {
+    return Status::Error(Err::INVALID_PARAM, "Threshold must be finite");
+  }
 
   const double lsb = (_config.adcRange == AdcRange::MV_40_96)
                        ? cmd::SHUNT_THRESHOLD_LSB_RANGE1
                        : cmd::SHUNT_THRESHOLD_LSB_RANGE0;
-  auto regVal = static_cast<int16_t>(std::round(voltageV / lsb));
+  const double scaled = std::round(static_cast<double>(voltageV) / lsb);
+  if (scaled < -32768.0 || scaled > 32767.0) {
+    return Status::Error(Err::INVALID_PARAM, "Shunt threshold out of range");
+  }
+  auto regVal = static_cast<int16_t>(scaled);
   return writeReg16(cmd::REG_SOVL, static_cast<uint16_t>(regVal));
 }
 
@@ -779,11 +989,18 @@ Status INA228::setShuntUndervoltageThreshold(float voltageV) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (!std::isfinite(voltageV)) {
+    return Status::Error(Err::INVALID_PARAM, "Threshold must be finite");
+  }
 
   const double lsb = (_config.adcRange == AdcRange::MV_40_96)
                        ? cmd::SHUNT_THRESHOLD_LSB_RANGE1
                        : cmd::SHUNT_THRESHOLD_LSB_RANGE0;
-  auto regVal = static_cast<int16_t>(std::round(voltageV / lsb));
+  const double scaled = std::round(static_cast<double>(voltageV) / lsb);
+  if (scaled < -32768.0 || scaled > 32767.0) {
+    return Status::Error(Err::INVALID_PARAM, "Shunt threshold out of range");
+  }
+  auto regVal = static_cast<int16_t>(scaled);
   return writeReg16(cmd::REG_SUVL, static_cast<uint16_t>(regVal));
 }
 
@@ -791,8 +1008,12 @@ Status INA228::setBusOvervoltageThreshold(float voltageV) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (!std::isfinite(voltageV) || voltageV < 0.0f || voltageV > 85.0f) {
+    return Status::Error(Err::INVALID_PARAM, "Bus threshold out of range");
+  }
 
-  auto regVal = static_cast<uint16_t>(std::round(voltageV / cmd::BUS_THRESHOLD_LSB));
+  auto regVal = static_cast<uint16_t>(std::round(
+      static_cast<double>(voltageV) / cmd::BUS_THRESHOLD_LSB));
   regVal &= 0x7FFF;  // bit 15 reserved
   return writeReg16(cmd::REG_BOVL, regVal);
 }
@@ -801,8 +1022,12 @@ Status INA228::setBusUndervoltageThreshold(float voltageV) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (!std::isfinite(voltageV) || voltageV < 0.0f || voltageV > 85.0f) {
+    return Status::Error(Err::INVALID_PARAM, "Bus threshold out of range");
+  }
 
-  auto regVal = static_cast<uint16_t>(std::round(voltageV / cmd::BUS_THRESHOLD_LSB));
+  auto regVal = static_cast<uint16_t>(std::round(
+      static_cast<double>(voltageV) / cmd::BUS_THRESHOLD_LSB));
   regVal &= 0x7FFF;  // bit 15 reserved
   return writeReg16(cmd::REG_BUVL, regVal);
 }
@@ -811,8 +1036,15 @@ Status INA228::setTemperatureOverlimitThreshold(float tempC) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (!std::isfinite(tempC)) {
+    return Status::Error(Err::INVALID_PARAM, "Temperature threshold must be finite");
+  }
 
-  auto regVal = static_cast<int16_t>(std::round(tempC / cmd::TEMP_LSB));
+  const double scaled = std::round(static_cast<double>(tempC) / cmd::TEMP_LSB);
+  if (scaled < -32768.0 || scaled > 32767.0) {
+    return Status::Error(Err::INVALID_PARAM, "Temperature threshold out of range");
+  }
+  auto regVal = static_cast<int16_t>(scaled);
   return writeReg16(cmd::REG_TEMP_LIMIT, static_cast<uint16_t>(regVal));
 }
 
@@ -823,10 +1055,17 @@ Status INA228::setPowerOverlimitThreshold(float powerW) {
   if (_currentLsb == 0.0f) {
     return Status::Error(Err::INVALID_CONFIG, "Current calibration required");
   }
+  if (!std::isfinite(powerW) || powerW < 0.0f) {
+    return Status::Error(Err::INVALID_PARAM, "Power threshold out of range");
+  }
 
   const double powerLsb = cmd::POWER_COEFF * _currentLsb;
   const double limitLsb = 256.0 * powerLsb;
-  auto regVal = static_cast<uint16_t>(std::round(powerW / limitLsb));
+  const double scaled = std::round(static_cast<double>(powerW) / limitLsb);
+  if (scaled < 0.0 || scaled > 65535.0) {
+    return Status::Error(Err::INVALID_PARAM, "Power threshold out of range");
+  }
+  auto regVal = static_cast<uint16_t>(scaled);
   return writeReg16(cmd::REG_PWR_LIMIT, regVal);
 }
 
@@ -1078,9 +1317,63 @@ Status INA228::_updateHealth(const Status& st) {
   return st;
 }
 
+Status INA228::_recordFailure(const Status& st) {
+  if (st.ok() || st.inProgress() ||
+      st.code == Err::INVALID_CONFIG ||
+      st.code == Err::INVALID_PARAM ||
+      st.code == Err::NOT_INITIALIZED) {
+    return st;
+  }
+
+  const uint32_t now = _nowMs();
+  const uint32_t maxU32 = std::numeric_limits<uint32_t>::max();
+  const uint8_t maxU8 = std::numeric_limits<uint8_t>::max();
+
+  _lastError = st;
+  _lastErrorMs = now;
+  if (_totalFailures < maxU32) {
+    _totalFailures++;
+  }
+  if (_consecutiveFailures < maxU8) {
+    _consecutiveFailures++;
+  }
+
+  if (_initialized) {
+    if (_consecutiveFailures >= _config.offlineThreshold) {
+      _driverState = DriverState::OFFLINE;
+    } else {
+      _driverState = DriverState::DEGRADED;
+    }
+  }
+
+  return st;
+}
+
 // ===========================================================================
 // Internal Helpers
 // ===========================================================================
+
+Status INA228::_ensureMeasurementReadyForRead() {
+  if (!_trigPending) {
+    return Status::Ok();
+  }
+  if ((_nowMs() - _trigStartMs) < estimateConversionTimeMs()) {
+    return Status::Error(Err::MEASUREMENT_NOT_READY, "Triggered conversion not ready");
+  }
+
+  bool ready = false;
+  Status st = isConversionReady(ready);
+  if (!st.ok()) {
+    return st;
+  }
+  if (!ready) {
+    return Status::Error(Err::MEASUREMENT_NOT_READY, "Triggered conversion not ready");
+  }
+
+  _trigPending = false;
+  _config.mode = Mode::SHUTDOWN;
+  return Status::Ok();
+}
 
 Status INA228::_applyConfig() {
   // Write CONFIG register
@@ -1109,29 +1402,25 @@ Status INA228::_applyCalibration() {
     return Status::Ok();
   }
 
-  // CURRENT_LSB = Max_Expected_Current / 2^19
-  _currentLsb = _config.maxExpectedCurrentA / 524288.0f;  // 2^19
-
-  // SHUNT_CAL = 13107.2 × 10^6 × CURRENT_LSB × RSHUNT
-  double calValue = cmd::SHUNT_CAL_FACTOR *
-                    static_cast<double>(_currentLsb) *
-                    static_cast<double>(_config.shuntResistanceOhm);
-
-  // For ADCRANGE = 1, multiply by 4
-  if (_config.adcRange == AdcRange::MV_40_96) {
-    calValue *= 4.0;
+  uint16_t newShuntCal = 0;
+  float newCurrentLsb = 0.0f;
+  Status st = computeCalibration(_config.shuntResistanceOhm,
+                                 _config.maxExpectedCurrentA,
+                                 _config.adcRange,
+                                 newShuntCal,
+                                 newCurrentLsb);
+  if (!st.ok()) {
+    return st;
   }
 
-  // Clamp to 15-bit range
-  if (calValue > static_cast<double>(cmd::MASK_SHUNT_CAL)) {
-    calValue = static_cast<double>(cmd::MASK_SHUNT_CAL);
-  }
-  if (calValue < 0.0) {
-    calValue = 0.0;
+  st = writeReg16(cmd::REG_SHUNT_CAL, newShuntCal);
+  if (!st.ok()) {
+    return st;
   }
 
-  _shuntCal = static_cast<uint16_t>(std::round(calValue)) & cmd::MASK_SHUNT_CAL;
-  return writeReg16(cmd::REG_SHUNT_CAL, _shuntCal);
+  _shuntCal = newShuntCal;
+  _currentLsb = newCurrentLsb;
+  return Status::Ok();
 }
 
 uint32_t INA228::_nowMs() const {

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Native tests for calibration clamping, setter rollback, triggered conversion readiness, unsigned raw bus/energy values, and threshold validation.
+
+### Changed
+- Triggered conversions now return `IN_PROGRESS` and block measurement reads with `MEASUREMENT_NOT_READY` until conversion time has elapsed and CNVRF is set.
+- Calibration now adjusts `currentLsb()` to the actual programmed `SHUNT_CAL` value when register clamping occurs.
+- Raw bus voltage and raw energy API types now reflect unsigned device registers.
+
+### Fixed
+- Config and calibration setters no longer commit cached values when I2C writes fail.
+- `begin()` and threshold APIs now reject invalid enum values, NaN/Inf, and out-of-range values before touching I2C.
+- `recover()` now records identity and MEMSTAT failures in health state.
+- CLI trigger reporting now treats `IN_PROGRESS` as an accepted operation and prints granular `I2C_*` errors.
+
 ## [1.0.0] - 2026-04-05
 
 ### Added

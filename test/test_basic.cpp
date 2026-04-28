@@ -3,6 +3,8 @@
 
 #include <unity.h>
 
+#include <limits>
+
 #include "Arduino.h"
 #include "Wire.h"
 
@@ -17,9 +19,17 @@ using namespace INA228;
 namespace {
 
 struct FakeBus {
+  uint16_t reg16[64] = {};
+  uint32_t reg24[64] = {};
+  uint64_t reg40[64] = {};
+  uint16_t manufacturerId = cmd::MANUFACTURER_ID;
+  uint16_t deviceId = cmd::DEVICE_ID;
+  uint16_t diagAlrt = cmd::DIAG_ALRT_RESET;
   uint32_t nowMs = 1000;
   uint32_t writeCalls = 0;
   uint32_t readCalls = 0;
+  uint8_t lastWriteReg = 0;
+  uint16_t lastWrite16 = 0;
 
   int readErrorRemaining = 0;
   int writeErrorRemaining = 0;
@@ -36,6 +46,18 @@ Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user)
   if (bus->writeErrorRemaining > 0) {
     bus->writeErrorRemaining--;
     return bus->writeError;
+  }
+  if (len == 3) {
+    const uint8_t reg = data[0];
+    const uint16_t value = (static_cast<uint16_t>(data[1]) << 8) | data[2];
+    bus->lastWriteReg = reg;
+    bus->lastWrite16 = value;
+    if (reg < 64) {
+      bus->reg16[reg] = value;
+    }
+    if (reg == cmd::REG_DIAG_ALRT) {
+      bus->diagAlrt = value;
+    }
   }
   return Status::Ok();
 }
@@ -59,18 +81,34 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
 
   // Manufacturer ID: 0x5449
   if (reg == cmd::REG_MANUFACTURER_ID && rxLen >= 2) {
-    rxData[0] = 0x54;
-    rxData[1] = 0x49;
+    rxData[0] = static_cast<uint8_t>(bus->manufacturerId >> 8);
+    rxData[1] = static_cast<uint8_t>(bus->manufacturerId & 0xFF);
   }
   // Device ID: 0x2281
   else if (reg == cmd::REG_DEVICE_ID && rxLen >= 2) {
-    rxData[0] = 0x22;
-    rxData[1] = 0x81;
+    rxData[0] = static_cast<uint8_t>(bus->deviceId >> 8);
+    rxData[1] = static_cast<uint8_t>(bus->deviceId & 0xFF);
   }
   // DIAG_ALRT: MEMSTAT=1 (bit 0)
   else if (reg == cmd::REG_DIAG_ALRT && rxLen >= 2) {
-    rxData[0] = 0x00;
-    rxData[1] = 0x01;
+    rxData[0] = static_cast<uint8_t>(bus->diagAlrt >> 8);
+    rxData[1] = static_cast<uint8_t>(bus->diagAlrt & 0xFF);
+  } else if (rxLen == 2 && reg < 64) {
+    const uint16_t value = bus->reg16[reg];
+    rxData[0] = static_cast<uint8_t>(value >> 8);
+    rxData[1] = static_cast<uint8_t>(value & 0xFF);
+  } else if (rxLen == 3 && reg < 64) {
+    const uint32_t value = bus->reg24[reg] & 0xFFFFFFu;
+    rxData[0] = static_cast<uint8_t>((value >> 16) & 0xFF);
+    rxData[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+    rxData[2] = static_cast<uint8_t>(value & 0xFF);
+  } else if (rxLen == 5 && reg < 64) {
+    const uint64_t value = bus->reg40[reg] & 0xFFFFFFFFFFULL;
+    rxData[0] = static_cast<uint8_t>((value >> 32) & 0xFF);
+    rxData[1] = static_cast<uint8_t>((value >> 24) & 0xFF);
+    rxData[2] = static_cast<uint8_t>((value >> 16) & 0xFF);
+    rxData[3] = static_cast<uint8_t>((value >> 8) & 0xFF);
+    rxData[4] = static_cast<uint8_t>(value & 0xFF);
   }
 
   return Status::Ok();
@@ -202,6 +240,27 @@ void test_begin_rejects_zero_timeout() {
                           static_cast<uint8_t>(st.code));
 }
 
+void test_begin_rejects_invalid_adc_range() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.adcRange = static_cast<AdcRange>(2);
+  Status st = dev.begin(cfg);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+}
+
+void test_begin_rejects_non_finite_calibration() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = std::numeric_limits<float>::quiet_NaN();
+  cfg.maxExpectedCurrentA = 10.0f;
+  Status st = dev.begin(cfg);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+}
+
 void test_end_returns_to_uninit() {
   FakeBus bus;
   INA228::INA228 dev;
@@ -323,6 +382,37 @@ void test_recover_preserves_transport_error_code() {
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
                           static_cast<uint8_t>(dev.lastError().code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                          static_cast<uint8_t>(dev.state()));
+}
+
+void test_recover_identity_mismatch_updates_health() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.manufacturerId = 0x1234;
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_ID_MISMATCH),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(1u, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT8(1u, dev.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_ID_MISMATCH),
+                          static_cast<uint8_t>(dev.lastError().code));
+}
+
+void test_recover_memstat_failure_updates_health() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.diagAlrt = 0;
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MEMORY_ERROR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(1u, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
                           static_cast<uint8_t>(dev.state()));
 }
@@ -452,6 +542,31 @@ void test_conversion_time_with_averaging() {
   TEST_ASSERT_EQUAL_UINT32(4320u, dev.estimateConversionTimeUs());
 }
 
+void test_triggered_conversion_gates_reads_until_cnvrf() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  Status st = dev.triggerConversion(Mode::TRIG_ALL);
+  TEST_ASSERT_TRUE(st.inProgress());
+
+  float volts = 1.0f;
+  st = dev.readBusVoltage(volts);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MEASUREMENT_NOT_READY),
+                          static_cast<uint8_t>(st.code));
+
+  bus.nowMs += dev.estimateConversionTimeMs();
+  st = dev.readBusVoltage(volts);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MEASUREMENT_NOT_READY),
+                          static_cast<uint8_t>(st.code));
+
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+  bus.reg24[cmd::REG_VBUS] = 0x001000;
+  st = dev.readBusVoltage(volts);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(volts > 0.0f);
+}
+
 // ===========================================================================
 // Measurement (basic - reads return zeros)
 // ===========================================================================
@@ -529,6 +644,84 @@ void test_read_measurement_all_zero_when_calibrated() {
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, m.temperatureC);
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, m.currentA);
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, m.powerW);
+}
+
+void test_read_raw_sample_uses_unsigned_vbus_and_energy() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  bus.reg24[cmd::REG_VBUS] = 0xFFF000;
+  bus.reg40[cmd::REG_ENERGY] = 0xFFFFFFFFFFULL;
+
+  RawSample raw{};
+  Status st = dev.readRawSample(raw);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(0x000FFF00u, raw.vbus);
+  TEST_ASSERT_EQUAL_UINT64(0xFFFFFFFFFFULL, raw.energy);
+}
+
+void test_calibration_clamp_updates_current_lsb_to_actual_register_value() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  Status st = dev.setCalibration(0.1f, 100000.0f);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_HEX16(cmd::MASK_SHUNT_CAL, bus.reg16[cmd::REG_SHUNT_CAL]);
+
+  const float expected = static_cast<float>(
+      static_cast<double>(cmd::MASK_SHUNT_CAL) /
+      (cmd::SHUNT_CAL_FACTOR * 0.1));
+  TEST_ASSERT_FLOAT_WITHIN(expected * 0.0001f, expected, dev.currentLsb());
+}
+
+void test_calibration_does_not_commit_cache_on_write_failure() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  TEST_ASSERT_TRUE(dev.setCalibration(0.1f, 10.0f).ok());
+  const Config oldConfig = dev.getConfig();
+  const float oldLsb = dev.currentLsb();
+  const uint16_t oldReg = bus.reg16[cmd::REG_SHUNT_CAL];
+
+  bus.writeErrorRemaining = 1;
+  Status st = dev.setCalibration(0.2f, 20.0f);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FLOAT_WITHIN(0.000001f, oldConfig.shuntResistanceOhm,
+                           dev.getConfig().shuntResistanceOhm);
+  TEST_ASSERT_FLOAT_WITHIN(0.000001f, oldConfig.maxExpectedCurrentA,
+                           dev.getConfig().maxExpectedCurrentA);
+  TEST_ASSERT_FLOAT_WITHIN(oldLsb * 0.0001f, oldLsb, dev.currentLsb());
+  TEST_ASSERT_EQUAL_HEX16(oldReg, bus.reg16[cmd::REG_SHUNT_CAL]);
+}
+
+void test_config_setter_does_not_commit_cache_on_write_failure() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.writeErrorRemaining = 1;
+  Status st = dev.setVbusConvTime(ConvTime::US_50);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConvTime::US_1052),
+                          static_cast<uint8_t>(dev.getConfig().vbusConvTime));
+}
+
+void test_invalid_threshold_values_do_not_touch_bus() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  const uint32_t writesBefore = bus.writeCalls;
+
+  Status st = dev.setBusOvervoltageThreshold(90.0f);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+  st = dev.setTemperatureOverlimitThreshold(std::numeric_limits<float>::infinity());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
 }
 
 // ===========================================================================
@@ -622,6 +815,8 @@ int main() {
   RUN_TEST(test_begin_success_sets_ready_and_health);
   RUN_TEST(test_begin_rejects_invalid_address);
   RUN_TEST(test_begin_rejects_zero_timeout);
+  RUN_TEST(test_begin_rejects_invalid_adc_range);
+  RUN_TEST(test_begin_rejects_non_finite_calibration);
   RUN_TEST(test_end_returns_to_uninit);
   RUN_TEST(test_now_ms_fallback_uses_millis_when_callback_missing);
   RUN_TEST(test_begin_without_now_ms_uses_millis_fallback);
@@ -629,15 +824,23 @@ int main() {
   RUN_TEST(test_recover_failure_updates_health_once);
   RUN_TEST(test_recover_success_returns_ready);
   RUN_TEST(test_recover_preserves_transport_error_code);
+  RUN_TEST(test_recover_identity_mismatch_updates_health);
+  RUN_TEST(test_recover_memstat_failure_updates_health);
   RUN_TEST(test_recover_reaches_offline_when_threshold_is_one);
   RUN_TEST(test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init);
   RUN_TEST(test_example_transport_validates_params_and_handles_write_read);
   RUN_TEST(test_conversion_time_estimate);
   RUN_TEST(test_conversion_time_with_averaging);
+  RUN_TEST(test_triggered_conversion_gates_reads_until_cnvrf);
   RUN_TEST(test_read_bus_voltage_requires_init);
   RUN_TEST(test_read_bus_voltage_zero_on_default);
   RUN_TEST(test_uncalibrated_current_power_energy_charge_fail_without_i2c);
   RUN_TEST(test_read_measurement_all_zero_when_calibrated);
+  RUN_TEST(test_read_raw_sample_uses_unsigned_vbus_and_energy);
+  RUN_TEST(test_calibration_clamp_updates_current_lsb_to_actual_register_value);
+  RUN_TEST(test_calibration_does_not_commit_cache_on_write_failure);
+  RUN_TEST(test_config_setter_does_not_commit_cache_on_write_failure);
+  RUN_TEST(test_invalid_threshold_values_do_not_touch_bus);
   RUN_TEST(test_read_manufacturer_id);
   RUN_TEST(test_read_device_id);
   RUN_TEST(test_public_register_access_helpers);

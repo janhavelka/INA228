@@ -8,7 +8,7 @@ Production-grade INA228 85-V, 20-bit I2C power/energy/charge monitor driver for 
 - **Health monitoring** - automatic state tracking (READY/DEGRADED/OFFLINE)
 - **Deterministic behavior** - no unbounded loops, no heap allocations
 - **Managed synchronous lifecycle** - blocking I2C ops with tick-based architecture
-- **Full INA228 support** - all ADC modes, calibration, alerts, energy/charge accumulation
+- **INA228 coverage** - ADC modes, guarded triggered conversions, calibration, alerts, energy/charge accumulation
 
 ## Installation
 
@@ -191,6 +191,14 @@ The canonical bringup example now includes address-aware diagnostics for shared 
 - `cal`, `tempco`, `tempcomp`, `delay`, alert-threshold commands, and `reg16` / `reg24` / `reg40` / `wreg16` expose service-level diagnostics
 
 Raw register writes are intended for diagnostics and bring-up. They bypass the typed config helpers, so use `recover()` or `begin()` to restore cached settings after manual register edits.
+
+## Calibration And Triggered Reads
+
+- `setCalibration(ohm, A)` validates finite positive inputs and programs `SHUNT_CAL`.
+- If the computed calibration exceeds the 15-bit register range, the driver clamps `SHUNT_CAL` and adjusts `currentLsb()` to the actual programmed value so current, power, energy, and charge scaling stay consistent with hardware.
+- Calibration and config setters update cached values only after required I2C writes succeed.
+- Triggered modes return `IN_PROGRESS`; measurement reads return `MEASUREMENT_NOT_READY` until the conversion time has elapsed and `CNVRF` is observed.
+- Bus voltage and raw energy are treated as unsigned values; shunt voltage, current, and charge remain signed.
 
 ## License
 

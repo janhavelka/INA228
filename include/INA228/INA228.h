@@ -33,11 +33,11 @@ struct Measurement {
 /// Raw register values
 struct RawSample {
   int32_t vshunt = 0;   ///< Raw shunt voltage (20-bit, signed, bits 23:4)
-  int32_t vbus = 0;     ///< Raw bus voltage (20-bit, unsigned, bits 23:4)
+  uint32_t vbus = 0;    ///< Raw bus voltage (20-bit, unsigned, bits 23:4)
   int16_t dietemp = 0;  ///< Raw die temperature (16-bit, signed)
   int32_t current = 0;  ///< Raw current (20-bit, signed, bits 23:4)
   uint32_t power = 0;   ///< Raw power (24-bit, unsigned)
-  int64_t energy = 0;   ///< Raw energy (40-bit, unsigned)
+  uint64_t energy = 0;  ///< Raw energy (40-bit, unsigned)
   int64_t charge = 0;   ///< Raw charge (40-bit, signed)
 };
 
@@ -137,11 +137,13 @@ public:
   // =========================================================================
 
   /// Read all available measurements into a float structure
+  /// Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
   /// @param out Measurement result
   /// @return Status::Ok() on success
   Status readMeasurement(Measurement& out);
 
   /// Read raw register values for all channels
+  /// Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
   /// @param out RawSample structure
   /// @return Status::Ok() on success
   Status readRawSample(RawSample& out);
@@ -201,7 +203,7 @@ public:
   /// Trigger a one-shot conversion with specified inputs
   /// Writing the MODE bits restarts any conversion in progress.
   /// @param mode One of TRIG_* modes
-  /// @return Status::Ok() on success
+  /// @return Err::IN_PROGRESS when the conversion was started
   Status triggerConversion(Mode mode);
 
   /// Set bus voltage conversion time
@@ -221,6 +223,8 @@ public:
   Status setAdcRange(AdcRange range);
 
   /// Update shunt calibration (SHUNT_CAL register)
+  /// Cache and scaling update only after the register write succeeds. If the
+  /// computed SHUNT_CAL value clamps, currentLsb() reflects the clamped value.
   /// @param shuntOhm Shunt resistance in ohms
   /// @param maxCurrentA Maximum expected current in amps
   /// @return Status::Ok() on success
@@ -379,12 +383,16 @@ private:
   /// Called ONLY from tracked transport wrappers
   Status _updateHealth(const Status& st);
 
+  /// Record non-transport semantic failures that make recovery unsuccessful.
+  Status _recordFailure(const Status& st);
+
   // =========================================================================
   // Internal Helpers
   // =========================================================================
 
   Status _applyConfig();
   Status _applyCalibration();
+  Status _ensureMeasurementReadyForRead();
   uint32_t _nowMs() const;
 
   /// Build ADC_CONFIG register value from current config

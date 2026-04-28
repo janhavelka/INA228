@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <cstdlib>
 #include <limits>
+#include "examples/common/CliStyle.h"
 #include "examples/common/Log.h"
 #include "examples/common/BoardConfig.h"
 #include "examples/common/BusDiag.h"
@@ -302,6 +303,10 @@ const char* errToStr(INA228::Err err) {
     case Err::MATH_OVERFLOW:         return "MATH_OVERFLOW";
     case Err::BUSY:                  return "BUSY";
     case Err::IN_PROGRESS:           return "IN_PROGRESS";
+    case Err::I2C_NACK_ADDR:         return "I2C_NACK_ADDR";
+    case Err::I2C_NACK_DATA:         return "I2C_NACK_DATA";
+    case Err::I2C_TIMEOUT:           return "I2C_TIMEOUT";
+    case Err::I2C_BUS:               return "I2C_BUS";
     default:                         return "UNKNOWN";
   }
 }
@@ -998,80 +1003,73 @@ void runSelfTest() {
 // ============================================================================
 
 void printHelp() {
-  auto helpSection = [](const char* title) {
-    Serial.printf("\n%s[%s]%s\n", LOG_COLOR_GREEN, title, LOG_COLOR_RESET);
-  };
-  auto helpItem = [](const char* cmd, const char* desc) {
-    Serial.printf("  %s%-32s%s - %s\n", LOG_COLOR_CYAN, cmd, LOG_COLOR_RESET, desc);
-  };
-
   Serial.println();
-  Serial.printf("%s=== INA228 CLI Help ===%s\n", LOG_COLOR_CYAN, LOG_COLOR_RESET);
+  cli::printHelpHeader("INA228 CLI Help");
 
-  helpSection("Common");
-  helpItem("help / ?", "Show this help");
-  helpItem("version / ver", "Print firmware and library version info");
-  helpItem("scan", "Scan I2C bus and probe 0x40-0x4F for INA228 IDs");
-  helpItem("scanina", "Probe 0x40-0x4F for valid INA228 IDs");
-  helpItem("read", "Read all measurements");
-  helpItem("raw", "Read raw register values");
-  helpItem("timing", "Show conversion timing and calibration info");
+  cli::printHelpSection("Common");
+  cli::printHelpItem("help / ?", "Show this help");
+  cli::printHelpItem("version / ver", "Print firmware and library version info");
+  cli::printHelpItem("scan", "Scan I2C bus and probe 0x40-0x4F for INA228 IDs");
+  cli::printHelpItem("scanina", "Probe 0x40-0x4F for valid INA228 IDs");
+  cli::printHelpItem("read", "Read all measurements");
+  cli::printHelpItem("raw", "Read raw register values");
+  cli::printHelpItem("timing", "Show conversion timing and calibration info");
 
-  helpSection("Measurement");
-  helpItem("vbus", "Read bus voltage");
-  helpItem("vshunt", "Read shunt voltage");
-  helpItem("temp", "Read die temperature");
-  helpItem("current", "Read current");
-  helpItem("power", "Read power");
-  helpItem("energy", "Read accumulated energy");
-  helpItem("charge", "Read accumulated charge");
-  helpItem("ready", "Check if conversion is ready");
-  helpItem("trigger [mode]", "Trigger single-shot conversion (0-7)");
+  cli::printHelpSection("Measurement");
+  cli::printHelpItem("vbus", "Read bus voltage");
+  cli::printHelpItem("vshunt", "Read shunt voltage");
+  cli::printHelpItem("temp", "Read die temperature");
+  cli::printHelpItem("current", "Read current");
+  cli::printHelpItem("power", "Read power");
+  cli::printHelpItem("energy", "Read accumulated energy");
+  cli::printHelpItem("charge", "Read accumulated charge");
+  cli::printHelpItem("ready", "Check if conversion is ready");
+  cli::printHelpItem("trigger [mode]", "Trigger single-shot conversion (0-7)");
 
-  helpSection("Configuration");
-  helpItem("mode [0..15]", "Set or show operating mode");
-  helpItem("convtime [vbus|vsh|temp <0..7>]", "Set conversion time per channel");
-  helpItem("averaging [0..7]", "Set averaging count");
-  helpItem("adcrange [0|1]", "Set shunt ADC range");
-  helpItem("cal <shunt_ohm> <max_current_a>", "Show or update calibration");
-  helpItem("tempco [ppm]", "Show or set shunt temp coefficient");
-  helpItem("tempcomp [0|1]", "Show or enable temp compensation");
-  helpItem("delay [0..255]", "Show or set conversion delay (2 ms steps)");
-  helpItem("cfg / settings", "Show active settings");
-  helpItem("addr [0x40..0x4F]", "Show or set target INA228 address");
-  helpItem("init [0x40..0x4F]", "Re-initialize device at current or given address");
-  helpItem("end", "Shutdown driver");
-  helpItem("reset", "Software reset device");
-  helpItem("rstacc", "Reset energy/charge accumulators");
+  cli::printHelpSection("Configuration");
+  cli::printHelpItem("mode [0..15]", "Set or show operating mode");
+  cli::printHelpItem("convtime [vbus|vsh|temp <0..7>]", "Set conversion time per channel");
+  cli::printHelpItem("averaging [0..7]", "Set averaging count");
+  cli::printHelpItem("adcrange [0|1]", "Set shunt ADC range");
+  cli::printHelpItem("cal <shunt_ohm> <max_current_a>", "Show or update calibration");
+  cli::printHelpItem("tempco [ppm]", "Show or set shunt temp coefficient");
+  cli::printHelpItem("tempcomp [0|1]", "Show or enable temp compensation");
+  cli::printHelpItem("delay [0..255]", "Show or set conversion delay (2 ms steps)");
+  cli::printHelpItem("cfg / settings", "Show active settings");
+  cli::printHelpItem("addr [0x40..0x4F]", "Show or set target INA228 address");
+  cli::printHelpItem("init [0x40..0x4F]", "Re-initialize device at current or given address");
+  cli::printHelpItem("end", "Shutdown driver");
+  cli::printHelpItem("reset", "Software reset device");
+  cli::printHelpItem("rstacc", "Reset energy/charge accumulators");
 
-  helpSection("Alert & Diagnostics");
-  helpItem("diag", "Read diagnostic/alert flags");
-  helpItem("diagraw", "Read raw DIAG_ALRT register");
-  helpItem("alatch <0|1>", "Set alert latch mode");
-  helpItem("cnvralert <0|1>", "Enable conversion-ready alert output");
-  helpItem("alslow <0|1>", "Set slow-alert mode");
-  helpItem("apol <0|1>", "Set alert polarity");
-  helpItem("sovl <volts>", "Set shunt overvoltage threshold");
-  helpItem("suvl <volts>", "Set shunt undervoltage threshold");
-  helpItem("bovl <volts>", "Set bus overvoltage threshold");
-  helpItem("buvl <volts>", "Set bus undervoltage threshold");
-  helpItem("tmplim <degC>", "Set temperature over-limit threshold");
-  helpItem("pwrlim <watts>", "Set power over-limit threshold");
-  helpItem("mfgid", "Read manufacturer ID (expect 0x5449)");
-  helpItem("devid", "Read device ID (expect 0x2281)");
-  helpItem("reg16 <addr>", "Read 16-bit register");
-  helpItem("reg24 <addr>", "Read 24-bit register");
-  helpItem("reg40 <addr>", "Read 40-bit register");
-  helpItem("wreg16 <addr> <val>", "Write 16-bit register (diagnostic only; may desync cached config)");
+  cli::printHelpSection("Alert & Diagnostics");
+  cli::printHelpItem("diag", "Read diagnostic/alert flags");
+  cli::printHelpItem("diagraw", "Read raw DIAG_ALRT register");
+  cli::printHelpItem("alatch <0|1>", "Set alert latch mode");
+  cli::printHelpItem("cnvralert <0|1>", "Enable conversion-ready alert output");
+  cli::printHelpItem("alslow <0|1>", "Set slow-alert mode");
+  cli::printHelpItem("apol <0|1>", "Set alert polarity");
+  cli::printHelpItem("sovl <volts>", "Set shunt overvoltage threshold");
+  cli::printHelpItem("suvl <volts>", "Set shunt undervoltage threshold");
+  cli::printHelpItem("bovl <volts>", "Set bus overvoltage threshold");
+  cli::printHelpItem("buvl <volts>", "Set bus undervoltage threshold");
+  cli::printHelpItem("tmplim <degC>", "Set temperature over-limit threshold");
+  cli::printHelpItem("pwrlim <watts>", "Set power over-limit threshold");
+  cli::printHelpItem("mfgid", "Read manufacturer ID (expect 0x5449)");
+  cli::printHelpItem("devid", "Read device ID (expect 0x2281)");
+  cli::printHelpItem("reg16 <addr>", "Read 16-bit register");
+  cli::printHelpItem("reg24 <addr>", "Read 24-bit register");
+  cli::printHelpItem("reg40 <addr>", "Read 40-bit register");
+  cli::printHelpItem("wreg16 <addr> <val>", "Write 16-bit register (diagnostic only; may desync cached config)");
 
-  helpSection("Diagnostics");
-  helpItem("drv", "Show driver state and health");
-  helpItem("probe", "Probe device (no health tracking)");
-  helpItem("recover", "Manual recovery attempt");
-  helpItem("verbose [0|1]", "Enable/disable verbose output");
-  helpItem("stress [N]", "Run N measurement cycles (default 10)");
-  helpItem("stress_mix [N]", "Run N mixed-operation cycles (default 50)");
-  helpItem("selftest", "Run safe command self-test report");
+  cli::printHelpSection("Diagnostics");
+  cli::printHelpItem("drv", "Show driver state and health");
+  cli::printHelpItem("probe", "Probe device (no health tracking)");
+  cli::printHelpItem("recover", "Manual recovery attempt");
+  cli::printHelpItem("verbose [0|1]", "Enable/disable verbose output");
+  cli::printHelpItem("stress [N]", "Run N measurement cycles (default 10)");
+  cli::printHelpItem("stress_mix [N]", "Run N mixed-operation cycles (default 50)");
+  cli::printHelpItem("selftest", "Run safe command self-test report");
 }
 
 // ============================================================================
@@ -1192,9 +1190,10 @@ void processCommand(const String& cmdLine) {
 
   if (cmd == "trigger") {
     auto st = device.triggerConversion(Mode::TRIG_ALL);
+    const bool accepted = st.ok() || st.inProgress();
     LOGI("triggerConversion(TRIG_ALL): %s%s%s",
-         LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
-    if (!st.ok()) printStatus(st);
+         LOG_COLOR_RESULT(accepted), errToStr(st.code), LOG_COLOR_RESET);
+    if (!accepted) printStatus(st);
     return;
   }
 
@@ -1205,9 +1204,10 @@ void processCommand(const String& cmdLine) {
       return;
     }
     auto st = device.triggerConversion(static_cast<Mode>(val));
+    const bool accepted = st.ok() || st.inProgress();
     LOGI("triggerConversion(%d): %s%s%s",
-         val, LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
-    if (!st.ok()) printStatus(st);
+         val, LOG_COLOR_RESULT(accepted), errToStr(st.code), LOG_COLOR_RESET);
+    if (!accepted) printStatus(st);
     return;
   }
 
@@ -1833,7 +1833,7 @@ void setup() {
     printDriverHealth();
   }
   printHelp();
-  Serial.print("> ");
+  cli::printPrompt();
 }
 
 void loop() {
@@ -1846,7 +1846,7 @@ void loop() {
       if (inputBuffer.length() > 0) {
         processCommand(inputBuffer);
         inputBuffer = "";
-        Serial.print("> ");
+        cli::printPrompt();
       }
     } else {
       inputBuffer += c;
