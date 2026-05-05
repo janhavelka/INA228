@@ -15,6 +15,24 @@ namespace {
 
 static constexpr size_t MAX_WRITE_LEN = 6;
 
+class ScopedOfflineI2cAllowance {
+public:
+  explicit ScopedOfflineI2cAllowance(bool& flag, bool allow) : _flag(flag), _old(flag) {
+    _flag = allow;
+  }
+
+  ~ScopedOfflineI2cAllowance() {
+    _flag = _old;
+  }
+
+  ScopedOfflineI2cAllowance(const ScopedOfflineI2cAllowance&) = delete;
+  ScopedOfflineI2cAllowance& operator=(const ScopedOfflineI2cAllowance&) = delete;
+
+private:
+  bool& _flag;
+  bool _old;
+};
+
 static bool isValidAddress(uint8_t addr) {
   return addr >= 0x40 && addr <= 0x4F;
 }
@@ -320,52 +338,60 @@ Status INA228::recover() {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  uint16_t mfgId = 0;
-  Status st = readReg16(cmd::REG_MANUFACTURER_ID, mfgId);
-  if (!st.ok()) {
-    return st;
-  }
-  if (mfgId != cmd::MANUFACTURER_ID) {
-    return _recordFailure(
-        Status::Error(Err::DEVICE_ID_MISMATCH, "Manufacturer ID mismatch",
-                      static_cast<int32_t>(mfgId)));
-  }
+  const bool startedOffline = _driverState == DriverState::OFFLINE;
+  ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
+  Status result = [this]() -> Status {
+    uint16_t mfgId = 0;
+    Status st = readReg16(cmd::REG_MANUFACTURER_ID, mfgId);
+    if (!st.ok()) {
+      return st;
+    }
+    if (mfgId != cmd::MANUFACTURER_ID) {
+      return _recordFailure(
+          Status::Error(Err::DEVICE_ID_MISMATCH, "Manufacturer ID mismatch",
+                        static_cast<int32_t>(mfgId)));
+    }
 
-  uint16_t devId = 0;
-  st = readReg16(cmd::REG_DEVICE_ID, devId);
-  if (!st.ok()) {
-    return st;
-  }
-  if (devId != cmd::DEVICE_ID) {
-    return _recordFailure(
-        Status::Error(Err::DEVICE_ID_MISMATCH, "Device ID mismatch",
-                      static_cast<int32_t>(devId)));
-  }
+    uint16_t devId = 0;
+    st = readReg16(cmd::REG_DEVICE_ID, devId);
+    if (!st.ok()) {
+      return st;
+    }
+    if (devId != cmd::DEVICE_ID) {
+      return _recordFailure(
+          Status::Error(Err::DEVICE_ID_MISMATCH, "Device ID mismatch",
+                        static_cast<int32_t>(devId)));
+    }
 
-  uint16_t diagAlrt = 0;
-  st = readReg16(cmd::REG_DIAG_ALRT, diagAlrt);
-  if (!st.ok()) {
-    return st;
-  }
-  if ((diagAlrt & cmd::DIAG_MEMSTAT) == 0) {
-    return _recordFailure(
-        Status::Error(Err::MEMORY_ERROR, "NV trim memory checksum error"));
-  }
+    uint16_t diagAlrt = 0;
+    st = readReg16(cmd::REG_DIAG_ALRT, diagAlrt);
+    if (!st.ok()) {
+      return st;
+    }
+    if ((diagAlrt & cmd::DIAG_MEMSTAT) == 0) {
+      return _recordFailure(
+          Status::Error(Err::MEMORY_ERROR, "NV trim memory checksum error"));
+    }
 
-  _trigPending = false;
-  _trigStartMs = 0;
+    _trigPending = false;
+    _trigStartMs = 0;
 
-  st = _applyConfig();
-  if (!st.ok()) {
-    return st;
+    st = _applyConfig();
+    if (!st.ok()) {
+      return st;
+    }
+
+    st = _applyCalibration();
+    if (!st.ok()) {
+      return st;
+    }
+
+    return Status::Ok();
+  }();
+  if (startedOffline && !result.ok() && !result.inProgress()) {
+    _reassertOfflineLatch();
   }
-
-  st = _applyCalibration();
-  if (!st.ok()) {
-    return st;
-  }
-
-  return Status::Ok();
+  return result;
 }
 
 // ===========================================================================
@@ -1078,14 +1104,27 @@ Status INA228::softReset() {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
+  const bool startedOffline = _driverState == DriverState::OFFLINE;
+  ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
   Status st = writeReg16(cmd::REG_CONFIG, cmd::CONFIG_RST);
-  if (!st.ok()) return st;
+  if (!st.ok()) {
+    return st;
+  }
 
   // After reset, re-apply all configuration
   st = _applyConfig();
-  if (!st.ok()) return st;
+  if (!st.ok()) {
+    if (startedOffline) {
+      _reassertOfflineLatch();
+    }
+    return st;
+  }
 
-  return _applyCalibration();
+  st = _applyCalibration();
+  if (startedOffline && !st.ok() && !st.inProgress()) {
+    _reassertOfflineLatch();
+  }
+  return st;
 }
 
 Status INA228::resetAccumulators() {
@@ -1171,6 +1210,10 @@ Status INA228::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
   if (txBuf == nullptr || txLen == 0 || (rxLen > 0 && rxBuf == nullptr)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
   }
+  Status allowed = _ensureNormalI2cAllowed();
+  if (!allowed.ok()) {
+    return allowed;
+  }
 
   Status st = _i2cWriteReadRaw(txBuf, txLen, rxBuf, rxLen);
   if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
@@ -1182,6 +1225,10 @@ Status INA228::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
 Status INA228::_i2cWriteTracked(const uint8_t* buf, size_t len) {
   if (buf == nullptr || len == 0) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
+  }
+  Status allowed = _ensureNormalI2cAllowed();
+  if (!allowed.ok()) {
+    return allowed;
   }
 
   Status st = _i2cWriteRaw(buf, len);
@@ -1347,6 +1394,21 @@ Status INA228::_recordFailure(const Status& st) {
   }
 
   return st;
+}
+
+void INA228::_reassertOfflineLatch() {
+  _driverState = DriverState::OFFLINE;
+  const uint8_t threshold = _config.offlineThreshold == 0 ? 1 : _config.offlineThreshold;
+  if (_consecutiveFailures < threshold) {
+    _consecutiveFailures = threshold;
+  }
+}
+
+Status INA228::_ensureNormalI2cAllowed() const {
+  if (_initialized && _driverState == DriverState::OFFLINE && !_allowOfflineI2c) {
+    return Status::Error(Err::BUSY, "Driver is offline; call recover()");
+  }
+  return Status::Ok();
 }
 
 // ===========================================================================

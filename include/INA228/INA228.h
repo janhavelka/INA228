@@ -385,6 +385,10 @@ private:
 
   /// Record non-transport semantic failures that make recovery unsuccessful.
   Status _recordFailure(const Status& st);
+  void _reassertOfflineLatch();
+
+  /// Reject normal public I2C while the driver is latched OFFLINE.
+  Status _ensureNormalI2cAllowed() const;
 
   // =========================================================================
   // Internal Helpers
@@ -422,6 +426,7 @@ private:
   uint8_t _consecutiveFailures = 0;
   uint32_t _totalFailures = 0;
   uint32_t _totalSuccess = 0;
+  bool _allowOfflineI2c = false;
 
   // Calibration state
   float _currentLsb = 0.0f;  ///< Amps per LSB (0 = uncalibrated)

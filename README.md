@@ -147,9 +147,10 @@ begin() success --> READY
 end() --------> UNINIT
 ```
 
-- Any success in DEGRADED/OFFLINE returns to READY.
+- Any successful tracked I2C operation in DEGRADED returns to READY.
+- OFFLINE is latched. Normal public I2C operations return `BUSY` with `Driver is offline; call recover()` without touching the bus.
 - `probe()` uses raw I2C and does NOT affect health counters.
-- `recover()` uses tracked I2C and updates health.
+- `recover()` is the explicit path out of OFFLINE; it uses tracked I2C and updates health.
 
 ## Behavioral Contracts
 
@@ -158,6 +159,7 @@ end() --------> UNINIT
 3. **Resource ownership**: I2C bus owned by application; library receives transport callbacks.
 4. **Memory behavior**: No heap allocation after `begin()`.
 5. **Error handling**: All fallible APIs return `Status`. Check with `st.ok()`.
+6. **Recovery model**: `OFFLINE` is latched. Supervisors should call `recover()` after applying any bus-level recovery policy.
 
 ## INA228 Address Configuration
 

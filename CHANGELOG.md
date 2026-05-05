@@ -9,11 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Native tests for calibration clamping, setter rollback, triggered conversion readiness, unsigned raw bus/energy values, and threshold validation.
+- Native coverage proving latched `OFFLINE` blocks normal I2C operations without touching the bus while `recover()` remains the explicit recovery path.
 
 ### Changed
 - Triggered conversions now return `IN_PROGRESS` and block measurement reads with `MEASUREMENT_NOT_READY` until conversion time has elapsed and CNVRF is set.
+- Explicit recovery/reset bypass internals now use the shared `ScopedOfflineI2cAllowance` / `_reassertOfflineLatch()` procedure so failed recovery attempts that begin from `OFFLINE` keep the latch asserted.
 - Calibration now adjusts `currentLsb()` to the actual programmed `SHUNT_CAL` value when register clamping occurs.
 - Raw bus voltage and raw energy API types now reflect unsigned device registers.
+- Health behavior is now standardized on latched `OFFLINE`: normal public I2C operations return `BUSY` with `Driver is offline; call recover()` and do not touch I2C until `recover()` succeeds.
 
 ### Fixed
 - Config and calibration setters no longer commit cached values when I2C writes fail.
