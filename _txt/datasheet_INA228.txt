@@ -1,4 +1,4 @@
-=== SOURCE: datasheet_INA228.pdf ===
+=== SOURCE: INA228_datasheet.pdf ===
 === PAGES: 48 ===
 
 
