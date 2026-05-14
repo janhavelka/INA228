@@ -8,7 +8,7 @@
 
 namespace INA228 {
 
-/// I2C write callback signature
+/// @brief I2C write callback signature.
 /// @param addr     I2C device address (7-bit)
 /// @param data     Pointer to data to write
 /// @param len      Number of bytes to write
@@ -18,7 +18,7 @@ namespace INA228 {
 using I2cWriteFn = Status (*)(uint8_t addr, const uint8_t* data, size_t len,
                               uint32_t timeoutMs, void* user);
 
-/// I2C write-then-read callback signature
+/// @brief I2C write-then-read callback signature.
 /// @param addr     I2C device address (7-bit)
 /// @param txData   Pointer to data to write
 /// @param txLen    Number of bytes to write
@@ -31,12 +31,12 @@ using I2cWriteReadFn = Status (*)(uint8_t addr, const uint8_t* txData, size_t tx
                                   uint8_t* rxData, size_t rxLen, uint32_t timeoutMs,
                                   void* user);
 
-/// Millisecond timestamp callback.
+/// @brief Millisecond timestamp callback.
 /// @param user User context pointer passed through from Config
 /// @return Current monotonic milliseconds
 using NowMsFn = uint32_t (*)(void* user);
 
-/// ADC operating mode (MODE field in ADC_CONFIG register, bits 15:12)
+/// @brief ADC operating mode (MODE field in ADC_CONFIG register, bits 15:12).
 enum class Mode : uint8_t {
   SHUTDOWN         = 0x0,  ///< ADC off
   TRIG_BUS         = 0x1,  ///< Triggered bus voltage only
@@ -56,7 +56,7 @@ enum class Mode : uint8_t {
   CONT_ALL         = 0xF   ///< Continuous all three (default)
 };
 
-/// ADC conversion time (for VBUSCT, VSHCT, VTCT fields)
+/// @brief ADC conversion time for VBUSCT, VSHCT, and VTCT fields.
 enum class ConvTime : uint8_t {
   US_50   = 0x0,  ///< 50 µs
   US_84   = 0x1,  ///< 84 µs
@@ -68,7 +68,7 @@ enum class ConvTime : uint8_t {
   US_4120 = 0x7   ///< 4120 µs
 };
 
-/// Averaging count (AVG field in ADC_CONFIG register)
+/// @brief Averaging count (AVG field in ADC_CONFIG register).
 enum class Averaging : uint8_t {
   AVG_1    = 0x0,  ///< 1 sample (default)
   AVG_4    = 0x1,  ///< 4 samples
@@ -80,13 +80,13 @@ enum class Averaging : uint8_t {
   AVG_1024 = 0x7   ///< 1024 samples
 };
 
-/// Shunt full-scale range (ADCRANGE bit in CONFIG register)
+/// @brief Shunt full-scale range (ADCRANGE bit in CONFIG register).
 enum class AdcRange : uint8_t {
   MV_163_84 = 0,  ///< ±163.84 mV (default)
   MV_40_96  = 1   ///< ±40.96 mV (4x higher resolution)
 };
 
-/// Configuration for INA228 driver
+/// @brief Configuration for INA228 driver.
 struct Config {
   // === I2C Transport (required) ===
   I2cWriteFn i2cWrite = nullptr;         ///< I2C write function pointer

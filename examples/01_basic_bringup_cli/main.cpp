@@ -527,6 +527,30 @@ bool parseFloat(const String& token, float& out) {
   return true;
 }
 
+float shuntLimitToMv(uint16_t raw) {
+  const double lsb = (device.getConfig().adcRange == INA228::AdcRange::MV_40_96)
+                         ? INA228::cmd::SHUNT_THRESHOLD_LSB_RANGE1
+                         : INA228::cmd::SHUNT_THRESHOLD_LSB_RANGE0;
+  return static_cast<float>(static_cast<int16_t>(raw) * lsb * 1000.0);
+}
+
+float busLimitToV(uint16_t raw) {
+  return static_cast<float>((raw & 0x7FFFu) * INA228::cmd::BUS_THRESHOLD_LSB);
+}
+
+float tempLimitToC(uint16_t raw) {
+  return static_cast<float>(static_cast<int16_t>(raw) * INA228::cmd::TEMP_LSB);
+}
+
+double powerLimitToW(uint16_t raw) {
+  const float currentLsb = device.currentLsb();
+  if (currentLsb <= 0.0f) {
+    return 0.0;
+  }
+  return static_cast<double>(raw) * 256.0 *
+         INA228::cmd::POWER_COEFF * static_cast<double>(currentLsb);
+}
+
 void printMeasurement() {
   INA228::Measurement m{};
   auto st = device.readMeasurement(m);
@@ -600,6 +624,38 @@ void printDiag() {
   Serial.printf("  POL:       %s\n", log_bool_str(diag.pOL));
 }
 
+void printAlertLimits() {
+  uint16_t sovl = 0;
+  uint16_t suvl = 0;
+  uint16_t bovl = 0;
+  uint16_t buvl = 0;
+  uint16_t temp = 0;
+  uint16_t power = 0;
+
+  INA228::Status st = device.readRegister16(INA228::cmd::REG_SOVL, sovl);
+  if (st.ok()) st = device.readRegister16(INA228::cmd::REG_SUVL, suvl);
+  if (st.ok()) st = device.readRegister16(INA228::cmd::REG_BOVL, bovl);
+  if (st.ok()) st = device.readRegister16(INA228::cmd::REG_BUVL, buvl);
+  if (st.ok()) st = device.readRegister16(INA228::cmd::REG_TEMP_LIMIT, temp);
+  if (st.ok()) st = device.readRegister16(INA228::cmd::REG_PWR_LIMIT, power);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+
+  Serial.println("=== Alert Limits ===");
+  Serial.printf("  SOVL:      0x%04X  %.3f mV\n", sovl, static_cast<double>(shuntLimitToMv(sovl)));
+  Serial.printf("  SUVL:      0x%04X  %.3f mV\n", suvl, static_cast<double>(shuntLimitToMv(suvl)));
+  Serial.printf("  BOVL:      0x%04X  %.4f V\n", bovl, static_cast<double>(busLimitToV(bovl)));
+  Serial.printf("  BUVL:      0x%04X  %.4f V\n", buvl, static_cast<double>(busLimitToV(buvl)));
+  Serial.printf("  TEMP_LIMIT:0x%04X  %.2f C\n", temp, static_cast<double>(tempLimitToC(temp)));
+  if (device.currentLsb() > 0.0f) {
+    Serial.printf("  PWR_LIMIT: 0x%04X  %.6f W\n", power, powerLimitToW(power));
+  } else {
+    Serial.printf("  PWR_LIMIT: 0x%04X  requires calibration for W\n", power);
+  }
+}
+
 void printTimingInfo() {
   bool ready = false;
   const INA228::Status st = device.isConversionReady(ready);
@@ -615,19 +671,43 @@ void printTimingInfo() {
 }
 
 void printSettings() {
-  INA228::Mode mode;
-  INA228::Status st = device.getMode(mode);
+  INA228::SettingsSnapshot snap;
+  INA228::Status st = device.getSettings(snap);
   if (!st.ok()) {
     printStatus(st);
     return;
   }
 
   Serial.println("=== Active Settings ===");
-  Serial.printf("  Address:        0x%02X\n", configuredAddress());
-  Serial.printf("  Mode:           %s (%u)\n", modeToStr(mode), static_cast<unsigned>(mode));
-  Serial.printf("  Est. conv time: %lu us\n",
+  Serial.printf("  Initialized:      %s\n", log_bool_str(snap.initialized));
+  Serial.printf("  State:            %s\n", stateToStr(snap.state));
+  Serial.printf("  Address:          0x%02X\n", snap.i2cAddress);
+  Serial.printf("  I2C timeout:      %lu ms\n", static_cast<unsigned long>(snap.i2cTimeoutMs));
+  Serial.printf("  Offline threshold:%u\n", static_cast<unsigned>(snap.offlineThreshold));
+  Serial.printf("  nowMs hook:       %s\n", log_bool_str(snap.hasNowMsHook));
+  Serial.printf("  Mode:             %s (%u)\n", modeToStr(snap.mode), static_cast<unsigned>(snap.mode));
+  Serial.printf("  VBUSCT/VSHCT/VTCT:%s / %s / %s\n",
+                convTimeToStr(snap.vbusConvTime),
+                convTimeToStr(snap.vshuntConvTime),
+                convTimeToStr(snap.vtempConvTime));
+  Serial.printf("  Averaging:        %s samples\n", avgToStr(snap.averaging));
+  Serial.printf("  ADC range:        %s\n", adcRangeToStr(snap.adcRange));
+  Serial.printf("  Conversion delay: %u x 2 ms (%u ms)\n",
+                snap.convDelayMs2,
+                static_cast<unsigned>(snap.convDelayMs2) * 2u);
+  Serial.printf("  Temp compensation:%s  tempco=%u ppm/degC\n",
+                log_bool_str(snap.tempCompEnabled),
+                snap.shuntTempCoeffPpmC);
+  Serial.printf("  Calibration:      Rshunt=%.6f ohm  MaxCurrent=%.6f A\n",
+                snap.shuntResistanceOhm,
+                snap.maxExpectedCurrentA);
+  Serial.printf("  Triggered state:  pending=%s start=%lu ms\n",
+                log_bool_str(snap.triggeredConversionPending),
+                static_cast<unsigned long>(snap.triggeredConversionStartMs));
+  Serial.printf("  Est. conv time:   %lu us\n",
                 static_cast<unsigned long>(device.estimateConversionTimeUs()));
-  Serial.printf("  CURRENT_LSB:    %.9f A\n", device.currentLsb());
+  Serial.printf("  CURRENT_LSB:      %.9f A\n", snap.currentLsb);
+  Serial.printf("  SHUNT_CAL:        0x%04X\n", snap.shuntCal);
 }
 
 void printVerboseState() {
@@ -1045,6 +1125,7 @@ void printHelp() {
   cli::printHelpSection("Alert & Diagnostics");
   cli::printHelpItem("diag", "Read diagnostic/alert flags");
   cli::printHelpItem("diagraw", "Read raw DIAG_ALRT register");
+  cli::printHelpItem("limits", "Read alert limit registers with decoded units");
   cli::printHelpItem("alatch <0|1>", "Set alert latch mode");
   cli::printHelpItem("cnvralert <0|1>", "Enable conversion-ready alert output");
   cli::printHelpItem("alslow <0|1>", "Set slow-alert mode");
@@ -1272,8 +1353,17 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd == "convtime") {
+    const auto& cfg = device.getConfig();
+    Serial.printf("Conversion times: VBUS=%s  VSHUNT=%s  TEMP=%s\n",
+                  convTimeToStr(cfg.vbusConvTime),
+                  convTimeToStr(cfg.vshuntConvTime),
+                  convTimeToStr(cfg.vtempConvTime));
+    return;
+  }
+
   if (cmd == "averaging") {
-    LOGI("Use: averaging <0..7> (0=1, 1=4, 2=16, 3=64, 4=128, 5=256, 6=512, 7=1024)");
+    Serial.printf("Averaging: %s samples\n", avgToStr(device.getConfig().averaging));
     return;
   }
 
@@ -1292,7 +1382,7 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "adcrange") {
-    LOGI("Use: adcrange <0|1> (0=+/-163.84mV, 1=+/-40.96mV)");
+    Serial.printf("ADC range: %s\n", adcRangeToStr(device.getConfig().adcRange));
     return;
   }
 
@@ -1489,6 +1579,11 @@ void processCommand(const String& cmdLine) {
     } else {
       printStatus(st);
     }
+    return;
+  }
+
+  if (cmd == "limits") {
+    printAlertLimits();
     return;
   }
 

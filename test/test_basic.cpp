@@ -192,6 +192,57 @@ void test_config_defaults() {
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, cfg.maxExpectedCurrentA);
 }
 
+void test_get_settings_snapshot() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.i2cAddress = 0x4F;
+  cfg.mode = Mode::CONT_TEMP_SHUNT;
+  cfg.vbusConvTime = ConvTime::US_50;
+  cfg.vshuntConvTime = ConvTime::US_84;
+  cfg.vtempConvTime = ConvTime::US_150;
+  cfg.averaging = Averaging::AVG_16;
+  cfg.adcRange = AdcRange::MV_40_96;
+  cfg.shuntResistanceOhm = 0.015f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  cfg.tempCompEnabled = true;
+  cfg.shuntTempCoeffPpmC = 3900;
+  cfg.convDelayMs2 = 7;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  SettingsSnapshot snap;
+  Status st = dev.getSettings(snap);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(snap.initialized);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
+                          static_cast<uint8_t>(snap.state));
+  TEST_ASSERT_EQUAL_HEX8(0x4F, snap.i2cAddress);
+  TEST_ASSERT_EQUAL_UINT32(10u, snap.i2cTimeoutMs);
+  TEST_ASSERT_EQUAL_UINT8(3u, snap.offlineThreshold);
+  TEST_ASSERT_TRUE(snap.hasNowMsHook);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::CONT_TEMP_SHUNT),
+                          static_cast<uint8_t>(snap.mode));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConvTime::US_50),
+                          static_cast<uint8_t>(snap.vbusConvTime));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConvTime::US_84),
+                          static_cast<uint8_t>(snap.vshuntConvTime));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConvTime::US_150),
+                          static_cast<uint8_t>(snap.vtempConvTime));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Averaging::AVG_16),
+                          static_cast<uint8_t>(snap.averaging));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AdcRange::MV_40_96),
+                          static_cast<uint8_t>(snap.adcRange));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 0.015f, snap.shuntResistanceOhm);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 10.0f, snap.maxExpectedCurrentA);
+  TEST_ASSERT_TRUE(snap.tempCompEnabled);
+  TEST_ASSERT_EQUAL_UINT16(3900u, snap.shuntTempCoeffPpmC);
+  TEST_ASSERT_EQUAL_UINT8(7u, snap.convDelayMs2);
+  TEST_ASSERT_TRUE(snap.currentLsb > 0.0f);
+  TEST_ASSERT_GREATER_THAN_UINT16(0u, snap.shuntCal);
+  TEST_ASSERT_FALSE(snap.triggeredConversionPending);
+  TEST_ASSERT_EQUAL_UINT32(0u, snap.triggeredConversionStartMs);
+}
+
 // ===========================================================================
 // Lifecycle tests
 // ===========================================================================
@@ -206,7 +257,7 @@ void test_begin_rejects_missing_callbacks() {
                           static_cast<uint8_t>(dev.state()));
 }
 
-void test_begin_success_sets_ready_and_health() {
+void test_begin_success_sets_ready_without_health_counts() {
   FakeBus bus;
   INA228::INA228 dev;
   Status st = dev.begin(makeConfig(bus));
@@ -214,10 +265,11 @@ void test_begin_success_sets_ready_and_health() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
                           static_cast<uint8_t>(dev.state()));
   TEST_ASSERT_TRUE(dev.isOnline());
-  TEST_ASSERT_GREATER_THAN_UINT32(0u, dev.totalSuccess());
+  TEST_ASSERT_GREATER_THAN_UINT32(0u, bus.readCalls + bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalSuccess());
   TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
-  TEST_ASSERT_EQUAL_UINT32(bus.nowMs, dev.lastOkMs());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
 }
 
 void test_begin_rejects_invalid_address() {
@@ -248,6 +300,96 @@ void test_begin_rejects_invalid_adc_range() {
   Status st = dev.begin(cfg);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
                           static_cast<uint8_t>(st.code));
+}
+
+void test_invalid_begin_after_success_resets_default_runtime() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.i2cAddress = 0x4F;
+  cfg.offlineThreshold = 1;
+  cfg.mode = Mode::SHUTDOWN;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  const uint32_t readsBefore = bus.readCalls;
+  const uint32_t writesBefore = bus.writeCalls;
+  Config bad = makeConfig(bus);
+  bad.i2cAddress = 0x50;
+  Status st = dev.begin(bad);
+
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FALSE(dev.isInitialized());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::UNINIT),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastErrorMs());
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+
+  const Config& stored = dev.getConfig();
+  TEST_ASSERT_NULL(stored.i2cWrite);
+  TEST_ASSERT_NULL(stored.i2cWriteRead);
+  TEST_ASSERT_EQUAL_HEX8(0x40, stored.i2cAddress);
+  TEST_ASSERT_EQUAL_UINT32(50u, stored.i2cTimeoutMs);
+  TEST_ASSERT_EQUAL_UINT8(5u, stored.offlineThreshold);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::CONT_ALL),
+                          static_cast<uint8_t>(stored.mode));
+}
+
+void test_failed_begin_probe_resets_cached_config() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.i2cAddress = 0x4F;
+  cfg.mode = Mode::SHUTDOWN;
+  cfg.offlineThreshold = 1;
+  bus.readErrorRemaining = 1;
+  bus.readError = Status::Error(Err::TIMEOUT, "forced begin timeout", -10);
+
+  Status st = dev.begin(cfg);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FALSE(dev.isInitialized());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::UNINIT),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_NULL(dev.getConfig().i2cWrite);
+  TEST_ASSERT_NULL(dev.getConfig().i2cWriteRead);
+  TEST_ASSERT_EQUAL_HEX8(0x40, dev.getConfig().i2cAddress);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::CONT_ALL),
+                          static_cast<uint8_t>(dev.getConfig().mode));
+  TEST_ASSERT_EQUAL_UINT8(5u, dev.getConfig().offlineThreshold);
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, dev.currentLsb());
+}
+
+void test_begin_normalizes_offline_threshold_on_stored_copy() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.offlineThreshold = 0;
+
+  Status st = dev.begin(cfg);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(0u, cfg.offlineThreshold);
+  TEST_ASSERT_EQUAL_UINT8(1u, dev.getConfig().offlineThreshold);
+}
+
+void test_begin_programs_tempco_even_when_tempcomp_disabled() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.tempCompEnabled = false;
+  cfg.shuntTempCoeffPpmC = 3900;
+
+  Status st = dev.begin(cfg);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_HEX16(3900u, bus.reg16[cmd::REG_SHUNT_TEMPCO]);
+  TEST_ASSERT_FALSE(dev.getConfig().tempCompEnabled);
+  TEST_ASSERT_EQUAL_UINT16(3900u, dev.getConfig().shuntTempCoeffPpmC);
 }
 
 void test_begin_rejects_non_finite_calibration() {
@@ -882,11 +1024,16 @@ int main() {
   RUN_TEST(test_status_error);
   RUN_TEST(test_status_in_progress);
   RUN_TEST(test_config_defaults);
+  RUN_TEST(test_get_settings_snapshot);
   RUN_TEST(test_begin_rejects_missing_callbacks);
-  RUN_TEST(test_begin_success_sets_ready_and_health);
+  RUN_TEST(test_begin_success_sets_ready_without_health_counts);
   RUN_TEST(test_begin_rejects_invalid_address);
   RUN_TEST(test_begin_rejects_zero_timeout);
   RUN_TEST(test_begin_rejects_invalid_adc_range);
+  RUN_TEST(test_invalid_begin_after_success_resets_default_runtime);
+  RUN_TEST(test_failed_begin_probe_resets_cached_config);
+  RUN_TEST(test_begin_normalizes_offline_threshold_on_stored_copy);
+  RUN_TEST(test_begin_programs_tempco_even_when_tempcomp_disabled);
   RUN_TEST(test_begin_rejects_non_finite_calibration);
   RUN_TEST(test_end_returns_to_uninit);
   RUN_TEST(test_now_ms_fallback_uses_millis_when_callback_missing);

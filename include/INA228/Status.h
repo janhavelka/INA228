@@ -6,7 +6,7 @@
 
 namespace INA228 {
 
-/// Error codes for all INA228 operations
+/// @brief Error codes for all INA228 operations.
 enum class Err : uint8_t {
   OK = 0,                    ///< Operation successful
   NOT_INITIALIZED,           ///< begin() not called
@@ -30,7 +30,7 @@ enum class Err : uint8_t {
   I2C_BUS                    ///< I2C bus error (arbitration lost, etc.)
 };
 
-/// Status structure returned by all fallible operations
+/// @brief Status structure returned by all fallible operations.
 struct Status {
   Err code = Err::OK;
   int32_t detail = 0;        ///< Implementation-specific detail (e.g., I2C error code)

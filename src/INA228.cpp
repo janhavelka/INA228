@@ -144,8 +144,10 @@ static Status computeCalibration(float shuntOhm, float maxCurrentA, AdcRange ran
 // ===========================================================================
 
 Status INA228::begin(const Config& config) {
+  _config = Config{};
   _initialized = false;
   _driverState = DriverState::UNINIT;
+  _allowOfflineI2c = false;
 
   _lastOkMs = 0;
   _lastErrorMs = 0;
@@ -213,47 +215,63 @@ Status INA228::begin(const Config& config) {
     _config.offlineThreshold = 1;
   }
 
+  auto failBeginAfterConfig = [this](const Status& failure) {
+    _config = Config{};
+    _allowOfflineI2c = false;
+    _currentLsb = 0.0f;
+    _shuntCal = 0;
+    _trigPending = false;
+    _trigStartMs = 0;
+    return failure;
+  };
+
   // Verify device identity using raw reads (before health tracking is active)
   uint16_t mfgId = 0;
   Status st = _readReg16Raw(cmd::REG_MANUFACTURER_ID, mfgId);
   if (!st.ok()) {
-    return Status::Error(Err::DEVICE_NOT_FOUND, "Device not responding", st.detail);
+    return failBeginAfterConfig(
+        Status::Error(Err::DEVICE_NOT_FOUND, "Device not responding", st.detail));
   }
   if (mfgId != cmd::MANUFACTURER_ID) {
-    return Status::Error(Err::DEVICE_ID_MISMATCH, "Manufacturer ID mismatch",
-                        static_cast<int32_t>(mfgId));
+    return failBeginAfterConfig(
+        Status::Error(Err::DEVICE_ID_MISMATCH, "Manufacturer ID mismatch",
+                      static_cast<int32_t>(mfgId)));
   }
 
   uint16_t devId = 0;
   st = _readReg16Raw(cmd::REG_DEVICE_ID, devId);
   if (!st.ok()) {
-    return Status::Error(Err::DEVICE_NOT_FOUND, "Device ID read failed", st.detail);
+    return failBeginAfterConfig(
+        Status::Error(Err::DEVICE_NOT_FOUND, "Device ID read failed", st.detail));
   }
   if (devId != cmd::DEVICE_ID) {
-    return Status::Error(Err::DEVICE_ID_MISMATCH, "Device ID mismatch",
-                        static_cast<int32_t>(devId));
+    return failBeginAfterConfig(
+        Status::Error(Err::DEVICE_ID_MISMATCH, "Device ID mismatch",
+                      static_cast<int32_t>(devId)));
   }
 
   // Check MEMSTAT bit
   uint16_t diagAlrt = 0;
   st = _readReg16Raw(cmd::REG_DIAG_ALRT, diagAlrt);
   if (!st.ok()) {
-    return Status::Error(Err::DEVICE_NOT_FOUND, "DIAG_ALRT read failed", st.detail);
+    return failBeginAfterConfig(
+        Status::Error(Err::DEVICE_NOT_FOUND, "DIAG_ALRT read failed", st.detail));
   }
   if ((diagAlrt & cmd::DIAG_MEMSTAT) == 0) {
-    return Status::Error(Err::MEMORY_ERROR, "NV trim memory checksum error");
+    return failBeginAfterConfig(
+        Status::Error(Err::MEMORY_ERROR, "NV trim memory checksum error"));
   }
 
   // Apply configuration
   st = _applyConfig();
   if (!st.ok()) {
-    return st;
+    return failBeginAfterConfig(st);
   }
 
   // Apply calibration if provided
   st = _applyCalibration();
   if (!st.ok()) {
-    return st;
+    return failBeginAfterConfig(st);
   }
 
   _initialized = true;
@@ -392,6 +410,31 @@ Status INA228::recover() {
     _reassertOfflineLatch();
   }
   return result;
+}
+
+Status INA228::getSettings(SettingsSnapshot& out) const {
+  out.initialized = _initialized;
+  out.state = _driverState;
+  out.i2cAddress = _config.i2cAddress;
+  out.i2cTimeoutMs = _config.i2cTimeoutMs;
+  out.offlineThreshold = _config.offlineThreshold;
+  out.hasNowMsHook = _config.nowMs != nullptr;
+  out.mode = _config.mode;
+  out.vbusConvTime = _config.vbusConvTime;
+  out.vshuntConvTime = _config.vshuntConvTime;
+  out.vtempConvTime = _config.vtempConvTime;
+  out.averaging = _config.averaging;
+  out.adcRange = _config.adcRange;
+  out.shuntResistanceOhm = _config.shuntResistanceOhm;
+  out.maxExpectedCurrentA = _config.maxExpectedCurrentA;
+  out.tempCompEnabled = _config.tempCompEnabled;
+  out.shuntTempCoeffPpmC = _config.shuntTempCoeffPpmC;
+  out.convDelayMs2 = _config.convDelayMs2;
+  out.currentLsb = _currentLsb;
+  out.shuntCal = _shuntCal;
+  out.triggeredConversionPending = _trigPending;
+  out.triggeredConversionStartMs = _trigStartMs;
+  return Status::Ok();
 }
 
 // ===========================================================================
@@ -1326,21 +1369,25 @@ Status INA228::_readReg16Raw(uint8_t reg, uint16_t& value) {
 // ===========================================================================
 
 Status INA228::_updateHealth(const Status& st) {
+  if (!_initialized) {
+    return st;
+  }
+  if (st.inProgress()) {
+    return st;
+  }
+
   const uint32_t now = _nowMs();
   const uint32_t maxU32 = std::numeric_limits<uint32_t>::max();
   const uint8_t maxU8 = std::numeric_limits<uint8_t>::max();
-  const bool isSuccess = st.ok() || st.inProgress();
 
-  if (isSuccess) {
+  if (st.ok()) {
     _lastOkMs = now;
     if (_totalSuccess < maxU32) {
       _totalSuccess++;
     }
     _consecutiveFailures = 0;
 
-    if (_initialized) {
-      _driverState = DriverState::READY;
-    }
+    _driverState = DriverState::READY;
     return st;
   }
 
@@ -1353,12 +1400,10 @@ Status INA228::_updateHealth(const Status& st) {
     _consecutiveFailures++;
   }
 
-  if (_initialized) {
-    if (_consecutiveFailures >= _config.offlineThreshold) {
-      _driverState = DriverState::OFFLINE;
-    } else {
-      _driverState = DriverState::DEGRADED;
-    }
+  if (_consecutiveFailures >= _config.offlineThreshold) {
+    _driverState = DriverState::OFFLINE;
+  } else {
+    _driverState = DriverState::DEGRADED;
   }
 
   return st;
@@ -1446,8 +1491,8 @@ Status INA228::_applyConfig() {
   st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
   if (!st.ok()) return st;
 
-  // Write temperature coefficient if enabled
-  if (_config.tempCompEnabled && _config.shuntTempCoeffPpmC > 0) {
+  // Program the coefficient whenever configured; TEMPCOMP only gates its use.
+  if (_config.shuntTempCoeffPpmC > 0) {
     uint16_t tempco = _config.shuntTempCoeffPpmC & cmd::MASK_SHUNT_TEMPCO;
     st = writeReg16(cmd::REG_SHUNT_TEMPCO, tempco);
     if (!st.ok()) return st;

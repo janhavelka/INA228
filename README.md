@@ -81,6 +81,7 @@ void loop() {
 | `end()` | Shutdown and release resources |
 | `isInitialized()` | True after successful `begin()` until `end()` |
 | `getConfig()` | Return the driver's cached configuration snapshot |
+| `getSettings(snap)` | Populate a `SettingsSnapshot` with cached config, calibration, conversion, trigger, and health state without I2C |
 
 ### Measurements
 
@@ -111,6 +112,11 @@ void loop() {
 | `setShuntTempCoeff(ppm)` | Shunt temperature coefficient |
 | `softReset()` | Full software reset |
 | `resetAccumulators()` | Clear energy/charge registers |
+
+`setShuntTempCoeff(ppm)` writes the configured `SHUNT_TEMPCO` coefficient even
+when temperature compensation is disabled. `tempCompEnabled` controls whether
+the coefficient participates in calibration behavior; the register value remains
+explicitly programmed for deterministic readback.
 
 ### Health & Diagnostics
 
@@ -191,6 +197,9 @@ The canonical bringup example now includes address-aware diagnostics for shared 
 - `addr [0x40..0x4F]` selects the target device address used by the example
 - `init [addr]` re-initializes at the selected address; startup can auto-detect a single healthy INA228 if the default address fails
 - `cal`, `tempco`, `tempcomp`, `delay`, alert-threshold commands, and `reg16` / `reg24` / `reg40` / `wreg16` expose service-level diagnostics
+- `settings` prints the cached `SettingsSnapshot`; `limits` reads alert limit
+  registers with decoded units; `convtime`, `averaging`, and `adcrange` can be
+  run without arguments to query the active configuration.
 
 Raw register writes are intended for diagnostics and bring-up. They bypass the typed config helpers, so use `recover()` or `begin()` to restore cached settings after manual register edits.
 

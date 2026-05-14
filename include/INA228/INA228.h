@@ -11,7 +11,7 @@
 
 namespace INA228 {
 
-/// Driver state for health monitoring
+/// @brief Driver state for health monitoring.
 enum class DriverState : uint8_t {
   UNINIT,    ///< begin() not called or end() called
   READY,     ///< Operational, consecutiveFailures == 0
@@ -19,7 +19,7 @@ enum class DriverState : uint8_t {
   OFFLINE    ///< consecutiveFailures >= offlineThreshold
 };
 
-/// Measurement result (float, all channels)
+/// @brief Converted measurement result.
 struct Measurement {
   float shuntVoltageV = 0.0f;  ///< Shunt voltage in volts
   float busVoltageV = 0.0f;    ///< Bus voltage in volts
@@ -30,7 +30,7 @@ struct Measurement {
   double chargeC = 0.0;        ///< Accumulated charge in coulombs
 };
 
-/// Raw register values
+/// @brief Raw measurement register values.
 struct RawSample {
   int32_t vshunt = 0;   ///< Raw shunt voltage (20-bit, signed, bits 23:4)
   uint32_t vbus = 0;    ///< Raw bus voltage (20-bit, unsigned, bits 23:4)
@@ -41,7 +41,32 @@ struct RawSample {
   int64_t charge = 0;   ///< Raw charge (40-bit, signed)
 };
 
-/// Diagnostic and alert flags from DIAG_ALRT register
+/// @brief Snapshot of cached settings and runtime state without I2C access.
+struct SettingsSnapshot {
+  bool initialized = false;
+  DriverState state = DriverState::UNINIT;
+  uint8_t i2cAddress = 0x40;
+  uint32_t i2cTimeoutMs = 0;
+  uint8_t offlineThreshold = 0;
+  bool hasNowMsHook = false;
+  Mode mode = Mode::CONT_ALL;
+  ConvTime vbusConvTime = ConvTime::US_1052;
+  ConvTime vshuntConvTime = ConvTime::US_1052;
+  ConvTime vtempConvTime = ConvTime::US_1052;
+  Averaging averaging = Averaging::AVG_1;
+  AdcRange adcRange = AdcRange::MV_163_84;
+  float shuntResistanceOhm = 0.0f;
+  float maxExpectedCurrentA = 0.0f;
+  bool tempCompEnabled = false;
+  uint16_t shuntTempCoeffPpmC = 0;
+  uint8_t convDelayMs2 = 0;
+  float currentLsb = 0.0f;
+  uint16_t shuntCal = 0;
+  bool triggeredConversionPending = false;
+  uint32_t triggeredConversionStartMs = 0;
+};
+
+/// @brief Diagnostic and alert flags from DIAG_ALRT.
 struct DiagAlert {
   bool alatch = false;     ///< Alert latch enabled
   bool cnvr = false;       ///< Conversion ready on ALERT pin
@@ -60,7 +85,7 @@ struct DiagAlert {
   bool memstat = false;    ///< Memory status (true = OK)
 };
 
-/// INA228 driver class
+/// @brief Managed synchronous INA228 driver.
 class INA228 {
 public:
   // =========================================================================
@@ -96,6 +121,9 @@ public:
   /// Attempt to recover from DEGRADED/OFFLINE state by re-validating IDs, MEMSTAT, and cached config
   /// @return Status::Ok() if device now responsive and configuration is re-applied, error otherwise
   Status recover();
+
+  /// Populate a cache-only settings snapshot without touching I2C.
+  Status getSettings(SettingsSnapshot& out) const;
 
   // =========================================================================
   // Driver State
