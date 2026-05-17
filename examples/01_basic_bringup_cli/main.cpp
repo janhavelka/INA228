@@ -75,6 +75,22 @@ uint8_t configuredAddress() {
   return selectedAddress;
 }
 
+INA228::Status checkAddressAck(uint8_t address) {
+  if (!isValidIna228Address(address)) {
+    return INA228::Status::Error(INA228::Err::INVALID_PARAM,
+                                 "Address must be 0x40-0x4F",
+                                 static_cast<int32_t>(address));
+  }
+
+  Wire.beginTransmission(address);
+  const uint8_t result = Wire.endTransmission(true);
+  if (result == 0U) {
+    return INA228::Status::Ok();
+  }
+
+  return transport::mapWireResult(result, "I2C address probe failed");
+}
+
 INA228::Config makeExampleConfig(uint8_t address) {
   INA228::Config cfg;
   cfg.i2cWrite = transport::wireWrite;
@@ -113,8 +129,13 @@ INA228::Status probeAddressRaw(uint8_t address, ProbeSnapshot& out) {
   out = {};
   out.address = address;
 
-  INA228::Status st = readRegister16AtAddress(address, INA228::cmd::REG_MANUFACTURER_ID,
-                                              out.manufacturerId);
+  INA228::Status st = checkAddressAck(address);
+  if (!st.ok()) {
+    return st;
+  }
+
+  st = readRegister16AtAddress(address, INA228::cmd::REG_MANUFACTURER_ID,
+                               out.manufacturerId);
   if (!st.ok()) {
     return st;
   }
@@ -653,6 +674,62 @@ void printAlertLimits() {
     Serial.printf("  PWR_LIMIT: 0x%04X  %.6f W\n", power, powerLimitToW(power));
   } else {
     Serial.printf("  PWR_LIMIT: 0x%04X  requires calibration for W\n", power);
+  }
+}
+
+void printShuntAlertLimit(const char* label, uint8_t reg) {
+  uint16_t raw = 0;
+  INA228::Status st = device.readRegister16(reg, raw);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+
+  Serial.printf("%s: 0x%04X  %.3f mV\n",
+                label,
+                raw,
+                static_cast<double>(shuntLimitToMv(raw)));
+}
+
+void printBusAlertLimit(const char* label, uint8_t reg) {
+  uint16_t raw = 0;
+  INA228::Status st = device.readRegister16(reg, raw);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+
+  Serial.printf("%s: 0x%04X  %.4f V\n",
+                label,
+                raw,
+                static_cast<double>(busLimitToV(raw)));
+}
+
+void printTemperatureAlertLimit() {
+  uint16_t raw = 0;
+  INA228::Status st = device.readRegister16(INA228::cmd::REG_TEMP_LIMIT, raw);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+
+  Serial.printf("TEMP_LIMIT: 0x%04X  %.2f C\n",
+                raw,
+                static_cast<double>(tempLimitToC(raw)));
+}
+
+void printPowerAlertLimit() {
+  uint16_t raw = 0;
+  INA228::Status st = device.readRegister16(INA228::cmd::REG_PWR_LIMIT, raw);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+
+  if (device.currentLsb() > 0.0f) {
+    Serial.printf("PWR_LIMIT: 0x%04X  %.6f W\n", raw, powerLimitToW(raw));
+  } else {
+    Serial.printf("PWR_LIMIT: 0x%04X  requires calibration for W\n", raw);
   }
 }
 
@@ -1587,6 +1664,26 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd == "alatch" || cmd == "cnvralert" || cmd == "alslow" || cmd == "apol") {
+    INA228::DiagAlert diag{};
+    auto st = device.readDiagAlert(diag);
+    if (!st.ok()) {
+      printStatus(st);
+      return;
+    }
+
+    if (cmd == "alatch") {
+      LOGI("Alert latch: %s", log_bool_str(diag.alatch));
+    } else if (cmd == "cnvralert") {
+      LOGI("Conversion-ready alert: %s", log_bool_str(diag.cnvr));
+    } else if (cmd == "alslow") {
+      LOGI("Slow alert: %s", log_bool_str(diag.slowAlert));
+    } else {
+      LOGI("Alert polarity: %s", diag.apol ? "active-high" : "active-low");
+    }
+    return;
+  }
+
   if (cmd.startsWith("alatch ")) {
     const int val = cmd.substring(7).toInt();
     if (val != 0 && val != 1) {
@@ -1643,6 +1740,11 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd == "sovl") {
+    printShuntAlertLimit("SOVL", INA228::cmd::REG_SOVL);
+    return;
+  }
+
   if (cmd.startsWith("sovl ")) {
     float value = 0.0f;
     if (!parseFloat(cmd.substring(5), value)) {
@@ -1653,6 +1755,11 @@ void processCommand(const String& cmdLine) {
     LOGI("setShuntOvervoltageThreshold(%.7f): %s%s%s",
          value, LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
     if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd == "suvl") {
+    printShuntAlertLimit("SUVL", INA228::cmd::REG_SUVL);
     return;
   }
 
@@ -1669,6 +1776,11 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd == "bovl") {
+    printBusAlertLimit("BOVL", INA228::cmd::REG_BOVL);
+    return;
+  }
+
   if (cmd.startsWith("bovl ")) {
     float value = 0.0f;
     if (!parseFloat(cmd.substring(5), value)) {
@@ -1679,6 +1791,11 @@ void processCommand(const String& cmdLine) {
     LOGI("setBusOvervoltageThreshold(%.4f): %s%s%s",
          value, LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
     if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd == "buvl") {
+    printBusAlertLimit("BUVL", INA228::cmd::REG_BUVL);
     return;
   }
 
@@ -1695,6 +1812,11 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd == "tmplim") {
+    printTemperatureAlertLimit();
+    return;
+  }
+
   if (cmd.startsWith("tmplim ")) {
     float value = 0.0f;
     if (!parseFloat(cmd.substring(7), value)) {
@@ -1705,6 +1827,11 @@ void processCommand(const String& cmdLine) {
     LOGI("setTemperatureOverlimitThreshold(%.2f): %s%s%s",
          value, LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
     if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd == "pwrlim") {
+    printPowerAlertLimit();
     return;
   }
 
