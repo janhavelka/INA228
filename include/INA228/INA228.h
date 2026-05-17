@@ -66,7 +66,10 @@ struct SettingsSnapshot {
   uint32_t triggeredConversionStartMs = 0;
 };
 
-/// @brief Diagnostic and alert flags from DIAG_ALRT.
+/// @brief Diagnostic, alert configuration, and alert flag bits from DIAG_ALRT.
+/// @note Reading DIAG_ALRT can clear latched alert status bits according to the
+/// INA228 datasheet. Use readDiagAlertRaw() when exact register contents are
+/// needed without parsed fields.
 struct DiagAlert {
   bool alatch = false;     ///< Alert latch enabled
   bool cnvr = false;       ///< Conversion ready on ALERT pin
@@ -250,7 +253,12 @@ public:
   /// @note Changing range requires recalibration (SHUNT_CAL is recomputed)
   Status setAdcRange(AdcRange range);
 
-  /// Update shunt calibration (SHUNT_CAL register)
+  /// Update shunt calibration for the installed shunt resistor.
+  ///
+  /// This programs SHUNT_CAL and updates the cached shunt resistance,
+  /// maximum expected current, and CURRENT_LSB used for current, power, energy,
+  /// and charge conversion.
+  ///
   /// Cache and scaling update only after the register write succeeds. If the
   /// computed SHUNT_CAL value clamps, currentLsb() reflects the clamped value.
   /// @param shuntOhm Shunt resistance in ohms
@@ -258,7 +266,10 @@ public:
   /// @return Status::Ok() on success
   Status setCalibration(float shuntOhm, float maxCurrentA);
 
-  /// Set shunt temperature coefficient
+  /// Set shunt temperature coefficient register value.
+  ///
+  /// The coefficient is programmed even when temperature compensation is
+  /// disabled so register readback stays deterministic.
   /// @param ppmPerC Temperature coefficient in ppm/°C (0–16383)
   /// @return Status::Ok() on success
   Status setShuntTempCoeff(uint16_t ppmPerC);
@@ -274,7 +285,10 @@ public:
   // Alert Configuration
   // =========================================================================
 
-  /// Read diagnostic and alert register
+  /// Read diagnostic, alert configuration, and alert flag bits.
+  ///
+  /// DIAG_ALRT is a live hardware register; reading it can clear latched alert
+  /// flags depending on ALATCH and the active fault state.
   Status readDiagAlert(DiagAlert& out);
 
   /// Read raw DIAG_ALRT register value
@@ -295,18 +309,24 @@ public:
   Status setAlertPolarity(bool activeHigh);
 
   /// Set shunt overvoltage threshold
+  /// Uses the signed shunt threshold register scale for the active ADC range
+  /// (5 uV/LSB at +/-163.84 mV, 1.25 uV/LSB at +/-40.96 mV).
   /// @param voltageV Threshold voltage in volts
   Status setShuntOvervoltageThreshold(float voltageV);
 
   /// Set shunt undervoltage threshold
+  /// Uses the signed shunt threshold register scale for the active ADC range
+  /// (5 uV/LSB at +/-163.84 mV, 1.25 uV/LSB at +/-40.96 mV).
   /// @param voltageV Threshold voltage in volts
   Status setShuntUndervoltageThreshold(float voltageV);
 
   /// Set bus overvoltage threshold
+  /// Uses the unsigned bus threshold register scale (3.125 mV/LSB).
   /// @param voltageV Threshold voltage in volts (0–85V)
   Status setBusOvervoltageThreshold(float voltageV);
 
   /// Set bus undervoltage threshold
+  /// Uses the unsigned bus threshold register scale (3.125 mV/LSB).
   /// @param voltageV Threshold voltage in volts (0–85V)
   Status setBusUndervoltageThreshold(float voltageV);
 
@@ -315,6 +335,8 @@ public:
   Status setTemperatureOverlimitThreshold(float tempC);
 
   /// Set power over-limit threshold
+  /// Requires calibration because the threshold register scale is derived from
+  /// CURRENT_LSB.
   /// @param powerW Threshold power in watts (requires calibration)
   Status setPowerOverlimitThreshold(float powerW);
 
@@ -325,7 +347,9 @@ public:
   /// Software reset (equivalent to POR)
   Status softReset();
 
-  /// Reset energy and charge accumulators
+  /// Reset energy and charge accumulators.
+  ///
+  /// This clears the device's accumulated ENERGY and CHARGE registers.
   Status resetAccumulators();
 
   /// Read manufacturer ID (expect 0x5449)

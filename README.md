@@ -108,7 +108,7 @@ void loop() {
 | `setTempConvTime(ct)` | Temperature conversion time |
 | `setAveraging(avg)` | Averaging count (1–1024) |
 | `setAdcRange(range)` | Shunt full-scale range (±163.84 or ±40.96 mV) |
-| `setCalibration(ohm, A)` | Update shunt calibration |
+| `setCalibration(ohm, A)` | Update shunt calibration for the installed shunt resistor and expected current |
 | `setShuntTempCoeff(ppm)` | Shunt temperature coefficient |
 | `softReset()` | Full software reset |
 | `resetAccumulators()` | Clear energy/charge registers |
@@ -127,6 +127,17 @@ explicitly programmed for deterministic readback.
 | `probe()` | Check device presence (no health tracking) |
 | `recover()` | Re-validate manufacturer ID, device ID, MEMSTAT, then re-apply config/calibration |
 | `readDiagAlert(diag)` | Read all diagnostic/alert flags |
+| `readDiagAlertRaw(raw)` | Read raw `DIAG_ALRT` register value |
+| `setAlertLatch(latch)` | Configure latched or transparent alert behavior |
+| `setConversionReadyAlert(enable)` | Route conversion-ready events to ALERT |
+| `setSlowAlert(enable)` | Compare alert thresholds against averaged values |
+| `setAlertPolarity(activeHigh)` | Configure ALERT pin polarity |
+| `setShuntOvervoltageThreshold(v)` | Set shunt overvoltage threshold |
+| `setShuntUndervoltageThreshold(v)` | Set shunt undervoltage threshold |
+| `setBusOvervoltageThreshold(v)` | Set bus overvoltage threshold |
+| `setBusUndervoltageThreshold(v)` | Set bus undervoltage threshold |
+| `setTemperatureOverlimitThreshold(c)` | Set die temperature over-limit threshold |
+| `setPowerOverlimitThreshold(w)` | Set power over-limit threshold |
 
 ### Raw Register Access
 
@@ -194,12 +205,22 @@ The canonical bringup example now includes address-aware diagnostics for shared 
 
 - `scan` prints the general I2C table and probes `0x40..0x4F` for valid INA228 identity/MEMSTAT
 - `scanina` probes only the INA228 address window
+- INA228-specific probes skip register reads on addresses that do not ACK, so
+  mixed buses do not produce noisy expected-NACK logs for empty `0x40..0x4F`
+  slots.
 - `addr [0x40..0x4F]` selects the target device address used by the example
 - `init [addr]` re-initializes at the selected address; startup can auto-detect a single healthy INA228 if the default address fails
-- `cal`, `tempco`, `tempcomp`, `delay`, alert-threshold commands, and `reg16` / `reg24` / `reg40` / `wreg16` expose service-level diagnostics
+- `cal <shunt_ohm> <max_current_a>` updates calibration for the installed shunt
+  resistor; `cal` without arguments prints the active `Rshunt`,
+  `MaxCurrent`, and `CURRENT_LSB`.
+- `tempco`, `tempcomp`, `delay`, alert-threshold commands, and `reg16` /
+  `reg24` / `reg40` / `wreg16` expose service-level diagnostics
 - `settings` prints the cached `SettingsSnapshot`; `limits` reads alert limit
-  registers with decoded units; `convtime`, `averaging`, and `adcrange` can be
-  run without arguments to query the active configuration.
+  registers with decoded units.
+- `convtime`, `averaging`, `adcrange`, `alatch`, `cnvralert`, `alslow`,
+  `apol`, `sovl`, `suvl`, `bovl`, `buvl`, `tmplim`, and `pwrlim` can be run
+  without arguments to query the active configuration/registers, or with an
+  argument to update them.
 
 Raw register writes are intended for diagnostics and bring-up. They bypass the typed config helpers, so use `recover()` or `begin()` to restore cached settings after manual register edits.
 

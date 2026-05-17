@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-05-17
+
+### Changed
+- Bring-up CLI no-argument alert commands now read back the active chip state:
+  `alatch`, `cnvralert`, `alslow`, `apol`, `sovl`, `suvl`, `bovl`, `buvl`,
+  `tmplim`, and `pwrlim`.
+- README bring-up notes now document shared-bus probing behavior, shunt
+  calibration commands, and alert command query/set forms more explicitly.
+- Public Doxygen comments now describe alert flag readback, threshold scaling,
+  calibration persistence, and accumulator reset behavior more precisely.
+
+### Fixed
+- INA228 address-window probing in the bring-up CLI now performs an address ACK
+  preflight before register-level ID reads, avoiding noisy ESP-IDF NACK logs for
+  known-empty addresses on mixed I2C buses.
+- CLI help now shows alert commands as query-or-set commands instead of
+  setter-only commands.
+
 ## [1.1.0] - 2026-05-14
 
 ### Added
@@ -65,6 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `recover()` now re-validates manufacturer ID, device ID, and MEMSTAT before reapplying cached configuration and calibration.
 - Bringup `scan` now includes an INA228-specific address probe, and startup can auto-detect a single healthy INA228 on `0x40..0x4F`.
 
-[Unreleased]: https://github.com/janhavelka/INA228/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/janhavelka/INA228/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/janhavelka/INA228/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/janhavelka/INA228/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/janhavelka/INA228/releases/tag/v1.0.0
