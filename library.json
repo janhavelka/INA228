@@ -1,6 +1,6 @@
 {
   "name": "INA228",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Production-grade INA228 85-V, 20-bit power/energy/charge monitor driver.",
   "keywords": [
     "ina228",
