@@ -33,8 +33,8 @@ Official ESP-IDF references:
   calls `millis()`; applications should provide `Config::nowMs` for meaningful
   health timestamps and triggered-conversion timing.
 - Arduino-only glue lives in `examples/common/I2cTransport.h`,
-  `I2cScanner.h`, `BoardConfig.h`, and the CLI example; those files select
-  ESP-IDF-native shims when `INA228_EXAMPLE_PLATFORM_IDF` is defined.
+  `I2cScanner.h`, `BoardConfig.h`, and the Arduino CLI example. The ESP-IDF
+  example has separate native command, scan, timing, and transport glue.
 
 Readiness verdict: the driver core is framework-neutral and the ESP-IDF example
 uses the new I2C master driver plus the full bring-up CLI. Final readiness still
@@ -45,9 +45,9 @@ requires an ESP-IDF 6.0.1 build and hardware validation.
 - ESP-IDF compilation has not been verified in this shell because `idf.py` was
   unavailable.
 - Hardware validation remains outstanding.
-- `examples/01_basic_bringup_cli/main.cpp` is shared by Arduino and ESP-IDF.
-  Arduino builds use `Serial`, `String`, `Wire`, `millis()`, and `delay()`;
-  the ESP-IDF example uses example-local console/String/timing and I2C shims.
+- `examples/01_basic_bringup_cli/main.cpp` is Arduino-only. The ESP-IDF example
+  has a separate native command implementation with matching command coverage
+  and validation.
 - `platformio.ini` remains Arduino-focused; `library.json` now declares ESP-IDF
   support.
 - IDF v6.0.1 warning profiles can expose issues around floating-point
@@ -73,15 +73,14 @@ requires an ESP-IDF 6.0.1 build and hardware validation.
     health state API.
 - Added a root `CMakeLists.txt`.
 - Added an IDF example and adapter under `examples/esp_idf/basic/`.
-- Added `examples/common/IdfArduinoCompat.h` and guarded example common files
-  so the Arduino CLI source can be reused by the ESP-IDF entry point.
+- Added native ESP-IDF example code under `examples/esp_idf/basic` without
+  Arduino compatibility facades.
 
-## Proposed Architecture Preserving Arduino Compatibility
+## Current Architecture Preserving Framework Boundaries
 
 - Keep the INA228 core callback-based and framework-neutral.
 - Keep `examples/common/I2cTransport.h` as the Arduino `Wire` adapter in
-  Arduino builds and as a selector for the ESP-IDF adapter when
-  `INA228_EXAMPLE_PLATFORM_IDF` is defined.
+  Arduino builds only.
 - Keep the IDF adapter outside the driver core. It owns the IDF I2C bus/device
   handles, supports address-window probes for the CLI, and supplies callbacks
   to `INA228::Config`.
@@ -92,8 +91,8 @@ requires an ESP-IDF 6.0.1 build and hardware validation.
   - register helpers use tracked wrappers;
   - validation errors do not count as transport failures;
   - `recover()` uses tracked operations.
-- Share the CLI implementation through small example-local shims so command
-  behavior cannot drift between frameworks.
+- Preserve CLI parity through `tools/check_idf_example_contract.py`; do not
+  share Arduino implementation sources with the ESP-IDF example.
 
 ## IDF Transport Adapter Contract
 
@@ -164,7 +163,7 @@ target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_17)
 ```
 
 If an IDF adapter is shipped in the component, include its source and add
-`PRIV_REQUIRES esp_driver_i2c esp_driver_gpio esp_timer esp_rom freertos log vfs`.
+`PRIV_REQUIRES esp_driver_i2c esp_driver_gpio esp_timer freertos`.
 The adapter currently lives only in the example, so those dependencies are
 declared by the example component.
 
@@ -172,9 +171,10 @@ declared by the example component.
 
 - Keep the existing Arduino CLI example building with PlatformIO for ESP32-S2
   and ESP32-S3.
-- `examples/esp_idf/basic/main/main.cpp` defines `INA228_EXAMPLE_PLATFORM_IDF`,
-  includes the example-local compatibility layer, and then includes
-  `examples/01_basic_bringup_cli/main.cpp`.
+- `examples/esp_idf/basic/main/main.cpp` uses native `app_main`, fixed command
+  buffers, `std::fgets`, `esp_timer`, `vTaskDelay`, IDF I2C, and the IDF
+  adapter. It does not include Arduino headers, Arduino CLI source, or
+  compatibility facades.
 - The ESP-IDF CLI exposes the same help grouping, color output, address scan,
   measurements, triggered conversion, conversion timing, averaging, ADC range,
   calibration, temp compensation, alert limits, raw registers, health,
@@ -188,6 +188,9 @@ declared by the example component.
   - `python tools/check_core_timing_guard.py`
   - `rg "<Arduino.h>|<Wire.h>|millis\\(|delay\\(" include src` should find no
     unguarded Arduino dependencies in the ESP-IDF build path.
+  - `python tools/check_idf_example_contract.py` rejects `Arduino.h`, `Wire.h`,
+    `String`, `Serial`, `TwoWire`, `ArduinoCompat`, `IdfArduinoCompat`, and
+    inclusion of Arduino CLI sources in the IDF example.
   - `rg "driver/i2c.h|i2c_cmd_link|i2c_driver_install" include src examples CMakeLists.txt`
     should not find legacy I2C driver usage in IDF code.
 - Arduino regression:
@@ -229,7 +232,7 @@ declared by the example component.
 2. Done: remove the Arduino include and `_nowMs()` fallback in
    `src/INA228.cpp`.
 3. Done: add the IDF I2C adapter using `<driver/i2c_master.h>`.
-4. Done: add `examples/esp_idf/basic` with the shared full CLI.
+4. Done: add `examples/esp_idf/basic` with a native full-parity CLI.
 5. Done: add static Arduino/IDF CLI contract checks.
 6. Pending local ESP-IDF toolchain: build `examples/esp_idf/basic` for ESP32-S3.
 7. Pending local ESP-IDF toolchain: build `examples/esp_idf/basic` for ESP32-S2.

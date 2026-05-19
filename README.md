@@ -32,8 +32,8 @@ The repository root is an ESP-IDF component. Add it through `EXTRA_COMPONENT_DIR
 or the component manager metadata, then provide `Config::i2cWrite`,
 `Config::i2cWriteRead`, and `Config::nowMs` from your application-owned I2C
 adapter. The native example in `examples/esp_idf/basic` uses ESP-IDF
-`driver/i2c_master.h` glue and shares the full bring-up CLI with the Arduino
-example.
+`driver/i2c_master.h`, `app_main`, `esp_timer`, FreeRTOS delays, and fixed
+command buffers while preserving Arduino CLI command coverage.
 
 ## Quick Start
 
@@ -185,7 +185,7 @@ end() --------> UNINIT
 1. **Threading model**: Single-threaded. All API calls from one task/loop.
 2. **Timing model**: `tick()` is bounded; all I2C operations are blocking.
 3. **Resource ownership**: I2C bus owned by application; library receives transport callbacks.
-4. **Framework boundary**: Core code does not call `Wire`, `Serial`, `delay()`, `yield()`, or `millis()` directly. Arduino examples provide those hooks externally.
+4. **Framework boundary**: Core code does not call `Wire`, `Serial`, `delay()`, `yield()`, `millis()`, or ESP-IDF peripheral APIs directly. Arduino examples and native ESP-IDF examples provide those hooks externally.
 5. **Memory behavior**: No heap allocation after `begin()`.
 6. **Error handling**: All fallible APIs return `Status`. Check with `st.ok()`.
 7. **Recovery model**: `OFFLINE` is latched. Supervisors should call `recover()` after applying any bus-level recovery policy.

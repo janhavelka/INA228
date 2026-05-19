@@ -20,15 +20,16 @@ Implemented on branch `idf-port`.
 - `examples/esp_idf/basic` demonstrates application-owned bus/device setup with
   the new `driver/i2c_master.h` API and maps `esp_err_t` values into
   `INA228::Status`.
-- The ESP-IDF entry point shares `examples/01_basic_bringup_cli/main.cpp`
-  through an example-local compatibility layer, so the serial CLI has the same
-  address scan, measurements, calibration, alerts, raw-register diagnostics,
-  health/recovery, stress, and self-test workflows as the Arduino example.
+- The ESP-IDF entry point uses native `app_main`, `esp_timer`, FreeRTOS delays,
+  stdio input, and fixed command buffers. It implements the same address scan,
+  measurements, calibration, alerts, raw-register diagnostics, health/recovery,
+  stress, and self-test workflows as the Arduino example without including
+  Arduino CLI sources or compatibility facades.
 - The IDF adapter supports the CLI's `scanina` and `init <addr>` behavior by
   probing `0x40..0x4F` on the bus and reselecting the active device handle
   without putting bus ownership into the driver core.
-- Added `tools/check_idf_example_contract.py` to guard the IDF wrapper,
-  dependencies, native transport, and shared CLI command surface.
+- Added `tools/check_idf_example_contract.py` to guard native IDF dependencies,
+  ban Arduino compatibility facades, and verify Arduino/IDF CLI command parity.
 
 ## Validation
 
