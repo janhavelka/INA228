@@ -413,10 +413,10 @@ void test_end_returns_to_uninit() {
 }
 
 // ===========================================================================
-// NowMs fallback
+// Missing NowMs hook
 // ===========================================================================
 
-void test_now_ms_fallback_uses_millis_when_callback_missing() {
+void test_missing_now_ms_uses_zero_for_health_timestamps() {
   FakeBus bus;
   INA228::INA228 dev;
   Config cfg = makeConfig(bus);
@@ -427,10 +427,10 @@ void test_now_ms_fallback_uses_millis_when_callback_missing() {
   setMillis(4321);
   Status st = dev.recover();
   TEST_ASSERT_TRUE(st.ok());
-  TEST_ASSERT_EQUAL_UINT32(4321u, dev.lastOkMs());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
 }
 
-void test_begin_without_now_ms_uses_millis_fallback() {
+void test_begin_without_now_ms_keeps_zero_health_timestamp() {
   FakeBus bus;
   INA228::INA228 dev;
   Config cfg = makeConfig(bus);
@@ -442,7 +442,7 @@ void test_begin_without_now_ms_uses_millis_fallback() {
   setMillis(4242u);
   st = dev.setMode(Mode::CONT_ALL);
   TEST_ASSERT_TRUE(st.ok());
-  TEST_ASSERT_EQUAL_UINT32(4242u, dev.lastOkMs());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
 }
 
 // ===========================================================================
@@ -1036,8 +1036,8 @@ int main() {
   RUN_TEST(test_begin_programs_tempco_even_when_tempcomp_disabled);
   RUN_TEST(test_begin_rejects_non_finite_calibration);
   RUN_TEST(test_end_returns_to_uninit);
-  RUN_TEST(test_now_ms_fallback_uses_millis_when_callback_missing);
-  RUN_TEST(test_begin_without_now_ms_uses_millis_fallback);
+  RUN_TEST(test_missing_now_ms_uses_zero_for_health_timestamps);
+  RUN_TEST(test_begin_without_now_ms_keeps_zero_health_timestamp);
   RUN_TEST(test_probe_failure_does_not_update_health);
   RUN_TEST(test_recover_failure_updates_health_once);
   RUN_TEST(test_recover_success_returns_ready);

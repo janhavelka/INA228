@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- ESP-IDF component metadata, root `CMakeLists.txt`, and a basic
+  `examples/esp_idf/basic` application using the ESP-IDF new I2C master driver.
+- IDF port implementation notes documenting the framework-neutral core boundary
+  and validation status.
+
+### Changed
+- Removed the Arduino `millis()` fallback from the driver core. Applications
+  should provide `Config::nowMs` when health timestamps or triggered-conversion
+  waits need wall-clock time.
+- Declared `espidf` framework support in PlatformIO metadata while keeping the
+  Arduino examples unchanged.
+
 ## [1.2.0] - 2026-05-17
 
 ### Changed

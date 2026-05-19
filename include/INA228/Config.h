@@ -31,9 +31,11 @@ using I2cWriteReadFn = Status (*)(uint8_t addr, const uint8_t* txData, size_t tx
                                   uint8_t* rxData, size_t rxLen, uint32_t timeoutMs,
                                   void* user);
 
-/// @brief Millisecond timestamp callback.
+/// @brief Optional monotonic millisecond timestamp callback.
 /// @param user User context pointer passed through from Config
 /// @return Current monotonic milliseconds
+/// @note Framework-neutral builds do not call platform time APIs; if unset,
+/// health timestamps use 0 and triggered-conversion helpers cannot advance from wall time.
 using NowMsFn = uint32_t (*)(void* user);
 
 /// @brief ADC operating mode (MODE field in ADC_CONFIG register, bits 15:12).
@@ -94,7 +96,7 @@ struct Config {
   void* i2cUser = nullptr;               ///< User context for callbacks
 
   // === Timing Hooks (optional) ===
-  NowMsFn nowMs = nullptr;               ///< Monotonic millisecond source
+  NowMsFn nowMs = nullptr;               ///< Optional monotonic millisecond source
   void* timeUser = nullptr;              ///< User context for timing hook
 
   // === Device Settings ===

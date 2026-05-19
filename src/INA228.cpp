@@ -5,7 +5,6 @@
 
 #include "INA228/INA228.h"
 
-#include <Arduino.h>
 #include <cstring>
 #include <limits>
 #include <cmath>
@@ -1534,7 +1533,7 @@ uint32_t INA228::_nowMs() const {
   if (_config.nowMs != nullptr) {
     return _config.nowMs(_config.timeUser);
   }
-  return millis();
+  return 0;
 }
 
 uint16_t INA228::_buildAdcConfig() const {

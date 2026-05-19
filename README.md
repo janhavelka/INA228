@@ -1,10 +1,11 @@
 # INA228 Driver Library
 
-Production-grade INA228 85-V, 20-bit I2C power/energy/charge monitor driver for ESP32 (Arduino/PlatformIO).
+Production-grade INA228 85-V, 20-bit I2C power/energy/charge monitor driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use).
 
 ## Features
 
 - **Injected I2C transport** - no Wire dependency in library code
+- **Framework-neutral core** - `include/` and `src/` do not include Arduino or ESP-IDF driver headers
 - **Health monitoring** - automatic state tracking (READY/DEGRADED/OFFLINE)
 - **Deterministic behavior** - no unbounded loops, no heap allocations
 - **Managed synchronous lifecycle** - blocking I2C ops with tick-based architecture
@@ -25,6 +26,13 @@ lib_deps =
 
 Copy `include/INA228/` and `src/` to your project.
 
+### ESP-IDF
+
+The repository root is an ESP-IDF component. Add it through `EXTRA_COMPONENT_DIRS`
+or the component manager metadata, then provide `Config::i2cWrite`,
+`Config::i2cWriteRead`, and `Config::nowMs` from your application-owned I2C
+adapter. A basic new-driver example is in `examples/esp_idf/basic`.
+
 ## Quick Start
 
 ```cpp
@@ -42,6 +50,7 @@ void setup() {
   cfg.i2cWrite = transport::wireWrite;
   cfg.i2cWriteRead = transport::wireWriteRead;
   cfg.i2cUser = &Wire;
+  cfg.nowMs = [](void*) { return millis(); };
   cfg.i2cAddress = 0x40;
   cfg.mode = INA228::Mode::CONT_ALL;
   cfg.shuntResistanceOhm = 0.015f;  // 15 mΩ shunt
@@ -174,9 +183,10 @@ end() --------> UNINIT
 1. **Threading model**: Single-threaded. All API calls from one task/loop.
 2. **Timing model**: `tick()` is bounded; all I2C operations are blocking.
 3. **Resource ownership**: I2C bus owned by application; library receives transport callbacks.
-4. **Memory behavior**: No heap allocation after `begin()`.
-5. **Error handling**: All fallible APIs return `Status`. Check with `st.ok()`.
-6. **Recovery model**: `OFFLINE` is latched. Supervisors should call `recover()` after applying any bus-level recovery policy.
+4. **Framework boundary**: Core code does not call `Wire`, `Serial`, `delay()`, `yield()`, or `millis()` directly. Arduino examples provide those hooks externally.
+5. **Memory behavior**: No heap allocation after `begin()`.
+6. **Error handling**: All fallible APIs return `Status`. Check with `st.ok()`.
+7. **Recovery model**: `OFFLINE` is latched. Supervisors should call `recover()` after applying any bus-level recovery policy.
 
 ## INA228 Address Configuration
 

@@ -1,0 +1,6 @@
+version: "1.2.0"
+description: "Production-grade INA228 85-V, 20-bit power/energy/charge monitor driver."
+license: "MIT"
+url: "https://github.com/janhavelka/INA228"
+dependencies:
+  idf: ">=6.0.0"
