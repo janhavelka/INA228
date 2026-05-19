@@ -31,7 +31,9 @@ Copy `include/INA228/` and `src/` to your project.
 The repository root is an ESP-IDF component. Add it through `EXTRA_COMPONENT_DIRS`
 or the component manager metadata, then provide `Config::i2cWrite`,
 `Config::i2cWriteRead`, and `Config::nowMs` from your application-owned I2C
-adapter. A basic new-driver example is in `examples/esp_idf/basic`.
+adapter. The native example in `examples/esp_idf/basic` uses ESP-IDF
+`driver/i2c_master.h` glue and shares the full bring-up CLI with the Arduino
+example.
 
 ## Quick Start
 
@@ -231,8 +233,25 @@ The canonical bringup example now includes address-aware diagnostics for shared 
   `apol`, `sovl`, `suvl`, `bovl`, `buvl`, `tmplim`, and `pwrlim` can be run
   without arguments to query the active configuration/registers, or with an
   argument to update them.
+- `examples/esp_idf/basic` exposes the same serial command surface through a
+  native ESP-IDF console/timing/I2C shim, including address-window probing,
+  dynamic `init <addr>`, calibration, alert limits, raw register diagnostics,
+  stress tests, and self-test output.
 
 Raw register writes are intended for diagnostics and bring-up. They bypass the typed config helpers, so use `recover()` or `begin()` to restore cached settings after manual register edits.
+
+## Validation
+
+```bash
+python tools/check_cli_contract.py
+python tools/check_idf_example_contract.py
+python tools/check_core_timing_guard.py
+pio test -e native
+pio run -e esp32s3dev
+pio run -e esp32s2dev
+idf.py -C examples/esp_idf/basic set-target esp32s3 build
+idf.py -C examples/esp_idf/basic set-target esp32s2 build
+```
 
 ## Calibration And Triggered Reads
 

@@ -8,8 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- ESP-IDF component metadata, root `CMakeLists.txt`, and a basic
-  `examples/esp_idf/basic` application using the ESP-IDF new I2C master driver.
+- ESP-IDF component metadata, root `CMakeLists.txt`, and a native
+  `examples/esp_idf/basic` application using the ESP-IDF new I2C master driver
+  with the same user-visible CLI as the Arduino example.
+- Example-local ESP-IDF console, timing, bus scan, dynamic address-probe, and
+  I2C adapter glue guarded by `INA228_EXAMPLE_PLATFORM_IDF`.
+- `tools/check_idf_example_contract.py` to guard ESP-IDF example structure,
+  native-driver dependencies, and CLI parity.
 - IDF port implementation notes documenting the framework-neutral core boundary
   and validation status.
 
@@ -18,7 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   should provide `Config::nowMs` when health timestamps or triggered-conversion
   waits need wall-clock time.
 - Declared `espidf` framework support in PlatformIO metadata while keeping the
-  Arduino examples unchanged.
+  driver core framework-neutral.
+- The ESP-IDF example now exposes the same commands, help, address scan,
+  measurement, configuration, calibration, alert, raw-register, health,
+  stress, and self-test workflows as the Arduino CLI.
 
 ## [1.2.0] - 2026-05-17
 

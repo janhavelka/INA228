@@ -2,10 +2,13 @@
 
 #include <limits>
 
+#include "driver/gpio.h"
 #include "esp_err.h"
 #include "esp_timer.h"
 
 namespace {
+
+Ina228IdfI2c gTransport;
 
 int clampTimeoutMs(uint32_t timeoutMs) {
   const uint32_t maxTimeout = static_cast<uint32_t>(std::numeric_limits<int>::max());
@@ -27,8 +30,16 @@ INA228::Status mapEspErr(esp_err_t err, const char* context) {
   return INA228::Status::Error(INA228::Err::I2C_BUS, context, static_cast<int32_t>(err));
 }
 
-INA228::Status validateContext(uint8_t addr, const void* user, const Ina228IdfI2c*& ctx) {
-  ctx = static_cast<const Ina228IdfI2c*>(user);
+esp_err_t addDevice(Ina228IdfI2c& ctx, uint8_t address, i2c_master_dev_handle_t& dev) {
+  i2c_device_config_t devConfig{};
+  devConfig.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+  devConfig.device_address = address;
+  devConfig.scl_speed_hz = ctx.frequencyHz;
+  return i2c_master_bus_add_device(ctx.bus, &devConfig, &dev);
+}
+
+INA228::Status validateContext(uint8_t addr, void* user, Ina228IdfI2c*& ctx) {
+  ctx = static_cast<Ina228IdfI2c*>(user);
   if (ctx == nullptr || ctx->dev == nullptr) {
     return INA228::Status::Error(INA228::Err::I2C_BUS, "IDF I2C device not configured");
   }
@@ -41,9 +52,86 @@ INA228::Status validateContext(uint8_t addr, const void* user, const Ina228IdfI2
 
 }  // namespace
 
+Ina228IdfI2c& ina228IdfTransportContext() {
+  return gTransport;
+}
+
+bool ina228IdfInitI2c(int sda, int scl, uint32_t freqHz, uint16_t timeoutMs,
+                      uint8_t address) {
+  (void)timeoutMs;
+  ina228IdfDeinitI2c();
+
+  i2c_master_bus_config_t busConfig{};
+  busConfig.clk_source = I2C_CLK_SRC_DEFAULT;
+  busConfig.i2c_port = I2C_NUM_0;
+  busConfig.sda_io_num = static_cast<gpio_num_t>(sda);
+  busConfig.scl_io_num = static_cast<gpio_num_t>(scl);
+  busConfig.glitch_ignore_cnt = 7;
+  busConfig.flags.enable_internal_pullup = true;
+
+  esp_err_t err = i2c_new_master_bus(&busConfig, &gTransport.bus);
+  if (err != ESP_OK) {
+    gTransport.lastError = err;
+    return false;
+  }
+
+  gTransport.frequencyHz = freqHz;
+  gTransport.address = address;
+  err = addDevice(gTransport, address, gTransport.dev);
+  if (err != ESP_OK) {
+    (void)i2c_del_master_bus(gTransport.bus);
+    gTransport.bus = nullptr;
+    gTransport.lastError = err;
+    return false;
+  }
+
+  gTransport.lastError = ESP_OK;
+  return true;
+}
+
+void ina228IdfDeinitI2c() {
+  if (gTransport.dev != nullptr) {
+    (void)i2c_master_bus_rm_device(gTransport.dev);
+    gTransport.dev = nullptr;
+  }
+  if (gTransport.bus != nullptr) {
+    (void)i2c_del_master_bus(gTransport.bus);
+    gTransport.bus = nullptr;
+  }
+}
+
+bool ina228IdfSelectDeviceAddress(uint8_t address) {
+  if (gTransport.bus == nullptr) {
+    gTransport.lastError = ESP_ERR_INVALID_STATE;
+    return false;
+  }
+  if (gTransport.dev != nullptr && gTransport.address == address) {
+    return true;
+  }
+  if (gTransport.dev != nullptr) {
+    (void)i2c_master_bus_rm_device(gTransport.dev);
+    gTransport.dev = nullptr;
+  }
+  gTransport.address = address;
+  gTransport.lastError = addDevice(gTransport, address, gTransport.dev);
+  return gTransport.lastError == ESP_OK;
+}
+
+INA228::Status ina228IdfProbeAddress(uint8_t address, uint16_t timeoutMs) {
+  if (gTransport.bus == nullptr) {
+    return INA228::Status::Error(INA228::Err::I2C_BUS, "IDF I2C bus not configured");
+  }
+  gTransport.lastError = i2c_master_probe(gTransport.bus, address, timeoutMs);
+  return mapEspErr(gTransport.lastError, "I2C address probe failed");
+}
+
+esp_err_t ina228IdfLastError() {
+  return gTransport.lastError;
+}
+
 INA228::Status ina228IdfI2cWrite(uint8_t addr, const uint8_t* data, size_t len,
                                  uint32_t timeoutMs, void* user) {
-  const Ina228IdfI2c* ctx = nullptr;
+  Ina228IdfI2c* ctx = nullptr;
   INA228::Status st = validateContext(addr, user, ctx);
   if (!st.ok()) {
     return st;
@@ -52,15 +140,14 @@ INA228::Status ina228IdfI2cWrite(uint8_t addr, const uint8_t* data, size_t len,
     return INA228::Status::Error(INA228::Err::INVALID_PARAM, "Invalid I2C write buffer");
   }
 
-  const esp_err_t err =
-      i2c_master_transmit(ctx->dev, data, len, clampTimeoutMs(timeoutMs));
-  return mapEspErr(err, "I2C write failed");
+  ctx->lastError = i2c_master_transmit(ctx->dev, data, len, clampTimeoutMs(timeoutMs));
+  return mapEspErr(ctx->lastError, "I2C write failed");
 }
 
 INA228::Status ina228IdfI2cWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen,
                                      uint8_t* rxData, size_t rxLen,
                                      uint32_t timeoutMs, void* user) {
-  const Ina228IdfI2c* ctx = nullptr;
+  Ina228IdfI2c* ctx = nullptr;
   INA228::Status st = validateContext(addr, user, ctx);
   if (!st.ok()) {
     return st;
@@ -69,9 +156,41 @@ INA228::Status ina228IdfI2cWriteRead(uint8_t addr, const uint8_t* txData, size_t
     return INA228::Status::Error(INA228::Err::INVALID_PARAM, "Invalid I2C read buffer");
   }
 
-  const esp_err_t err = i2c_master_transmit_receive(
+  ctx->lastError = i2c_master_transmit_receive(
       ctx->dev, txData, txLen, rxData, rxLen, clampTimeoutMs(timeoutMs));
-  return mapEspErr(err, "I2C write-read failed");
+  return mapEspErr(ctx->lastError, "I2C write-read failed");
+}
+
+INA228::Status ina228IdfI2cWriteReadAt(uint8_t addr, const uint8_t* txData,
+                                       size_t txLen, uint8_t* rxData, size_t rxLen,
+                                       uint32_t timeoutMs, void* user) {
+  Ina228IdfI2c* ctx = static_cast<Ina228IdfI2c*>(user);
+  if (ctx == nullptr || ctx->bus == nullptr) {
+    return INA228::Status::Error(INA228::Err::I2C_BUS, "IDF I2C bus not configured");
+  }
+  if (txData == nullptr || txLen == 0 || rxData == nullptr || rxLen == 0) {
+    return INA228::Status::Error(INA228::Err::INVALID_PARAM, "Invalid I2C read buffer");
+  }
+
+  i2c_master_dev_handle_t tempDev = nullptr;
+  i2c_master_dev_handle_t dev = ctx->dev;
+  if (addr != ctx->address) {
+    ctx->lastError = addDevice(*ctx, addr, tempDev);
+    if (ctx->lastError != ESP_OK) {
+      return mapEspErr(ctx->lastError, "I2C temporary device failed");
+    }
+    dev = tempDev;
+  }
+  if (dev == nullptr) {
+    return INA228::Status::Error(INA228::Err::I2C_BUS, "IDF I2C device not configured");
+  }
+
+  ctx->lastError = i2c_master_transmit_receive(
+      dev, txData, txLen, rxData, rxLen, clampTimeoutMs(timeoutMs));
+  if (tempDev != nullptr) {
+    (void)i2c_master_bus_rm_device(tempDev);
+  }
+  return mapEspErr(ctx->lastError, "I2C write-read failed");
 }
 
 uint32_t ina228IdfNowMs(void*) {

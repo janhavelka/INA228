@@ -11,12 +11,58 @@
 
 #pragma once
 
+#if defined(INA228_EXAMPLE_PLATFORM_IDF)
+#include "Ina228IdfI2cTransport.h"
+#else
 #include <Arduino.h>
 #include <Wire.h>
+#endif
 
 #include "INA228/Status.h"
 
 namespace transport {
+
+#if defined(INA228_EXAMPLE_PLATFORM_IDF)
+
+inline INA228::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
+                                uint32_t timeoutMs, void* user) {
+  return ina228IdfI2cWrite(addr, data, len, timeoutMs, user);
+}
+
+inline INA228::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLen,
+                                    uint8_t* rx, size_t rxLen, uint32_t timeoutMs,
+                                    void* user) {
+  return ina228IdfI2cWriteRead(addr, tx, txLen, rx, rxLen, timeoutMs, user);
+}
+
+inline INA228::Status wireWriteReadAt(uint8_t addr, const uint8_t* tx, size_t txLen,
+                                      uint8_t* rx, size_t rxLen, uint32_t timeoutMs) {
+  return ina228IdfI2cWriteReadAt(addr, tx, txLen, rx, rxLen, timeoutMs,
+                                 &ina228IdfTransportContext());
+}
+
+inline INA228::Status probeAddress(uint8_t addr, uint16_t timeoutMs) {
+  return ina228IdfProbeAddress(addr, timeoutMs);
+}
+
+inline uint32_t arduinoNowMs(void* user) {
+  return ina228IdfNowMs(user);
+}
+
+inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutMs = 50,
+                     uint8_t address = 0x40) {
+  return ina228IdfInitI2c(sda, scl, freq, timeoutMs, address);
+}
+
+inline bool selectAddress(uint8_t address) {
+  return ina228IdfSelectDeviceAddress(address);
+}
+
+inline void* configUser() {
+  return &ina228IdfTransportContext();
+}
+
+#else
 
 inline INA228::Status mapWireResult(uint8_t result, const char* context) {
   switch (result) {
@@ -152,7 +198,9 @@ inline INA228::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLe
  * @param timeoutMs I2C timeout in milliseconds (default 50ms)
  * @return true on success
  */
-inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutMs = 50) {
+inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutMs = 50,
+                     uint8_t address = 0x40) {
+  (void)address;
 #if defined(ARDUINO_ARCH_ESP32)
   // Toggle SCL to release any stuck slave
   pinMode(scl, OUTPUT);
@@ -178,5 +226,34 @@ inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutM
   Wire.setTimeOut(timeoutMs);
   return true;
 }
+
+inline INA228::Status wireWriteReadAt(uint8_t addr, const uint8_t* tx, size_t txLen,
+                                      uint8_t* rx, size_t rxLen, uint32_t timeoutMs) {
+  return wireWriteRead(addr, tx, txLen, rx, rxLen, timeoutMs, &Wire);
+}
+
+inline INA228::Status probeAddress(uint8_t addr, uint16_t timeoutMs) {
+#if defined(ARDUINO_ARCH_ESP32)
+  Wire.setTimeOut(timeoutMs);
+#else
+  (void)timeoutMs;
+#endif
+  Wire.beginTransmission(addr);
+  return mapWireResult(Wire.endTransmission(true), "I2C address probe failed");
+}
+
+inline uint32_t arduinoNowMs(void*) {
+  return millis();
+}
+
+inline bool selectAddress(uint8_t) {
+  return true;
+}
+
+inline void* configUser() {
+  return &Wire;
+}
+
+#endif
 
 }  // namespace transport

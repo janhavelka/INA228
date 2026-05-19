@@ -2,9 +2,15 @@
 /// @brief Basic bringup example for INA228
 /// @note This is an EXAMPLE, not part of the library
 
-#include <Arduino.h>
 #include <cstdlib>
 #include <limits>
+
+#if defined(INA228_EXAMPLE_PLATFORM_IDF)
+#include "examples/common/IdfArduinoCompat.h"
+#else
+#include <Arduino.h>
+#endif
+
 #include "examples/common/CliStyle.h"
 #include "examples/common/Log.h"
 #include "examples/common/BoardConfig.h"
@@ -42,7 +48,7 @@ struct StressStats {
 INA228::INA228 device;
 bool verboseMode = false;
 StressStats stressStats;
-static constexpr uint8_t DEFAULT_I2C_ADDRESS = 0x40;
+static constexpr uint8_t DEFAULT_I2C_ADDRESS = board::INA228_I2C_ADDR;
 static constexpr uint8_t INA228_ADDR_MIN = 0x40;
 static constexpr uint8_t INA228_ADDR_MAX = 0x4F;
 uint8_t selectedAddress = DEFAULT_I2C_ADDRESS;
@@ -82,21 +88,16 @@ INA228::Status checkAddressAck(uint8_t address) {
                                  static_cast<int32_t>(address));
   }
 
-  Wire.beginTransmission(address);
-  const uint8_t result = Wire.endTransmission(true);
-  if (result == 0U) {
-    return INA228::Status::Ok();
-  }
-
-  return transport::mapWireResult(result, "I2C address probe failed");
+  return transport::probeAddress(address, board::I2C_TIMEOUT_MS);
 }
 
 INA228::Config makeExampleConfig(uint8_t address) {
+  (void)transport::selectAddress(address);
   INA228::Config cfg;
   cfg.i2cWrite = transport::wireWrite;
   cfg.i2cWriteRead = transport::wireWriteRead;
-  cfg.i2cUser = &Wire;
-  cfg.nowMs = exampleNowMs;
+  cfg.i2cUser = transport::configUser();
+  cfg.nowMs = transport::arduinoNowMs;
   cfg.i2cAddress = address;
   cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
   cfg.mode = INA228::Mode::CONT_ALL;
@@ -115,8 +116,8 @@ INA228::Status readRegister16AtAddress(uint8_t address, uint8_t reg, uint16_t& v
 
   uint8_t tx = reg;
   uint8_t rx[2] = {};
-  INA228::Status st = transport::wireWriteRead(address, &tx, 1, rx, sizeof(rx),
-                                               board::I2C_TIMEOUT_MS, &Wire);
+  INA228::Status st = transport::wireWriteReadAt(address, &tx, 1, rx, sizeof(rx),
+                                                 board::I2C_TIMEOUT_MS);
   if (!st.ok()) {
     return st;
   }

@@ -7,12 +7,80 @@
 
 #pragma once
 
+#if defined(INA228_EXAMPLE_PLATFORM_IDF)
+#include "Ina228IdfI2cTransport.h"
+#include "examples/common/IdfArduinoCompat.h"
+#else
 #include <Arduino.h>
 #include <Wire.h>
+#endif
 
 #include "examples/common/Log.h"
 
 namespace i2c_scanner {
+
+#if defined(INA228_EXAMPLE_PLATFORM_IDF)
+
+inline void recoverBus(int sda, int scl) {
+  (void)sda;
+  (void)scl;
+  LOGW("I2C scanner recoverBus is Arduino-only; re-run initI2c for full bus reset");
+}
+
+inline void scan(Ina228IdfI2c& transport, uint16_t timeoutMs = 50) {
+  LOGI("Scanning I2C bus (timeout=%dms)...", timeoutMs);
+  LOG_SERIAL.flush();
+
+  if (transport.bus == nullptr) {
+    LOGE("I2C scan skipped: bus is not initialized");
+    return;
+  }
+
+  LOGI("     0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F");
+  LOG_SERIAL.flush();
+
+  uint8_t count = 0;
+  for (uint8_t row = 0; row < 8; row++) {
+    LOG_SERIAL.printf("%02X: ", row * 16);
+    LOG_SERIAL.flush();
+
+    for (uint8_t col = 0; col < 16; col++) {
+      const uint8_t addr = static_cast<uint8_t>(row * 16 + col);
+      if (addr < 0x08 || addr > 0x77) {
+        LOG_SERIAL.print("   ");
+        continue;
+      }
+
+      const INA228::Status st = ina228IdfProbeAddress(addr, timeoutMs);
+      if (st.ok()) {
+        LOG_SERIAL.printf("%02X ", addr);
+        ++count;
+      } else if (st.code == INA228::Err::I2C_TIMEOUT) {
+        LOG_SERIAL.print("TO ");
+      } else {
+        LOG_SERIAL.print("-- ");
+      }
+
+      yield();
+      delay(1);
+    }
+    LOG_SERIAL.println();
+    LOG_SERIAL.flush();
+  }
+
+  LOGI("Scan complete. Found %d device(s).", count);
+  LOG_SERIAL.flush();
+
+  if (count > 0) {
+    LOGI("Common addresses: 0x40-0x4F=INA228, 0x48-0x4B=ADS1115, 0x51=RV3032, 0x76/0x77=BME280");
+  }
+}
+
+inline void scanDefault(uint16_t timeoutMs = 50) {
+  scan(ina228IdfTransportContext(), timeoutMs);
+}
+
+#else
 
 /**
  * @brief Attempt to recover a stuck I2C bus by toggling SCL.
@@ -100,5 +168,11 @@ inline void scan(TwoWire& wire, uint16_t timeoutMs = 50) {
     LOGI("Common addresses: 0x40-0x4F=INA228, 0x48-0x4B=ADS1115, 0x51=RV3032, 0x76/0x77=BME280");
   }
 }
+
+inline void scanDefault(uint16_t timeoutMs = 50) {
+  scan(Wire, timeoutMs);
+}
+
+#endif
 
 }  // namespace i2c_scanner

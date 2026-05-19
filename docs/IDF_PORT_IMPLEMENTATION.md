@@ -15,15 +15,29 @@ Implemented on branch `idf-port`.
 ## ESP-IDF Additions
 
 - Root `CMakeLists.txt` registers the library as an ESP-IDF component.
-- `idf_component.yml` declares component-manager metadata for ESP-IDF 6.x.
+- `idf_component.yml` declares component-manager metadata for ESP-IDF 6.x and
+  the ESP32-S2/S3 targets.
 - `examples/esp_idf/basic` demonstrates application-owned bus/device setup with
   the new `driver/i2c_master.h` API and maps `esp_err_t` values into
   `INA228::Status`.
+- The ESP-IDF entry point shares `examples/01_basic_bringup_cli/main.cpp`
+  through an example-local compatibility layer, so the serial CLI has the same
+  address scan, measurements, calibration, alerts, raw-register diagnostics,
+  health/recovery, stress, and self-test workflows as the Arduino example.
+- The IDF adapter supports the CLI's `scanina` and `init <addr>` behavior by
+  probing `0x40..0x4F` on the bus and reselecting the active device handle
+  without putting bus ownership into the driver core.
+- Added `tools/check_idf_example_contract.py` to guard the IDF wrapper,
+  dependencies, native transport, and shared CLI command surface.
 
 ## Validation
 
 - Static check target: `rg "<Arduino.h>|<Wire.h>|millis\\(|delay\\(" include src`
   should return no matches.
+- Static parity checks:
+  - `python tools/check_cli_contract.py`
+  - `python tools/check_idf_example_contract.py`
+  - `python tools/check_core_timing_guard.py`
 - Arduino examples remain under `examples/01_basic_bringup_cli` and continue to
   provide `Wire` and `millis()` through example-local callbacks.
 - IDF builds were not run in this environment because `idf.py` was not on PATH.
