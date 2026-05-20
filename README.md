@@ -2,6 +2,8 @@
 
 Production-grade INA228 85-V, 20-bit I2C power/energy/charge monitor driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use).
 
+Library version: `v1.3.0`
+
 ## Features
 
 - **Injected I2C transport** - no Wire dependency in library code
@@ -19,7 +21,7 @@ Add to `platformio.ini`:
 
 ```ini
 lib_deps = 
-  https://github.com/janhavelka/INA228.git
+  https://github.com/janhavelka/INA228.git#v1.3.0
 ```
 
 ### Manual
@@ -34,6 +36,14 @@ or the component manager metadata, then provide `Config::i2cWrite`,
 adapter. The native example in `examples/esp_idf/basic` uses ESP-IDF
 `driver/i2c_master.h`, `app_main`, `esp_timer`, FreeRTOS delays, and fixed
 command buffers while preserving Arduino CLI command coverage.
+
+## Release 1.3.0 Highlights
+
+- Adds the repository root ESP-IDF component metadata and root `CMakeLists.txt`.
+- Adds the native ESP-IDF `examples/esp_idf/basic` CLI using `driver/i2c_master.h`, `app_main`, `esp_timer`, FreeRTOS delays, and fixed command buffers.
+- Preserves Arduino and ESP-IDF user-visible CLI parity for scan/probe, measurements, calibration, alert limits, raw register diagnostics, stress, and self-test workflows.
+- Keeps the driver core framework-neutral; hardware access remains callback-injected and timing comes from application-provided `Config::nowMs`.
+- Includes hardware validation of the ESP-IDF port before release.
 
 ## Quick Start
 

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-05-20
+
 ### Added
 - ESP-IDF component metadata, root `CMakeLists.txt`, and a native
   `examples/esp_idf/basic` application using the ESP-IDF new I2C master driver
@@ -28,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CLI sources or compatibility facades.
 - `examples/common/` is now Arduino example glue only; the IDF example owns its
   native stdio CLI, scan/probe, timing, and transport code.
+- Release metadata, README installation instructions, and Doxygen project
+  metadata now target `v1.3.0`.
+
+### Fixed
+- The ESP-IDF port was validated on hardware before tagging this release.
 
 ## [1.2.0] - 2026-05-17
 
@@ -105,7 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `recover()` now re-validates manufacturer ID, device ID, and MEMSTAT before reapplying cached configuration and calibration.
 - Bringup `scan` now includes an INA228-specific address probe, and startup can auto-detect a single healthy INA228 on `0x40..0x4F`.
 
-[Unreleased]: https://github.com/janhavelka/INA228/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/janhavelka/INA228/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/janhavelka/INA228/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/janhavelka/INA228/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/janhavelka/INA228/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/janhavelka/INA228/releases/tag/v1.0.0
