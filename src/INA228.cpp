@@ -291,6 +291,7 @@ void INA228::tick(uint32_t nowMs) {
   Status st = isConversionReady(ready);
   if (st.ok() && ready) {
     _trigPending = false;
+    _trigStartMs = 0;
     _config.mode = Mode::SHUTDOWN;
   }
 }
@@ -697,6 +698,11 @@ Status INA228::isConversionReady(bool& ready) {
   if (!st.ok()) return st;
 
   ready = (diag & cmd::DIAG_CNVRF) != 0;
+  if (_trigPending && ready) {
+    _trigPending = false;
+    _trigStartMs = 0;
+    _config.mode = Mode::SHUTDOWN;
+  }
   return Status::Ok();
 }
 
@@ -725,6 +731,7 @@ Status INA228::setMode(Mode mode) {
     return Status{Err::IN_PROGRESS, 0, "Conversion started"};
   }
   _trigPending = false;
+  _trigStartMs = 0;
   return Status::Ok();
 }
 
@@ -1208,6 +1215,9 @@ uint32_t INA228::estimateConversionTimeUs() const {
   if (modeHasTemp(_config.mode)) {
     timeUs += convTimeUs(_config.vtempConvTime);
   }
+  if (timeUs == 0U) {
+    return 0;
+  }
   timeUs *= avgCount(_config.averaging);
 
   // Add conversion delay
@@ -1477,6 +1487,7 @@ Status INA228::_ensureMeasurementReadyForRead() {
   }
 
   _trigPending = false;
+  _trigStartMs = 0;
   _config.mode = Mode::SHUTDOWN;
   return Status::Ok();
 }

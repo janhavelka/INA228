@@ -254,6 +254,10 @@ const char* modeToStr(INA228::Mode mode) {
   }
 }
 
+bool modeIncludesConversion(INA228::Mode mode) {
+  return (static_cast<uint8_t>(mode) & 0x07U) != 0U;
+}
+
 const char* convTimeToStr(INA228::ConvTime ct) {
   using INA228::ConvTime;
   switch (ct) {
@@ -1028,6 +1032,11 @@ void runSelfTest() {
   reportSelftest(stats, "device ID", snapshot.deviceId == INA228::cmd::DEVICE_ID);
   reportSelftest(stats, "MEMSTAT", (snapshot.diagAlert & INA228::cmd::DIAG_MEMSTAT) != 0U);
 
+  INA228::Mode mode = INA228::Mode::SHUTDOWN;
+  st = device.getMode(mode);
+  const bool modeOk = st.ok();
+  reportSelftest(stats, "getMode", modeOk, modeOk ? "" : errToStr(st.code));
+
   uint16_t raw16 = 0;
   st = device.readDiagAlertRaw(raw16);
   reportSelftest(stats, "diagraw", st.ok(), st.ok() ? "" : errToStr(st.code));
@@ -1040,7 +1049,19 @@ void runSelfTest() {
   st = device.setAveraging(device.getConfig().averaging);
   reportSelftest(stats, "setAveraging(current)", st.ok(), st.ok() ? "" : errToStr(st.code));
   st = device.setMode(device.getConfig().mode);
-  reportSelftest(stats, "setMode(current)", st.ok(), st.ok() ? "" : errToStr(st.code));
+  const bool modeAccepted = st.ok() || st.inProgress();
+  reportSelftest(stats, "setMode(current)", modeAccepted, modeAccepted ? "" : errToStr(st.code));
+  INA228::Mode timingMode = INA228::Mode::SHUTDOWN;
+  st = device.getMode(timingMode);
+  const uint32_t convUs = device.estimateConversionTimeUs();
+  if (st.ok()) {
+    const bool activeConversion = modeIncludesConversion(timingMode);
+    reportSelftest(stats, "estimateConversionTimeUs",
+                   activeConversion ? (convUs > 0U) : (convUs == 0U),
+                   activeConversion ? "" : "shutdown/no active channels");
+  } else {
+    skipSelftest(stats, "estimateConversionTimeUs", "mode unavailable");
+  }
   st = device.recover();
   reportSelftest(stats, "recover", st.ok(), st.ok() ? "" : errToStr(st.code));
   reportSelftest(stats, "isOnline", device.isOnline());

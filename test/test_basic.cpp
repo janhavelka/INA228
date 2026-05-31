@@ -755,6 +755,43 @@ void test_conversion_time_with_averaging() {
   TEST_ASSERT_EQUAL_UINT32(4320u, dev.estimateConversionTimeUs());
 }
 
+void test_shutdown_conversion_time_ignores_configured_delay() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUTDOWN;
+  cfg.convDelayMs2 = 7;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.estimateConversionTimeUs());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.estimateConversionTimeMs());
+}
+
+void test_conversion_ready_clears_completed_trigger_state() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  Status st = dev.triggerConversion(Mode::TRIG_ALL);
+  TEST_ASSERT_TRUE(st.inProgress());
+  bus.nowMs += dev.estimateConversionTimeMs();
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+
+  bool ready = false;
+  st = dev.isConversionReady(ready);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(ready);
+
+  SettingsSnapshot snap;
+  st = dev.getSettings(snap);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(snap.triggeredConversionPending);
+  TEST_ASSERT_EQUAL_UINT32(0u, snap.triggeredConversionStartMs);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SHUTDOWN),
+                          static_cast<uint8_t>(snap.mode));
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.estimateConversionTimeUs());
+}
+
 void test_triggered_conversion_gates_reads_until_cnvrf() {
   FakeBus bus;
   INA228::INA228 dev;
@@ -778,6 +815,12 @@ void test_triggered_conversion_gates_reads_until_cnvrf() {
   st = dev.readBusVoltage(volts);
   TEST_ASSERT_TRUE(st.ok());
   TEST_ASSERT_TRUE(volts > 0.0f);
+
+  SettingsSnapshot snap;
+  st = dev.getSettings(snap);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(snap.triggeredConversionPending);
+  TEST_ASSERT_EQUAL_UINT32(0u, snap.triggeredConversionStartMs);
 }
 
 // ===========================================================================
@@ -1052,6 +1095,8 @@ int main() {
   RUN_TEST(test_example_transport_validates_params_and_handles_write_read);
   RUN_TEST(test_conversion_time_estimate);
   RUN_TEST(test_conversion_time_with_averaging);
+  RUN_TEST(test_shutdown_conversion_time_ignores_configured_delay);
+  RUN_TEST(test_conversion_ready_clears_completed_trigger_state);
   RUN_TEST(test_triggered_conversion_gates_reads_until_cnvrf);
   RUN_TEST(test_read_bus_voltage_requires_init);
   RUN_TEST(test_read_bus_voltage_zero_on_default);

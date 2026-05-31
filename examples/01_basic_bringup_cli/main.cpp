@@ -392,6 +392,10 @@ const char* modeToStr(INA228::Mode mode) {
   }
 }
 
+bool modeIncludesConversion(INA228::Mode mode) {
+  return (static_cast<uint8_t>(mode) & 0x07U) != 0U;
+}
+
 const char* convTimeToStr(INA228::ConvTime ct) {
   using INA228::ConvTime;
   switch (ct) {
@@ -1105,9 +1109,10 @@ void runSelfTest() {
   reportCheck("device id = 0x2281", st.ok() && devId == 0x2281, "");
 
   // Mode read
-  INA228::Mode mode;
+  INA228::Mode mode = INA228::Mode::SHUTDOWN;
   st = device.getMode(mode);
-  reportCheck("getMode", st.ok(), st.ok() ? "" : errToStr(st.code));
+  const bool modeOk = st.ok();
+  reportCheck("getMode", modeOk, modeOk ? "" : errToStr(st.code));
 
   // Conversion ready
   bool ready = false;
@@ -1134,8 +1139,17 @@ void runSelfTest() {
   reportCheck("readRawSample", st.ok(), st.ok() ? "" : errToStr(st.code));
 
   // Timing
+  INA228::Mode timingMode = INA228::Mode::SHUTDOWN;
+  st = device.getMode(timingMode);
   const uint32_t convUs = device.estimateConversionTimeUs();
-  reportCheck("estimateConversionTimeUs>0", convUs > 0U, "");
+  if (st.ok()) {
+    const bool activeConversion = modeIncludesConversion(timingMode);
+    reportCheck("estimateConversionTimeUs",
+                activeConversion ? (convUs > 0U) : (convUs == 0U),
+                activeConversion ? "" : "shutdown/no active channels");
+  } else {
+    reportSkip("estimateConversionTimeUs", "mode unavailable");
+  }
 
   // Current LSB
   const float lsb = device.currentLsb();
