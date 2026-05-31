@@ -58,6 +58,23 @@ Rules:
 
 ---
 
+## INA228 development rules
+
+- Core library code in `include/` and `src/` must remain framework-neutral: no Arduino, Wire, ESP-IDF, FreeRTOS, logging framework, heap-heavy framework types, or platform delays.
+- The core must not own the I2C bus. Bus setup, locking, timeout policy, recovery, and platform handles belong to injected transports or examples.
+- Public fallible APIs must return precise status/error information. Do not collapse timeout, address NACK, data NACK, bus error, invalid configuration, not-ready, overflow, or calibration-invalid states into generic failure.
+- Do not expose current, power, energy, or charge helpers unless SHUNT_CAL/current-LSB behavior is well-defined and tested.
+- Treat SHUNT_CAL, ADCRANGE, shunt resistance, max expected current, and current LSB as one coherent contract.
+- Energy and charge accumulation are valid only under the datasheet-supported operating assumptions. Document triggered-mode limitations.
+- Preserve signedness and register width exactly. INA228 has wide measurement registers; VSHUNT, CURRENT, CHARGE, and DIETEMP are signed, VBUS/POWER/ENERGY are unsigned, and byte ordering must be tested.
+- Do not write multi-register configurations without considering partial hardware state and cache consistency.
+- DEVICE_ID and MANUFACTURER_ID checks must be explicit and tested.
+- Public APIs are not ISR-safe unless explicitly documented and proven. Instances are not thread-safe unless protected by the application.
+- High-voltage measurement examples must include safety disclaimers and must not imply the board/library itself makes 85 V systems safe.
+- Documentation must separate implemented behavior, native tests, build validation, hardware validation, and remaining limitations.
+
+---
+
 ## I2C Manager + Transport (Required)
 
 - The library MUST NOT own I2C. It never touches `Wire` directly.
@@ -102,7 +119,8 @@ struct Status {
 - Temperature compensation support via shunt temperature coefficient register.
 - Conversion delay support for multi-device synchronization.
 - Read all measurement outputs: shunt voltage, bus voltage, temperature, current, power, energy, charge.
-- Proper 20-bit signed result handling for shunt voltage, bus voltage, current.
+- Proper 20-bit signed result handling for shunt voltage and current; proper
+  20-bit unsigned result handling for bus voltage.
 - Proper 24-bit unsigned power, 40-bit unsigned energy, 40-bit signed charge.
 - Voltage/current/power/energy/charge conversion using datasheet formulas.
 - Alert system: configurable thresholds for shunt OV/UV, bus OV/UV, temperature OL, power OL.
