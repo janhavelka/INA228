@@ -1,6 +1,6 @@
 # INA228 ESP-IDF Port Implementation
 
-Implemented on branch `idf-port`.
+Implemented after the ESP-IDF port branch was merged into `main`.
 
 ## Core Boundary
 
@@ -42,6 +42,9 @@ Implemented on branch `idf-port`.
 - Arduino examples remain under `examples/01_basic_bringup_cli` and continue to
   provide `Wire` and `millis()` through example-local callbacks.
 - IDF builds were not run in this environment because `idf.py` was not on PATH.
+- Arduino example behavior has owner hardware-test coverage and remains the
+  reference behavior for this pass. ESP-IDF hardware validation has not been
+  performed in this environment.
 
 ## Remaining Hardware Work
 

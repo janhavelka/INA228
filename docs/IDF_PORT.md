@@ -2,8 +2,8 @@
 
 Last audited: 2026-05-19
 
-This started as a readiness audit and now records the ESP-IDF implementation on
-branch `idf-port`. The driver core is framework-neutral, and the native ESP-IDF
+This started as a readiness audit and now records the merged ESP-IDF
+implementation on `main`. The driver core is framework-neutral, and the native ESP-IDF
 example exposes the same user-visible CLI as the Arduino example. See
 `docs/IDF_PORT_IMPLEMENTATION.md` for the implemented file-level summary and
 validation notes.
@@ -14,7 +14,7 @@ Official ESP-IDF references:
 
 ## Current Framework/Library State
 
-- `library.json` version is `1.2.0`; the package declares `arduino` and
+- `library.json` version is `1.3.0`; the package declares `arduino` and
   `espidf` framework support on `espressif32`.
 - `platformio.ini` builds Arduino examples for ESP32-S3 and ESP32-S2, includes
   `lib_deps = Wire`, and has a native Unity test environment.
@@ -45,6 +45,8 @@ requires an ESP-IDF 6.0.1 build and hardware validation.
 - ESP-IDF compilation has not been verified in this shell because `idf.py` was
   unavailable.
 - Hardware validation remains outstanding.
+- Arduino example behavior has owner hardware-test coverage and remains the
+  reference behavior for parity checks in this pass.
 - `examples/01_basic_bringup_cli/main.cpp` is Arduino-only. The ESP-IDF example
   has a separate native command implementation with matching command coverage
   and validation.
