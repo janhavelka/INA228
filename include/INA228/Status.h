@@ -31,7 +31,8 @@ enum class Err : uint8_t {
 
   // Accumulator validity details (append-only to preserve existing values)
   ACCUMULATION_INVALID,      ///< ENERGY/CHARGE is not valid in the current state
-  ACCUMULATION_OVERFLOW      ///< ENERGY/CHARGE overflow evidence was observed
+  ACCUMULATION_OVERFLOW,     ///< ENERGY/CHARGE overflow evidence was observed
+  HARDWARE_DIRTY             ///< Cached config may not match device registers
 };
 
 /// @brief Status structure returned by all fallible operations.

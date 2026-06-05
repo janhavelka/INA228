@@ -74,8 +74,14 @@ struct SettingsSnapshot {
   bool tempCompEnabled = false;
   uint16_t shuntTempCoeffPpmC = 0;
   uint8_t convDelayMs2 = 0;
-  float currentLsb = 0.0f;
-  uint16_t shuntCal = 0;
+  float currentLsb = 0.0f;             ///< Actual amps/LSB used for converted current-derived values
+  uint16_t shuntCal = 0;               ///< Actual SHUNT_CAL value programmed by the driver
+  bool calibrated = false;             ///< True when SHUNT_CAL/currentLsb are usable and hardware is clean
+  bool calibrationClamped = false;     ///< True when requested calibration was clamped to SHUNT_CAL range
+  bool maxCurrentExceedsShuntRange = false; ///< True when max A * shunt ohms exceeds ADC full-scale
+  bool hardwareDirty = false;          ///< True after unresolved partial config/calibration hardware state
+  uint64_t dirtyRegisterMask = 0;      ///< Bit mask of possibly dirty registers, indexed by register address
+  bool thresholdsDirty = false;        ///< True when scaling changed after engineering-unit thresholds were set
   bool triggeredConversionPending = false;
   uint32_t triggeredConversionStartMs = 0;
 };
@@ -311,8 +317,16 @@ public:
   /// Set averaging count
   Status setAveraging(Averaging avg);
 
-  /// Set shunt ADC range
-  /// @note Changing range requires recalibration (SHUNT_CAL is recomputed)
+  /// Set shunt ADC range.
+  ///
+  /// The driver precomputes the matching SHUNT_CAL/currentLsb contract before
+  /// changing CONFIG. If the follow-up SHUNT_CAL write fails, CONFIG is rolled
+  /// back. If rollback also fails, converted current/power/energy/charge APIs
+  /// return Err::HARDWARE_DIRTY until recover() successfully replays config.
+  ///
+  /// @note Existing alert thresholds are not re-encoded. SettingsSnapshot
+  /// thresholdsDirty is set after a scale change so applications can reapply
+  /// engineering-unit limits deliberately.
   Status setAdcRange(AdcRange range);
 
   /// Update shunt calibration for the installed shunt resistor.
@@ -322,7 +336,12 @@ public:
   /// and charge conversion.
   ///
   /// Cache and scaling update only after the register write succeeds. If the
-  /// computed SHUNT_CAL value clamps, currentLsb() reflects the clamped value.
+  /// computed SHUNT_CAL value clamps, currentLsb() reflects the clamped value
+  /// and SettingsSnapshot::calibrationClamped is set.
+  ///
+  /// A successful calibration change invalidates accumulation readiness and
+  /// marks SettingsSnapshot::thresholdsDirty so engineering-unit thresholds can
+  /// be reapplied for the new scale.
   /// @param shuntOhm Shunt resistance in ohms
   /// @param maxCurrentA Maximum expected current in amps
   /// @return Status::Ok() on success
@@ -528,6 +547,8 @@ private:
 
   Status _applyConfig();
   Status _applyCalibration();
+  Status _ensureHardwareClean() const;
+  Status _ensureCalibrated() const;
   Status _ensureMeasurementReadyForRead();
   uint32_t _nowMs() const;
   bool _modeSupportsEnergyAccumulation() const;
@@ -543,6 +564,9 @@ private:
   void _markTriggeredConversionStarted(uint32_t nowMs);
   void _completeTriggeredConversion();
   void _clearCapturedConversionReadyFlag();
+  void _markHardwareDirty(uint8_t reg);
+  void _clearHardwareDirty();
+  void _markThresholdsDirty();
 
   /// Build ADC_CONFIG register value from current config
   uint16_t _buildAdcConfig() const;
@@ -576,6 +600,11 @@ private:
   // Calibration state
   float _currentLsb = 0.0f;  ///< Amps per LSB (0 = uncalibrated)
   uint16_t _shuntCal = 0;    ///< Computed SHUNT_CAL register value
+  bool _calibrationClamped = false;
+  bool _maxCurrentExceedsShuntRange = false;
+  bool _hardwareDirty = false;
+  uint64_t _dirtyRegisterMask = 0;
+  bool _thresholdsDirty = false;
 
   // Triggered conversion tracking
   bool _trigPending = false;

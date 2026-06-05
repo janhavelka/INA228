@@ -212,6 +212,7 @@ end() --------> UNINIT
 7. **Recovery model**: `OFFLINE` is latched. Supervisors should call `recover()` after applying any bus-level recovery policy.
 8. **Measurement freshness**: Continuous-mode reads return the latest hardware register contents at read time; they are not guaranteed fresh since the previous API call. Driver-tracked triggered conversions return `MEASUREMENT_NOT_READY` until the software deadline has elapsed and CNVRF is observed. `tick(nowMs)` and `pollConversionReady(nowMs, ready)` use the supplied timestamp, so they can advance pending triggered conversions even when `Config::nowMs` is unset.
 9. **Accumulator validity**: ENERGY requires continuous shunt-and-bus conversion, CHARGE requires continuous shunt conversion, and both require calibration plus a continuous CNVRF observed after begin/reset/accumulator reset. Scalar `readEnergy()` and `readCharge()` return `ACCUMULATION_INVALID`, `ACCUMULATION_OVERFLOW`, or `MATH_OVERFLOW` instead of returning invalid data. `readMeasurement()` and `readRawSample()` keep their aggregate read shape but mark `energyValid` and `chargeValid` false when those fields are not valid.
+10. **Calibration coherence**: `SHUNT_CAL`, `currentLsb()`, `shuntResistanceOhm`, `maxExpectedCurrentA`, and `adcRange` are treated as one scaling contract. Converted current, power, energy, charge, and power-limit APIs require a valid calibration and a clean hardware/cache state. If a multi-register range/calibration update cannot be rolled back after an I2C failure, those APIs return `HARDWARE_DIRTY` until `recover()` successfully replays the cached configuration.
 
 ## INA228 Address Configuration
 
@@ -280,7 +281,11 @@ idf.py -C examples/esp_idf/basic set-target esp32s2 build
 
 - `setCalibration(ohm, A)` validates finite positive inputs and programs `SHUNT_CAL`.
 - If the computed calibration exceeds the 15-bit register range, the driver clamps `SHUNT_CAL` and adjusts `currentLsb()` to the actual programmed value so current, power, energy, and charge scaling stay consistent with hardware.
+- `SettingsSnapshot` exposes `calibrated`, `calibrationClamped`, `maxCurrentExceedsShuntRange`, `hardwareDirty`, `dirtyRegisterMask`, and `thresholdsDirty` for service diagnostics.
+- `setAdcRange(range)` precomputes the new calibration, writes CONFIG and SHUNT_CAL as a guarded sequence, and rolls CONFIG back if SHUNT_CAL fails. If rollback also fails, converted current-derived APIs return `HARDWARE_DIRTY` until `recover()`.
 - Calibration and config setters update cached values only after required I2C writes succeed.
+- Uncalibrated `begin()` writes `SHUNT_CAL=0`; raw voltage/temperature/register reads remain available, while current, power, energy, charge, and power-limit helpers return calibration errors.
+- Changing ADCRANGE or calibration marks engineering-unit alert thresholds dirty. Reapply thresholds after scale changes before relying on ALERT comparisons.
 - Triggered modes return `IN_PROGRESS`; measurement reads return `MEASUREMENT_NOT_READY` until the conversion time has elapsed and `CNVRF` is observed.
 - ENERGY and CHARGE are not valid in triggered or shutdown modes. After `resetAccumulators()`, they remain invalid until a continuous CNVRF is observed.
 - Bus voltage and raw energy are treated as unsigned values; shunt voltage, current, and charge remain signed.

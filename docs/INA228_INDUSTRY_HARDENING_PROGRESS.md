@@ -385,3 +385,98 @@ Four read-only agents were used before implementation:
 - `MATHOF` is now enforced for accumulator reads and surfaced in aggregate flags, but broader current/power validity policy remains part of later API cleanup.
 - Calibration/ADCRANGE coherency and multi-register partial-state policy remain for Chunk 05.
 - Full reset/RSTACC hardware timing and readback policy remains for Chunk 06.
+
+## Chunk 05 - Calibration, ADCRANGE Atomicity, Scaling Vectors, and Numeric Safety
+
+Date: 2026-06-05
+Branch: `hardening/ina228-industry-readiness`
+Starting commit: `430986d2e190caa0829313e1bd908186e513a8b5`
+Commit: pending at report-update time; final response records the committed hash.
+
+### Scope
+
+Chunk 05 makes calibration and ADCRANGE scaling coherent across `SHUNT_CAL`, `CURRENT_LSB`, shunt resistance, max expected current, and converted current-derived APIs. It adds a dirty hardware/cache state for unresolved partial writes and exact native vectors for calibration and signed/unsigned conversion behavior. It does not perform hardware validation.
+
+### Subagent Findings
+
+Four read-only agents were used before implementation:
+
+| Agent | Finding summary |
+| --- | --- |
+| `calibration-datasheet-agent` | Confirmed `CURRENT_LSB = maxExpectedCurrent / 2^19`, `SHUNT_CAL = 13107.2e6 * CURRENT_LSB * RSHUNT`, with a 4x multiplier for ADCRANGE=1. Verified the required 0.0162 ohm / 10 A vectors: `0x0FD2` for ADCRANGE=0 and `0x3F48` for ADCRANGE=1. |
+| `numeric-agent` | Found cache/hardware divergence risk in `setAdcRange()`, stale nonzero `SHUNT_CAL` when uncalibrated, missing clamp/dirty diagnostics, and implementation-defined signed conversion risks. |
+| `atomicity-agent` | Recommended precomputing calibration before hardware range writes, rollback-or-dirty handling for partial multi-register failures, dirty blocking for converted reads, and `recover()` clearing dirty only after a full config replay. |
+| `test-vector-agent` | Proposed exact calibration vectors, positive and negative raw conversion vectors, scripted write-failure cases, dirty/recover tests, invalid-input tests, and threshold scale-change diagnostics. |
+
+### Changes
+
+- Added append-only `Err::HARDWARE_DIRTY`.
+- Added calibration and dirty-state diagnostics to `SettingsSnapshot`: `calibrated`, `calibrationClamped`, `maxCurrentExceedsShuntRange`, `hardwareDirty`, `dirtyRegisterMask`, and `thresholdsDirty`.
+- Made calibration computation report clamp state and whether requested max current exceeds the selected shunt-voltage full-scale range.
+- Kept compatible clamp behavior, but `currentLsb()` now reflects the actual clamped `SHUNT_CAL` and the clamp is visible in settings.
+- Made uncalibrated configuration write `SHUNT_CAL=0` so converted current-derived reads cannot use stale hardware calibration.
+- Made converted current, power, energy, charge, and power-limit APIs require both calibration and clean hardware/cache state.
+- Added finite-output checks for converted current and power float outputs; overflow returns `MATH_OVERFLOW` without overwriting caller outputs.
+- Reworked `setAdcRange()` as a guarded CONFIG + SHUNT_CAL transaction: precompute new calibration, write CONFIG, write SHUNT_CAL, roll CONFIG back if SHUNT_CAL fails, and mark CONFIG/SHUNT_CAL dirty if rollback also fails.
+- Added dirty-state helpers. Measurement readiness and calibration checks now return `HARDWARE_DIRTY` before touching I2C when cache/hardware coherence is unresolved.
+- Made `recover()` and `softReset()` clear dirty only after cached config and calibration replay succeeds.
+- Made `_applyConfig()` always replay `SHUNT_TEMPCO`, including zero, so recovery can resync raw diagnostic writes to that register.
+- Marked engineering-unit thresholds dirty after ADCRANGE or calibration scale changes; thresholds are not re-encoded automatically.
+- Replaced 20-bit and 40-bit sign extension with portable unsigned two's-complement logic.
+- Updated Arduino and ESP-IDF example `settings` output and error string tables for the new diagnostics/status.
+- Updated README and Doxygen for calibration coherence, dirty state, uncalibrated behavior, and threshold dirty policy.
+
+### API Changes
+
+- Added `Err::HARDWARE_DIRTY`.
+- Added fields at the end of `SettingsSnapshot`: `calibrated`, `calibrationClamped`, `maxCurrentExceedsShuntRange`, `hardwareDirty`, `dirtyRegisterMask`, and `thresholdsDirty`.
+- Converted current-derived APIs can now return `HARDWARE_DIRTY` if a partial config/calibration update left device registers possibly inconsistent with cache.
+- `begin()` with no calibration now programs `SHUNT_CAL=0`; current, power, energy, charge, and power-limit helpers still require a valid calibration.
+- `setAdcRange()` can return the original transport error after a failed SHUNT_CAL write while preserving the old cache; if rollback fails, settings expose dirty registers and converted reads fail with `HARDWARE_DIRTY`.
+
+### Tests Added Or Updated
+
+- Updated the native fake bus with queued per-register write failures.
+- Added exact calibration vector tests for `R=0.0162 ohm`, `max=10 A`, ADCRANGE=0 and ADCRANGE=1.
+- Added ADCRANGE multiplier tests for recomputed `SHUNT_CAL` and unchanged actual `CURRENT_LSB`.
+- Added positive raw vector tests for VSHUNT, VBUS, DIETEMP, CURRENT, POWER, ENERGY, and CHARGE conversions.
+- Added negative raw and scalar conversion tests for 20-bit and 40-bit signed values.
+- Added invalid begin and invalid `setCalibration()` tests proving no I2C/cache mutation on invalid inputs.
+- Added float overflow tests for `readPower()` and `readMeasurement()`.
+- Added uncalibrated begin test proving `SHUNT_CAL=0`.
+- Added `setAdcRange()` scripted failure tests for successful rollback and rollback-failure dirty state.
+- Added dirty/recover test for raw diagnostic writes to cached config registers.
+- Added threshold dirty test after scale changes.
+- Updated the settings snapshot test for calibration and dirty diagnostic fields.
+
+### Commands Run
+
+| Command | Result |
+| --- | --- |
+| `git status --short` | showed modified implementation/docs/example/test files before commit |
+| `git diff --check` | PASS; only Git CRLF working-copy warnings were printed |
+| `python tools/check_core_timing_guard.py` | PASS: `Core timing guard PASSED` |
+| `python tools/check_cli_contract.py` | PASS: `CLI contract PASSED` |
+| `python tools/check_idf_example_contract.py` | PASS: `IDF example contract PASSED` |
+| `python scripts/generate_version.py check` | PASS: `Up to date: C:\Users\Honza\Documents\Projects\INA228\include\INA228\Version.h` |
+| `python -m platformio test -e native` | PASS: 83 tests passed in native environment. PlatformIO warned that obsolete Core 6.1.18 is used and a previous 6.1.19 also exists. |
+| `python -m platformio run -e esp32s3dev` | PASS: ESP32-S3 Arduino build succeeded. |
+| `python -m platformio run -e esp32s2dev` | PASS: ESP32-S2 Arduino build succeeded. |
+| `python -m platformio pkg pack` | PASS: wrote `INA228-1.3.0.tar.gz`; generated tarball was removed after recording the result. |
+| `idf.py --version` | NOT AVAILABLE: PowerShell reported `idf.py : The term 'idf.py' is not recognized as the name of a cmdlet, function, script file, or operable program.` |
+
+### Commands Not Run
+
+| Command | Reason |
+| --- | --- |
+| `idf.py -C examples/esp_idf/basic set-target esp32s3 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+| `idf.py -C examples/esp_idf/basic set-target esp32s2 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+
+### Remaining Risks
+
+- No hardware validation was performed or claimed.
+- Pure ESP-IDF build proof is still missing because `idf.py` is unavailable locally.
+- `maxCurrentExceedsShuntRange` is diagnostic only; the driver still accepts the mathematically valid calibration vector even when the requested max current exceeds the selected ADC shunt-voltage full-scale range.
+- Threshold dirty tracking is global, not per-threshold; applications must deliberately reapply engineering-unit thresholds after scale changes before relying on ALERT comparisons.
+- `MATHOF` is already enforced for accumulator reads, but broader current/power semantic policy from live DIAG_ALRT remains a later hardening topic.
+- Full reset/RSTACC hardware timing and output atomicity policy remains for later chunks.

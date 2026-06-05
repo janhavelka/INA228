@@ -216,6 +216,9 @@ const char* errToStr(INA228::Err err) {
     case Err::I2C_NACK_DATA: return "I2C_NACK_DATA";
     case Err::I2C_TIMEOUT: return "I2C_TIMEOUT";
     case Err::I2C_BUS: return "I2C_BUS";
+    case Err::ACCUMULATION_INVALID: return "ACCUMULATION_INVALID";
+    case Err::ACCUMULATION_OVERFLOW: return "ACCUMULATION_OVERFLOW";
+    case Err::HARDWARE_DIRTY: return "HARDWARE_DIRTY";
     default: return "UNKNOWN";
   }
 }
@@ -746,6 +749,15 @@ void printSettings() {
               boolStr(snap.tempCompEnabled), snap.shuntTempCoeffPpmC);
   std::printf("  Calibration:       Rshunt=%.6f ohm  MaxCurrent=%.6f A\n",
               snap.shuntResistanceOhm, snap.maxExpectedCurrentA);
+  std::printf("  Calibration state: calibrated=%s clamped=%s rangeExceeded=%s\n",
+              boolStr(snap.calibrated),
+              boolStr(snap.calibrationClamped),
+              boolStr(snap.maxCurrentExceedsShuntRange));
+  std::printf("  Hardware dirty:    %s mask=0x%08lX%08lX\n",
+              boolStr(snap.hardwareDirty),
+              static_cast<unsigned long>(snap.dirtyRegisterMask >> 32),
+              static_cast<unsigned long>(snap.dirtyRegisterMask & 0xFFFFFFFFULL));
+  std::printf("  Thresholds dirty:  %s\n", boolStr(snap.thresholdsDirty));
   std::printf("  Triggered state:   pending=%s start=%lu ms\n",
               boolStr(snap.triggeredConversionPending),
               static_cast<unsigned long>(snap.triggeredConversionStartMs));
