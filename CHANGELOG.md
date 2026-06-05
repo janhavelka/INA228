@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `begin()` and `probe()` now preserve timeout, data NACK, bus, and generic I2C
+  transport errors instead of collapsing them to `DEVICE_NOT_FOUND`; definite
+  address NACK still maps to device-not-found for presence checks.
+- Public API documentation now states the non-thread-safe/non-ISR-safe contract,
+  callback re-entry restrictions, output-parameter commit rules, raw-register
+  diagnostic risks, and calibration requirements for converted channels.
+
+### Removed
+- Deleted implicit copy and move operations for `INA228::INA228`; keep driver
+  instances stable and pass them by pointer or reference.
+
 ## [1.3.0] - 2026-05-20
 
 ### Added

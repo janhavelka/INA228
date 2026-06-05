@@ -4,6 +4,7 @@
 #include <unity.h>
 
 #include <limits>
+#include <type_traits>
 
 #include "Arduino.h"
 #include "Wire.h"
@@ -13,6 +14,17 @@ TwoWire Wire;
 
 #include "INA228/INA228.h"
 #include "common/I2cTransport.h"
+
+static_assert(std::is_default_constructible<::INA228::INA228>::value,
+              "INA228 must remain default constructible");
+static_assert(!std::is_copy_constructible<::INA228::INA228>::value,
+              "INA228 must not be copy constructible");
+static_assert(!std::is_copy_assignable<::INA228::INA228>::value,
+              "INA228 must not be copy assignable");
+static_assert(!std::is_move_constructible<::INA228::INA228>::value,
+              "INA228 must not be move constructible");
+static_assert(!std::is_move_assignable<::INA228::INA228>::value,
+              "INA228 must not be move assignable");
 
 using namespace INA228;
 
@@ -640,7 +652,7 @@ void test_failed_begin_probe_resets_cached_config() {
   bus.readError = Status::Error(Err::TIMEOUT, "forced begin timeout", -10);
 
   Status st = dev.begin(cfg);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_FALSE(dev.isInitialized());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::UNINIT),
@@ -654,6 +666,46 @@ void test_failed_begin_probe_resets_cached_config() {
   TEST_ASSERT_EQUAL_UINT32(0u, dev.totalSuccess());
   TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, dev.currentLsb());
+}
+
+void test_begin_preserves_transport_errors_for_startup_reads() {
+  const uint8_t regs[] = {
+      cmd::REG_MANUFACTURER_ID,
+      cmd::REG_DEVICE_ID,
+      cmd::REG_DIAG_ALRT,
+  };
+  struct Case {
+    Err transport;
+    Err expected;
+  };
+  const Case cases[] = {
+      {Err::I2C_NACK_ADDR, Err::DEVICE_NOT_FOUND},
+      {Err::I2C_NACK_DATA, Err::I2C_NACK_DATA},
+      {Err::I2C_TIMEOUT, Err::I2C_TIMEOUT},
+      {Err::I2C_BUS, Err::I2C_BUS},
+      {Err::I2C_ERROR, Err::I2C_ERROR},
+      {Err::TIMEOUT, Err::TIMEOUT},
+  };
+
+  for (uint8_t reg : regs) {
+    for (const Case& c : cases) {
+      FakeBus bus;
+      INA228::INA228 dev;
+      Config cfg = makeConfig(bus);
+      bus.readError = Status::Error(c.transport, "forced begin read error", -33);
+      queueNthReadFailure(bus, reg, 1);
+
+      Status st = dev.begin(cfg);
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(c.expected),
+                              static_cast<uint8_t>(st.code));
+      TEST_ASSERT_EQUAL_INT32(-33, st.detail);
+      TEST_ASSERT_FALSE(dev.isInitialized());
+      TEST_ASSERT_NULL(dev.getConfig().i2cWrite);
+      TEST_ASSERT_NULL(dev.getConfig().i2cWriteRead);
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::UNINIT),
+                              static_cast<uint8_t>(dev.state()));
+    }
+  }
 }
 
 void test_begin_normalizes_offline_threshold_on_stored_copy() {
@@ -751,12 +803,55 @@ void test_probe_failure_does_not_update_health() {
   bus.readErrorRemaining = 1;
   bus.readError = Status::Error(Err::I2C_ERROR, "forced probe error", -7);
   Status st = dev.probe();
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_UINT32(beforeSuccess, dev.totalSuccess());
   TEST_ASSERT_EQUAL_UINT32(beforeFailures, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(beforeState),
                           static_cast<uint8_t>(dev.state()));
+}
+
+void test_probe_preserves_transport_errors_without_health_tracking() {
+  const uint8_t regs[] = {
+      cmd::REG_MANUFACTURER_ID,
+      cmd::REG_DEVICE_ID,
+  };
+  struct Case {
+    Err transport;
+    Err expected;
+  };
+  const Case cases[] = {
+      {Err::I2C_NACK_ADDR, Err::DEVICE_NOT_FOUND},
+      {Err::I2C_NACK_DATA, Err::I2C_NACK_DATA},
+      {Err::I2C_TIMEOUT, Err::I2C_TIMEOUT},
+      {Err::I2C_BUS, Err::I2C_BUS},
+      {Err::I2C_ERROR, Err::I2C_ERROR},
+      {Err::TIMEOUT, Err::TIMEOUT},
+  };
+
+  for (uint8_t reg : regs) {
+    for (const Case& c : cases) {
+      FakeBus bus;
+      INA228::INA228 dev;
+      TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+      const uint32_t beforeSuccess = dev.totalSuccess();
+      const uint32_t beforeFailures = dev.totalFailures();
+      const DriverState beforeState = dev.state();
+
+      clearReadHistory(bus);
+      bus.readError = Status::Error(c.transport, "forced probe read error", -44);
+      queueNthReadFailure(bus, reg, 1);
+
+      Status st = dev.probe();
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(c.expected),
+                              static_cast<uint8_t>(st.code));
+      TEST_ASSERT_EQUAL_INT32(-44, st.detail);
+      TEST_ASSERT_EQUAL_UINT32(beforeSuccess, dev.totalSuccess());
+      TEST_ASSERT_EQUAL_UINT32(beforeFailures, dev.totalFailures());
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(beforeState),
+                              static_cast<uint8_t>(dev.state()));
+    }
+  }
 }
 
 // ===========================================================================
@@ -2684,6 +2779,110 @@ void test_public_register_access_helpers() {
   TEST_ASSERT_EQUAL_UINT64(0u, energy);
 }
 
+void test_public_register_access_preserves_transport_errors() {
+  const Err transportCodes[] = {
+      Err::I2C_NACK_ADDR,
+      Err::I2C_NACK_DATA,
+      Err::I2C_TIMEOUT,
+      Err::I2C_BUS,
+      Err::I2C_ERROR,
+  };
+
+  for (Err err : transportCodes) {
+    FakeBus bus;
+    INA228::INA228 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    bus.readErrorRemaining = 1;
+    bus.readError = Status::Error(err, "forced read16 error", -51);
+    uint16_t reg16 = 0;
+    Status st = dev.readRegister16(cmd::REG_MANUFACTURER_ID, reg16);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(err),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_INT32(-51, st.detail);
+  }
+
+  for (Err err : transportCodes) {
+    FakeBus bus;
+    INA228::INA228 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    bus.readErrorRemaining = 1;
+    bus.readError = Status::Error(err, "forced read24 error", -52);
+    uint32_t reg24 = 0;
+    Status st = dev.readRegister24(cmd::REG_POWER, reg24);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(err),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_INT32(-52, st.detail);
+  }
+
+  for (Err err : transportCodes) {
+    FakeBus bus;
+    INA228::INA228 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    bus.readErrorRemaining = 1;
+    bus.readError = Status::Error(err, "forced read40 error", -53);
+    uint64_t reg40 = 0;
+    Status st = dev.readRegister40(cmd::REG_ENERGY, reg40);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(err),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_INT32(-53, st.detail);
+  }
+
+  for (Err err : transportCodes) {
+    FakeBus bus;
+    INA228::INA228 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    bus.writeErrorRemaining = 1;
+    bus.writeError = Status::Error(err, "forced write16 error", -54);
+    Status st = dev.writeRegister16(cmd::REG_SHUNT_TEMPCO, 0x1234);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(err),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_INT32(-54, st.detail);
+  }
+}
+
+void test_status_contracts_for_calibration_accumulation_and_dirty_state() {
+  {
+    FakeBus bus;
+    INA228::INA228 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    float current = 123.0f;
+    Status st = dev.readCurrent(current);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 123.0f, current);
+  }
+
+  {
+    FakeBus bus;
+    INA228::INA228 dev;
+    Config cfg = makeConfig(bus);
+    cfg.shuntResistanceOhm = 0.0162f;
+    cfg.maxExpectedCurrentA = 10.0f;
+    cfg.mode = Mode::SHUTDOWN;
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    double energy = 456.0;
+    Status st = dev.readEnergy(energy);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::ACCUMULATION_INVALID),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 456.0f, static_cast<float>(energy));
+  }
+
+  {
+    FakeBus bus;
+    INA228::INA228 dev;
+    Config cfg = makeConfig(bus);
+    cfg.shuntResistanceOhm = 0.0162f;
+    cfg.maxExpectedCurrentA = 10.0f;
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    TEST_ASSERT_TRUE(dev.writeRegister16(cmd::REG_SHUNT_TEMPCO, 0x1234).ok());
+    float power = 789.0f;
+    Status st = dev.readPower(power);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::HARDWARE_DIRTY),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 789.0f, power);
+  }
+}
+
 void test_register_access_after_end_does_not_touch_bus() {
   FakeBus bus;
   INA228::INA228 dev;
@@ -2732,6 +2931,7 @@ int main() {
   RUN_TEST(test_begin_rejects_invalid_adc_range);
   RUN_TEST(test_invalid_begin_after_success_resets_default_runtime);
   RUN_TEST(test_failed_begin_probe_resets_cached_config);
+  RUN_TEST(test_begin_preserves_transport_errors_for_startup_reads);
   RUN_TEST(test_begin_normalizes_offline_threshold_on_stored_copy);
   RUN_TEST(test_begin_programs_tempco_even_when_tempcomp_disabled);
   RUN_TEST(test_begin_rejects_non_finite_calibration);
@@ -2739,6 +2939,7 @@ int main() {
   RUN_TEST(test_missing_now_ms_uses_zero_for_health_timestamps);
   RUN_TEST(test_begin_without_now_ms_keeps_zero_health_timestamp);
   RUN_TEST(test_probe_failure_does_not_update_health);
+  RUN_TEST(test_probe_preserves_transport_errors_without_health_tracking);
   RUN_TEST(test_recover_failure_updates_health_once);
   RUN_TEST(test_recover_success_returns_ready);
   RUN_TEST(test_recover_preserves_transport_error_code);
@@ -2811,6 +3012,8 @@ int main() {
   RUN_TEST(test_read_manufacturer_id);
   RUN_TEST(test_read_device_id);
   RUN_TEST(test_public_register_access_helpers);
+  RUN_TEST(test_public_register_access_preserves_transport_errors);
+  RUN_TEST(test_status_contracts_for_calibration_accumulation_and_dirty_state);
   RUN_TEST(test_register_access_after_end_does_not_touch_bus);
   return UNITY_END();
 }

@@ -9,6 +9,10 @@
 namespace INA228 {
 
 /// @brief I2C write callback signature.
+///
+/// The callback must be bounded by @p timeoutMs, must not re-enter the same
+/// INA228 instance, and should map platform errors to the most precise Status
+/// code available (address NACK, data NACK, timeout, bus, or generic I2C).
 /// @param addr     I2C device address (7-bit)
 /// @param data     Pointer to data to write
 /// @param len      Number of bytes to write
@@ -19,6 +23,10 @@ using I2cWriteFn = Status (*)(uint8_t addr, const uint8_t* data, size_t len,
                               uint32_t timeoutMs, void* user);
 
 /// @brief I2C write-then-read callback signature.
+///
+/// The callback must be bounded by @p timeoutMs, must not re-enter the same
+/// INA228 instance, and should map platform errors to the most precise Status
+/// code available (address NACK, data NACK, timeout, bus, or generic I2C).
 /// @param addr     I2C device address (7-bit)
 /// @param txData   Pointer to data to write
 /// @param txLen    Number of bytes to write
@@ -114,7 +122,7 @@ struct Config {
 
   // === Calibration ===
   float shuntResistanceOhm = 0.0f;      ///< Shunt resistor value in ohms (0 = uncalibrated)
-  float maxExpectedCurrentA = 0.0f;      ///< Maximum expected current in amps (for CURRENT_LSB)
+  float maxExpectedCurrentA = 0.0f;     ///< Max amps for CURRENT_LSB (0 = uncalibrated)
 
   // === Temperature Compensation (optional) ===
   bool tempCompEnabled = false;          ///< Enable shunt temperature compensation

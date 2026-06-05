@@ -188,6 +188,13 @@ static void parseDiagAlert(uint16_t raw, DiagAlert& out) {
   out.memstat   = (raw & cmd::DIAG_MEMSTAT) != 0;
 }
 
+static Status mapPresenceReadFailure(const Status& st, const char* message) {
+  if (st.code == Err::I2C_NACK_ADDR) {
+    return Status::Error(Err::DEVICE_NOT_FOUND, message, st.detail);
+  }
+  return st;
+}
+
 }  // namespace
 
 // ===========================================================================
@@ -302,7 +309,7 @@ Status INA228::begin(const Config& config) {
   Status st = _readReg16Raw(cmd::REG_MANUFACTURER_ID, mfgId);
   if (!st.ok()) {
     return failBeginAfterConfig(
-        Status::Error(Err::DEVICE_NOT_FOUND, "Device not responding", st.detail));
+        mapPresenceReadFailure(st, "Device not responding"));
   }
   if (mfgId != cmd::MANUFACTURER_ID) {
     return failBeginAfterConfig(
@@ -314,7 +321,7 @@ Status INA228::begin(const Config& config) {
   st = _readReg16Raw(cmd::REG_DEVICE_ID, devId);
   if (!st.ok()) {
     return failBeginAfterConfig(
-        Status::Error(Err::DEVICE_NOT_FOUND, "Device ID read failed", st.detail));
+        mapPresenceReadFailure(st, "Device ID read failed"));
   }
   if (devId != cmd::DEVICE_ID) {
     return failBeginAfterConfig(
@@ -327,7 +334,7 @@ Status INA228::begin(const Config& config) {
   st = _readDiagAlertRaw(diagAlrt);
   if (!st.ok()) {
     return failBeginAfterConfig(
-        Status::Error(Err::DEVICE_NOT_FOUND, "DIAG_ALRT read failed", st.detail));
+        mapPresenceReadFailure(st, "DIAG_ALRT read failed"));
   }
   if ((diagAlrt & cmd::DIAG_MEMSTAT) == 0) {
     return failBeginAfterConfig(
@@ -404,7 +411,7 @@ Status INA228::probe() {
   uint16_t mfgId = 0;
   Status st = _readReg16Raw(cmd::REG_MANUFACTURER_ID, mfgId);
   if (!st.ok()) {
-    return Status::Error(Err::DEVICE_NOT_FOUND, "Device not responding", st.detail);
+    return mapPresenceReadFailure(st, "Device not responding");
   }
   if (mfgId != cmd::MANUFACTURER_ID) {
     return Status::Error(Err::DEVICE_ID_MISMATCH, "Manufacturer ID mismatch",
@@ -414,7 +421,7 @@ Status INA228::probe() {
   uint16_t devId = 0;
   st = _readReg16Raw(cmd::REG_DEVICE_ID, devId);
   if (!st.ok()) {
-    return Status::Error(Err::DEVICE_NOT_FOUND, "Device ID read failed", st.detail);
+    return mapPresenceReadFailure(st, "Device ID read failed");
   }
   if (devId != cmd::DEVICE_ID) {
     return Status::Error(Err::DEVICE_ID_MISMATCH, "Device ID mismatch",

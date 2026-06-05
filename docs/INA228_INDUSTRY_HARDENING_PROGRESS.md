@@ -582,3 +582,110 @@ Four read-only agents were used before implementation:
 - `softReset()` uses finite readback attempts with no hidden delay; on real hardware an application may need to call it only after bus/device timing is suitable or retry after a `TIMEOUT`.
 - Threshold dirty tracking is still global, not per-threshold, and threshold registers are not replayed after software reset.
 - RSTACC self-clear remains unproven from local docs, so the driver explicitly clears and verifies CONFIG reset bits instead of relying on self-clear.
+
+## Chunk 07 - Status Errors, Copy/Move Semantics, and Public API Contracts
+
+Date: 2026-06-05
+Branch: `hardening/ina228-industry-readiness`
+Starting commit: `f1987ddf21246d2a9fbc75d9e45ccda38569f1f4`
+Commit: pending at report-update time; final response records the committed hash.
+
+### Scope
+
+Chunk 07 tightens general production contracts after the INA228-specific fixes:
+precise startup/probe transport errors, deleted copy/move operations, explicit
+public API safety contracts, and status/output-contract tests. No hardware
+validation was performed.
+
+### Subagent Findings
+
+Four read-only agents were used before implementation:
+
+| Agent | Finding summary |
+| --- | --- |
+| `status-agent` | Found `begin()` and `probe()` collapsed raw identity/DIAG_ALRT read failures to `DEVICE_NOT_FOUND`; recover, softReset, and public register helpers already preserved transport codes. Recommended mapping only address NACK to device-not-found and returning timeout/data NACK/bus/generic errors unchanged. |
+| `api-agent` | Found Doxygen/README gaps for not-thread-safe/not-ISR-safe behavior, external bus locking, callback re-entry, raw register side effects, aggregate calibration requirements, and output assignment rules. |
+| `copy-agent` | Confirmed implicit copy and move were generated and unsafe because copied instances would share transport/user pointers while diverging health/cache/trigger/diagnostic state. Recommended explicit default constructor and deleted copy/move special members with compile-time tests. |
+| `compatibility-agent` | Noted that deleting copy/move is source-breaking and granular `begin()`/`probe()` statuses can affect callers that only handled `DEVICE_NOT_FOUND`. Recommended changelog and migration notes. |
+
+### Changes
+
+- Added startup/probe presence-read normalization that maps only
+  `Err::I2C_NACK_ADDR` to `Err::DEVICE_NOT_FOUND`.
+- Preserved `I2C_NACK_DATA`, `I2C_TIMEOUT`, `I2C_BUS`, `I2C_ERROR`, and generic
+  `TIMEOUT` from `begin()` identity/MEMSTAT reads and `probe()`.
+- Deleted `INA228::INA228` copy construction, copy assignment, move
+  construction, and move assignment while explicitly preserving default
+  construction.
+- Documented public API contracts:
+  - instances are not thread-safe or ISR-safe;
+  - shared-bus locking belongs to the application;
+  - transport/time callbacks must not re-enter the same instance;
+  - output parameters are committed only on `Status::Ok()` unless documented otherwise;
+  - raw register access is diagnostic/service-level and can consume status evidence or desynchronize cache;
+  - aggregate converted current-derived fields require calibration.
+- Added changelog entries for granular startup/probe statuses, deleted
+  copy/move, and tightened public contracts.
+
+### API Changes
+
+- `INA228::INA228` remains default-constructible but is no longer copyable or
+  movable. Applications should keep instances stable and pass by pointer or
+  reference.
+- `begin()` and `probe()` now return precise transport failures instead of
+  converting all read failures to `DEVICE_NOT_FOUND`. Definite address NACK
+  remains mapped to `DEVICE_NOT_FOUND`.
+- No new status enum values were added.
+
+### Tests Added Or Updated
+
+- Added compile-time assertions that the driver is default-constructible and
+  not copy/move constructible or assignable.
+- Updated the failed-`begin()` cache-reset test to expect preserved `TIMEOUT`.
+- Updated the probe health-neutral failure test to expect preserved `I2C_ERROR`.
+- Added native fake-bus table tests for `begin()` failures at manufacturer ID,
+  device ID, and `DIAG_ALRT` startup reads across address NACK, data NACK,
+  I2C timeout, bus error, generic I2C error, and generic timeout.
+- Added native fake-bus table tests for `probe()` failures at manufacturer ID
+  and device ID reads across the same status set, while proving no health
+  counters/state change.
+- Added public raw-register status propagation tests for tracked 16/24/40-bit
+  reads and 16-bit writes.
+- Added a status consistency test covering calibration invalid,
+  accumulation invalid, and dirty hardware state output preservation.
+- Existing destructive `DIAG_ALRT` tests and aggregate all-or-nothing output
+  tests from earlier chunks remain in place.
+
+### Commands Run
+
+| Command | Result |
+| --- | --- |
+| `git status --short` | showed modified source/header/docs/test files before commit |
+| `git diff --check` | PASS; only Git CRLF normalization warnings were printed |
+| `python tools/check_core_timing_guard.py` | PASS: `Core timing guard PASSED` |
+| `python tools/check_cli_contract.py` | PASS: `CLI contract PASSED` |
+| `python tools/check_idf_example_contract.py` | PASS: `IDF example contract PASSED` |
+| `python scripts/generate_version.py check` | PASS: `Up to date: C:\Users\Honza\Documents\Projects\INA228\include\INA228\Version.h` |
+| `python -m platformio test -e native` | First run failed because Unity double precision assertions are disabled; the new test was changed to the existing float-within style. Final run PASS: 96 tests passed. PlatformIO warned that obsolete Core 6.1.18 is used and a previous 6.1.19 also exists. |
+| `python -m platformio run -e esp32s3dev` | PASS: ESP32-S3 Arduino build succeeded. |
+| `python -m platformio run -e esp32s2dev` | PASS: ESP32-S2 Arduino build succeeded. |
+| `python -m platformio pkg pack` | PASS: wrote `INA228-1.3.0.tar.gz`; generated tarball was removed after recording the result. |
+| `idf.py --version` | NOT AVAILABLE: PowerShell reported `idf.py : The term 'idf.py' is not recognized as the name of a cmdlet, function, script file, or operable program.` |
+
+### Commands Not Run
+
+| Command | Reason |
+| --- | --- |
+| `idf.py -C examples/esp_idf/basic set-target esp32s3 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+| `idf.py -C examples/esp_idf/basic set-target esp32s2 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+
+### Remaining Risks
+
+- No hardware validation was performed or claimed.
+- Pure ESP-IDF build proof is still missing because `idf.py` is unavailable
+  locally.
+- Deleting copy/move is source-breaking for callers that copied driver objects;
+  this is intentional because copied hardware/cache/health state is unsafe.
+- Example-level ESP-IDF error mapping and scanner display precision were
+  identified by the status agent but left for a later focused chunk to keep this
+  chunk scoped to core/public API contracts.

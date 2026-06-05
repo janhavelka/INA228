@@ -121,15 +121,31 @@ struct DiagAlertSnapshot {
 };
 
 /// @brief Managed synchronous INA228 driver.
+///
+/// Instances are not thread-safe or ISR-safe. Applications must serialize API
+/// calls, provide any shared-bus locking outside the driver, and ensure
+/// transport/time callbacks do not re-enter the same INA228 instance.
+/// Unless a method explicitly documents different behavior, output parameters
+/// are committed only when Status::Ok() is returned and remain unchanged on
+/// non-OK status.
 class INA228 {
 public:
+  INA228() = default;
+
+  INA228(const INA228&) = delete;
+  INA228& operator=(const INA228&) = delete;
+  INA228(INA228&&) = delete;
+  INA228& operator=(INA228&&) = delete;
+
   // =========================================================================
   // Lifecycle
   // =========================================================================
 
   /// Initialize the driver with configuration
   /// @param config Configuration including transport callbacks and calibration
-  /// @return Status::Ok() on success, error otherwise
+  /// @return Status::Ok() on success, error otherwise. Definite address NACK
+  /// during identity/MEMSTAT reads maps to DEVICE_NOT_FOUND; timeout, data
+  /// NACK, bus, and generic I2C errors are returned with their transport code.
   Status begin(const Config& config);
 
   /// Process pending operations (call regularly from loop)
@@ -151,7 +167,9 @@ public:
   // =========================================================================
 
   /// Check if device is present on the bus (no health tracking)
-  /// @return Status::Ok() if device responds with correct IDs
+  /// @return Status::Ok() if device responds with correct IDs. Definite
+  /// address NACK maps to DEVICE_NOT_FOUND; other transport errors are
+  /// returned unchanged.
   Status probe();
 
   /// Attempt to recover from DEGRADED/OFFLINE state by re-validating IDs, MEMSTAT, and cached config
@@ -210,7 +228,10 @@ public:
   /// a driver-tracked triggered conversion is pending, this returns
   /// MEASUREMENT_NOT_READY and leaves @p out unchanged. ENERGY and CHARGE are
   /// reported only when their validity flags are true; otherwise the fields are
-  /// not valid accumulator data.
+  /// not valid accumulator data. Converted current, power, energy, and charge
+  /// fields require valid calibration. This call preserves DIAG_ALRT evidence
+  /// before accumulator reads, but those status-sensitive reads may still clear
+  /// hardware flags according to the datasheet.
   /// @param out Measurement result
   /// @return Status::Ok() on success
   Status readMeasurement(Measurement& out);
@@ -222,7 +243,8 @@ public:
   /// a driver-tracked triggered conversion is pending, this returns
   /// MEASUREMENT_NOT_READY and leaves @p out unchanged. ENERGY and CHARGE
   /// register values are accompanied by validity and overflow flags because
-  /// accumulator reads can clear overflow evidence.
+  /// accumulator reads can clear overflow evidence. This call preserves the
+  /// DIAG_ALRT snapshot it consumes for overflow/validity policy.
   /// @param out RawSample structure
   /// @return Status::Ok() on success
   Status readRawSample(RawSample& out);
@@ -458,16 +480,29 @@ public:
   // Raw Register Access
   // =========================================================================
 
-  /// Read a 16-bit register using tracked transport
+  /// Read a 16-bit register using tracked transport.
+  ///
+  /// Diagnostic/service access only. Status-sensitive registers can have read
+  /// side effects; REG_DIAG_ALRT reads consume live diagnostic evidence and
+  /// accumulator register reads can clear overflow evidence.
   Status readRegister16(uint8_t reg, uint16_t& value);
 
-  /// Read a 24-bit register using tracked transport
+  /// Read a 24-bit register using tracked transport.
+  ///
+  /// Diagnostic/service access only. Prefer typed APIs for normal operation.
   Status readRegister24(uint8_t reg, uint32_t& value);
 
-  /// Read a 40-bit register using tracked transport
+  /// Read a 40-bit register using tracked transport.
+  ///
+  /// Diagnostic/service access only. ENERGY/CHARGE reads can affect overflow
+  /// evidence; typed APIs preserve diagnostic context before accumulator reads.
   Status readRegister40(uint8_t reg, uint64_t& value);
 
-  /// Write a 16-bit register using tracked transport
+  /// Write a 16-bit register using tracked transport.
+  ///
+  /// Diagnostic/service access only. Raw writes bypass typed cache/calibration
+  /// helpers and can make cached driver state differ from hardware; use
+  /// recover(), softReset(), or begin() to resynchronize after manual writes.
   Status writeRegister16(uint8_t reg, uint16_t value);
 
   // =========================================================================

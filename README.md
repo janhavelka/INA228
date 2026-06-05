@@ -99,7 +99,7 @@ void loop() {
 
 | Method | Description |
 |--------|-------------|
-| `begin(config)` | Initialize with configuration (validates, verifies device ID + MEMSTAT) |
+| `begin(config)` | Initialize with configuration (validates, verifies device ID + MEMSTAT; preserves transport error codes except address NACK maps to device-not-found) |
 | `tick(nowMs)` | Process pending operations (call from loop) |
 | `end()` | Shutdown and release resources |
 | `isInitialized()` | True after successful `begin()` until `end()` |
@@ -110,7 +110,7 @@ void loop() {
 
 | Method | Description |
 |--------|-------------|
-| `readMeasurement(m)` | Read all channels with energy/charge validity flags |
+| `readMeasurement(m)` | Read all channels with energy/charge validity flags; converted current-derived fields require calibration |
 | `readBusVoltage(v)` | Bus voltage in volts (0–85 V) |
 | `readShuntVoltage(v)` | Shunt voltage in volts |
 | `readTemperature(t)` | Die temperature in °C |
@@ -148,7 +148,7 @@ explicitly programmed for deterministic readback.
 |--------|-------------|
 | `state()` | Current driver state (UNINIT/READY/DEGRADED/OFFLINE) |
 | `isOnline()` | True if READY or DEGRADED |
-| `probe()` | Check device presence (no health tracking) |
+| `probe()` | Check device presence (no health tracking; preserves transport error codes except address NACK maps to device-not-found) |
 | `recover()` | Re-validate manufacturer ID, device ID, MEMSTAT, then re-apply config/calibration |
 | `readDiagAlert(diag)` | Read and consume current `DIAG_ALRT` flags |
 | `readDiagAlertRaw(raw)` | Read and consume raw `DIAG_ALRT` register value |
@@ -175,10 +175,10 @@ Accumulator reads first preserve `DIAG_ALRT` when they may touch `ENERGY` or
 
 | Method | Description |
 |--------|-------------|
-| `readRegister16(reg, value)` | Read a tracked 16-bit register |
-| `readRegister24(reg, value)` | Read a tracked 24-bit register |
-| `readRegister40(reg, value)` | Read a tracked 40-bit register |
-| `writeRegister16(reg, value)` | Write a tracked 16-bit register |
+| `readRegister16(reg, value)` | Diagnostic tracked 16-bit read; status-sensitive registers can have read side effects |
+| `readRegister24(reg, value)` | Diagnostic tracked 24-bit read |
+| `readRegister40(reg, value)` | Diagnostic tracked 40-bit read; accumulator reads can affect overflow evidence |
+| `writeRegister16(reg, value)` | Diagnostic tracked 16-bit write; can desynchronize typed cache from hardware |
 
 ## Driver State Machine
 
@@ -203,17 +203,18 @@ end() --------> UNINIT
 
 ## Behavioral Contracts
 
-1. **Threading model**: Single-threaded. All API calls from one task/loop.
+1. **Threading model**: Instances are not thread-safe or ISR-safe. Serialize calls externally, protect shared I2C buses outside the driver, and do not let transport/time callbacks re-enter the same `INA228` instance.
 2. **Timing model**: `tick()` is bounded; all I2C operations are blocking.
 3. **Resource ownership**: I2C bus owned by application; library receives transport callbacks.
 4. **Framework boundary**: Core code does not call `Wire`, `Serial`, `delay()`, `yield()`, `millis()`, or ESP-IDF peripheral APIs directly. Arduino examples and native ESP-IDF examples provide those hooks externally.
 5. **Memory behavior**: No heap allocation after `begin()`.
-6. **Error handling**: All fallible APIs return `Status`. Check with `st.ok()`.
+6. **Error handling**: All fallible APIs return `Status`. Check with `st.ok()`. `begin()` and `probe()` map only definite address NACK to `DEVICE_NOT_FOUND`; timeout, data NACK, bus, and generic I2C errors remain precise. Unless a method documents otherwise, output parameters are committed only on `Status::Ok()` and remain unchanged on non-OK status.
 7. **Recovery model**: `OFFLINE` is latched. Supervisors should call `recover()` after applying any bus-level recovery policy.
 8. **Measurement freshness**: Continuous-mode reads return the latest hardware register contents at read time; they are not guaranteed fresh since the previous API call. Driver-tracked triggered conversions return `MEASUREMENT_NOT_READY` until the software deadline has elapsed and CNVRF is observed. `tick(nowMs)` and `pollConversionReady(nowMs, ready)` use the supplied timestamp, so they can advance pending triggered conversions even when `Config::nowMs` is unset.
 9. **Accumulator validity**: ENERGY requires continuous shunt-and-bus conversion, CHARGE requires continuous shunt conversion, and both require calibration plus a continuous CNVRF observed after begin/reset/accumulator reset. Scalar `readEnergy()` and `readCharge()` return `ACCUMULATION_INVALID`, `ACCUMULATION_OVERFLOW`, or `MATH_OVERFLOW` instead of returning invalid data. `readMeasurement()` and `readRawSample()` keep their aggregate read shape but mark `energyValid` and `chargeValid` false when those fields are not valid.
 10. **Calibration coherence**: `SHUNT_CAL`, `currentLsb()`, `shuntResistanceOhm`, `maxExpectedCurrentA`, and `adcRange` are treated as one scaling contract. Converted current, power, energy, charge, and power-limit APIs require a valid calibration and a clean hardware/cache state. If a multi-register range/calibration/reset update cannot be rolled back or fully replayed after an I2C failure, those APIs return `HARDWARE_DIRTY` until `recover()` or `softReset()` successfully replays the cached configuration. `SettingsSnapshot::hardwareDirtyCause` preserves the first status that made the state dirty.
 11. **Reset policy**: `softReset()` contains no platform delay or unbounded wait. It writes `CONFIG.RST`, performs a finite reset-bit readback check, verifies manufacturer ID, device ID, and `MEMSTAT`, then replays cached config/calibration with ADC shutdown first and final ADC mode last. If verification or replay fails, reset-domain dirty state remains visible. `resetAccumulators()` treats `RSTACC` self-clear as unproven: it writes `RSTACC`, writes cached `CONFIG` again with reset bits clear, verifies readback, and invalidates accumulation until the next continuous CNVRF.
+12. **Object lifetime**: `INA228::INA228` is default-constructible but not copyable or movable. Keep each instance at a stable address and pass it by pointer or reference.
 
 ## INA228 Address Configuration
 
@@ -263,7 +264,7 @@ The canonical bringup example now includes address-aware diagnostics for shared 
   dynamic `init <addr>`, calibration, alert limits, raw register diagnostics,
   stress tests, and self-test output.
 
-Raw register writes are intended for diagnostics and bring-up. They bypass the typed config helpers, so use `recover()` or `begin()` to restore cached settings after manual register edits.
+Raw register access is intended for diagnostics and bring-up. Reads of status-sensitive registers such as `DIAG_ALRT` can consume diagnostic evidence, and reads of `ENERGY` or `CHARGE` can affect overflow evidence. Writes bypass typed config helpers and can desynchronize cached state from hardware, so use `recover()`, `softReset()`, or `begin()` to restore cached settings after manual register edits.
 
 ## Validation
 
