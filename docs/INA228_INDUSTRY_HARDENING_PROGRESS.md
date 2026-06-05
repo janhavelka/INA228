@@ -689,3 +689,120 @@ Four read-only agents were used before implementation:
 - Example-level ESP-IDF error mapping and scanner display precision were
   identified by the status agent but left for a later focused chunk to keep this
   chunk scoped to core/public API contracts.
+
+## Chunk 08 - Native Tests, Fake Bus, and Datasheet Vector Coverage
+
+Date: 2026-06-05
+Branch: `hardening/ina228-industry-readiness`
+Starting commit: `6a987150d7b9ba1f7c46412f1cc7c590171fbe85`
+Commit: pending at report-update time; final response records the committed hash.
+
+### Scope
+
+Chunk 08 consolidates and expands native fake-bus coverage after the functional
+hardening chunks. The production driver API and implementation were not changed;
+all edits are in `test/test_basic.cpp`. No hardware validation was performed.
+
+### Subagent Findings
+
+Five read-only agents were used before implementation:
+
+| Agent | Finding summary |
+| --- | --- |
+| `coverage-agent` | Reported broad coverage for DIAG_ALRT, triggered freshness, accumulator validity, calibration/scaling, reset/recovery, output atomicity, and public API contracts. Prioritized begin mismatch, threshold vectors, begin/recover partial writes, negative temperature, direct byte-order helper tests, broader timing matrices, and setter write-failure coverage. |
+| `fake-bus-agent` | Found useful fake-bus behavior but noted DIAG clear-on-read is opt-in, RSTACC did not clear stale CNVRF, public 24/40-bit helper reads only used zero vectors, and callbacks did not record the configured I2C address. |
+| `datasheet-vector-agent` | Verified formula alignment for result bits, signedness, calibration, and timing. Recommended byte-order helper vectors, 20-bit edge vectors, negative temperature vectors, scalar power/energy/charge LSB vectors, timing tables, and config register encoding vectors. |
+| `fault-injection-agent` | Found strong existing read/write fault coverage, then prioritized begin apply-write failures, recover replay positions, soft-reset read failures, reset-accumulator later failures, ADCRANGE first-write failure, calibration dirty/recover behavior, alert/threshold write failures, and triggered readiness-gate failures. |
+| `regression-agent` | Ran the existing native suite 3 times before edits: 96/96 passed each time, no flake observed, suite time about 1.05-1.14 s, with the recurring PlatformIO Core 6.1.18 obsolete-core warning. |
+
+### Coverage Map
+
+| Area | Before Chunk 08 | Added In Chunk 08 |
+| --- | --- | --- |
+| Register and identity | Startup/probe transport errors, public ID reads, recover identity mismatch | Begin-time manufacturer mismatch, device mismatch, MEMSTAT failure, configured I2C address propagation, nonzero 16/24/40-bit helper byte-order vectors, raw 16-bit write value capture |
+| Calibration/scaling | Exact prompt calibration vectors, ADCRANGE multiplier, clamp, invalid inputs, uncalibrated path, positive/negative prompt conversions | 20-bit edge vectors `+1`, `-1`, max positive, min negative, low-nibble masking, ADCRANGE initial CONFIG-write failure, calibration write-failure dirty/recover assertions |
+| Measurement vectors | Positive full vector, negative shunt/current/charge sign extension, overflow handling | Negative/positive temperature scalar vectors and scalar power/energy/charge LSB vectors |
+| DIAG/alerts | Clear-on-read tests, CNVRF preservation, alert setters not reading live DIAG_ALRT, public destructive reads | Fake RSTACC now clears stale CNVRF so accumulation requires a new conversion-ready event |
+| Triggered/timing | Begin-time triggered modes, not-ready gating, CNVRF completion, no-now hook, wraparound | Conversion-time enum table, averaging table, delay vector, ADC_CONFIG and CONFIG encoding vectors |
+| Partial failure/recovery | Soft-reset replay write positions, recover one replay failure, reset accumulator first-write failure, aggregate output all-or-nothing | Begin apply-write failure table, recover identity/MEMSTAT read-failure table, recover replay write-position table, soft-reset read-failure table, reset-accumulator second-write/readback/stuck-bit failures |
+| API contracts | Copy/move deletion, precise startup/probe errors, raw register status propagation | Threshold exact encoding and threshold write-failure preservation across all six threshold registers |
+
+### Changes
+
+- Extended the fake bus to record the last I2C address passed to write and
+  write-read callbacks.
+- Added a configurable fake CONFIG read override for reset-bit-stuck tests.
+- Tightened fake RSTACC behavior so accumulator reset also clears stale CNVRF
+  in the fake device state.
+- Added 15 native tests, increasing the suite from 96 to 111 `RUN_TEST`s.
+
+### API Changes
+
+- None.
+
+### Tests Added Or Updated
+
+- Added begin-time manufacturer-ID mismatch, device-ID mismatch, and MEMSTAT
+  failure tests proving no configuration writes occur before identity is valid.
+- Added begin apply-write failure coverage for CONFIG, DIAG_ALRT, SHUNT_TEMPCO,
+  ADC_CONFIG, and SHUNT_CAL.
+- Added configured I2C address propagation coverage.
+- Added recover read-failure coverage for manufacturer ID, device ID, and
+  DIAG_ALRT/MEMSTAT reads.
+- Added recover replay write-failure coverage for ADC_CONFIG shutdown, CONFIG,
+  DIAG_ALRT, SHUNT_TEMPCO, SHUNT_CAL, and final ADC_CONFIG writes.
+- Added soft-reset read-failure coverage for reset-bit CONFIG read and
+  post-reset manufacturer/device/DIAG_ALRT reads.
+- Added reset-accumulator second-write, readback I2C failure, and reset-bit
+  stuck timeout tests.
+- Added nonzero public raw helper byte-order vectors:
+  - `readRegister16(REG_SHUNT_TEMPCO) = 0xA5C3`;
+  - `readRegister24(REG_POWER) = 0x123456`;
+  - `readRegister40(REG_ENERGY) = 0x0102030405`;
+  - `writeRegister16(REG_SHUNT_TEMPCO, 0xBEEF)`.
+- Added 20-bit edge vectors and low-nibble masking coverage.
+- Added negative/positive temperature vectors:
+  `0xFFFF`, `0xF380`, `0xEC00`, and `0x3E80`.
+- Added scalar power/energy/charge LSB vectors.
+- Added conversion-time enum, averaging, and conversion-delay tables.
+- Added ADC_CONFIG/CONFIG register encoding vectors.
+- Added `setAdcRange()` initial CONFIG-write failure coverage.
+- Extended calibration write-failure coverage to assert dirty state and
+  successful recovery.
+- Added exact threshold encodings for SOVL, SUVL, BOVL, BUVL, TEMP_LIMIT, and
+  PWR_LIMIT plus write-failure preservation for all six threshold registers.
+
+### Commands Run
+
+| Command | Result |
+| --- | --- |
+| `git status --short` | showed `M test/test_basic.cpp` before commit |
+| `git diff --check` | PASS; only Git CRLF normalization warning was printed |
+| `python tools/check_core_timing_guard.py` | PASS: `Core timing guard PASSED` |
+| `python tools/check_cli_contract.py` | PASS: `CLI contract PASSED` |
+| `python tools/check_idf_example_contract.py` | PASS: `IDF example contract PASSED` |
+| `python scripts/generate_version.py check` | PASS: `Up to date: C:\Users\Honza\Documents\Projects\INA228\include\INA228\Version.h` |
+| `python -m platformio test -e native` | Pre-edit regression agent ran 3 passes at 96/96. After edits, first local run failed because the new threshold write-failure test assumed reset defaults that the fake bus only applies after reset; test setup was corrected. Final two runs PASS: 111/111 each. PlatformIO warned that obsolete Core 6.1.18 is used and a previous 6.1.19 also exists. |
+| `python -m platformio run -e esp32s3dev` | PASS: ESP32-S3 Arduino build succeeded. |
+| `python -m platformio run -e esp32s2dev` | PASS: ESP32-S2 Arduino build succeeded. |
+| `python -m platformio pkg pack` | PASS: wrote `INA228-1.3.0.tar.gz`; generated tarball was removed after recording the result. |
+| `idf.py --version` | NOT AVAILABLE: PowerShell reported `idf.py : The term 'idf.py' is not recognized as the name of a cmdlet, function, script file, or operable program.` |
+
+### Commands Not Run
+
+| Command | Reason |
+| --- | --- |
+| `idf.py -C examples/esp_idf/basic set-target esp32s3 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+| `idf.py -C examples/esp_idf/basic set-target esp32s2 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+
+### Remaining Risks
+
+- No hardware validation was performed or claimed.
+- Pure ESP-IDF build proof is still missing because `idf.py` is unavailable
+  locally.
+- The fake bus still does not enforce a full register metadata model for
+  read/write permissions or invalid register widths.
+- DIAG_ALRT clear-on-read remains opt-in for tests that need destructive status
+  behavior, rather than the fake bus defaulting all DIAG reads to destructive.
+- Example-level ESP-IDF NACK mapping and scanner display precision remain for a
+  later focused chunk.
