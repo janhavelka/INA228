@@ -61,17 +61,22 @@ Rules:
 ## INA228 development rules
 
 - Core library code in `include/` and `src/` must remain framework-neutral: no Arduino, Wire, ESP-IDF, FreeRTOS, logging framework, heap-heavy framework types, or platform delays.
+- Core code must not hide platform waits in helper callbacks, busy loops, framework delay calls, or implicit retries. Any wait policy belongs to the injected transport or application and must be bounded by an explicit deadline.
 - The core must not own the I2C bus. Bus setup, locking, timeout policy, recovery, and platform handles belong to injected transports or examples.
 - Public fallible APIs must return precise status/error information. Do not collapse timeout, address NACK, data NACK, bus error, invalid configuration, not-ready, overflow, or calibration-invalid states into generic failure.
+- `DIAG_ALRT` is both configuration and live/destructive diagnostic state. Treat reads as status-sensitive and clear-on-read where the datasheet says so; internal polling and alert setters must preserve evidence or intentionally consume it through a documented API.
+- Do not use read-modify-write on live/status-sensitive registers such as `DIAG_ALRT` unless the side effects, reserved-bit handling, and evidence-preservation policy are explicit and tested.
 - Do not expose current, power, energy, or charge helpers unless SHUNT_CAL/current-LSB behavior is well-defined and tested.
 - Treat SHUNT_CAL, ADCRANGE, shunt resistance, max expected current, and current LSB as one coherent contract.
-- Energy and charge accumulation are valid only under the datasheet-supported operating assumptions. Document triggered-mode limitations.
+- Energy and charge accumulation are valid only under the datasheet-supported operating assumptions. Mode, accumulator reset, overflow flags, elapsed-time semantics, and triggered-mode limitations must be documented and enforced by API behavior.
 - Preserve signedness and register width exactly. INA228 has wide measurement registers; VSHUNT, CURRENT, CHARGE, and DIETEMP are signed, VBUS/POWER/ENERGY are unsigned, and byte ordering must be tested.
 - Do not write multi-register configurations without considering partial hardware state and cache consistency.
+- Multi-register or multi-step hardware updates need a dirty, rollback, or resync policy. Do not silently leave software cache and hardware state divergent after partial failure.
 - DEVICE_ID and MANUFACTURER_ID checks must be explicit and tested.
 - Public APIs are not ISR-safe unless explicitly documented and proven. Instances are not thread-safe unless protected by the application.
 - High-voltage measurement examples must include safety disclaimers and must not imply the board/library itself makes 85 V systems safe.
 - Documentation must separate implemented behavior, native tests, build validation, hardware validation, and remaining limitations.
+- Do not claim production readiness, industry readiness, ESP-IDF readiness, or hardware validation without dated, commit-linked logs or reproducible CI results.
 
 ---
 
