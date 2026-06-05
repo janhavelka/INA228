@@ -47,6 +47,8 @@ Each approach trades off BOM count, control precision, and shunt power loss. The
 The INA228 is explicitly recommended for **periodic calibration** of PA stages. Its integrated bus voltage measurement, current sensing, and power calculation reduce the number of discrete components needed. In an INA228-based implementation:
 - Use the power register to directly read PA power consumption
 - Use the bus voltage register to monitor supply rail
-- The 85V common-mode range covers most PA supply rails
+- The 85V common-mode rating is an IC input capability; verify the actual PA
+  rail voltage, transients, isolation, grounding, and protection design before
+  applying INA228 hardware
 - Energy accumulation can track cumulative PA energy consumption over calibration intervals
 - This is a **system-level application note** — no INA228-specific register settings or firmware patterns are provided

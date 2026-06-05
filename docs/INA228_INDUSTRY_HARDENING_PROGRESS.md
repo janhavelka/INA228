@@ -1021,3 +1021,110 @@ Four read-only agents were used before implementation:
 - GitHub Actions ESP-IDF results must still be reviewed after push.
 - The matrix is a template until dated logs, equipment metadata, board/module
   details, and pass/fail evidence are checked in.
+
+## Chunk 11 - Final Integration Review and Release/Merge Verdict
+
+Date: 2026-06-05
+Branch: `hardening/ina228-industry-readiness`
+Starting commit: `f99e2273a3d729e873310aa683622c9eab01992d`
+Commit: pending at report-update time; final response records the committed hash.
+
+### Scope
+
+Chunk 11 performed a final branch integration review after Chunks 01-10,
+fixed focused integration issues found by review, created the final report, and
+reran the required local checks. No hardware validation was performed.
+
+### Subagent Findings
+
+Five read-only agents were used before and during final implementation:
+
+| Agent | Finding summary |
+| --- | --- |
+| `final-code-review-agent` | Found no framework leakage, but found `tick()` could destructively poll `DIAG_ALRT` when no triggered conversion was pending and could overwrite preserved evidence; also found `setAdcRange()` could leave ambiguous `SHUNT_CAL` write failure state clean. |
+| `datasheet-review-agent` | Confirmed broad datasheet coverage, but found `MATHOF` was not enforced for scalar current/power reads and some cached config write failures assumed no hardware change. |
+| `test-review-agent` | Counted 111 native tests before final fixes, confirmed broad fake-bus/guard/CI coverage, and identified remaining gaps: no hardware validation, no local `idf.py`, no sanitizer/HIL/multi-OS coverage. |
+| `docs-review-agent` | Found older application notes and the root extraction manual still overclaimed ALERT protection, high-voltage suitability, bus ownership, INA234-to-INA228 performance transfer, and raw ENERGY/CHARGE validity. |
+| `release-verdict-agent` | Recommended `Ready to merge, not ready to release`; blockers are current green CI proof, pure ESP-IDF logs, SemVer decision, package validation for final release commit, and hardware validation for industry-grade wording. |
+
+### Changes
+
+- Created `docs/INA228_INDUSTRY_HARDENING_FINAL_REPORT.md`.
+- Limited `tick(nowMs)` so it only performs a destructive `DIAG_ALRT` poll when
+  it can advance driver-owned triggered-conversion or accumulator-readiness
+  state.
+- Made preserved `DiagAlertSnapshot` evidence sticky for clearable/event bits
+  while keeping alert config and MEMSTAT from the latest captured read.
+- Added `MATHOF` enforcement for scalar `readCurrent()`, scalar `readPower()`,
+  and aggregate `readMeasurement()` before current-derived values are returned.
+- Marked cached-register write failures dirty for ambiguous `ADC_CONFIG`,
+  `CONFIG`, `SHUNT_TEMPCO`, `SHUNT_CAL`, and `DIAG_ALRT` writes, including
+  raw writes to cached registers.
+- Updated README and Doxygen to document sticky diagnostic evidence, limited
+  `tick()` polling, and `MATH_OVERFLOW` for current/power paths.
+- Removed overclaims from secondary application-note docs and the root
+  implementation manual.
+
+### API Changes
+
+- No new public methods were added in this chunk.
+- Existing behavior changed so `readCurrent()`, `readPower()`, and
+  `readMeasurement()` can return `MATH_OVERFLOW` when `DIAG_ALRT.MATHOF` is
+  observed.
+- `DiagAlertSnapshot::raw` is now documented as preserved evidence plus latest
+  config/MEMSTAT bits, not necessarily the exact last hardware read.
+
+### Tests Added Or Updated
+
+- Native test count increased from 111 to 114.
+- Added tests for:
+  - `tick()` not overwriting diagnostic evidence after no state remains pending;
+  - `MATHOF` blocking current, power, and aggregate measurement paths;
+  - cached config/static write failures marking dirty registers.
+- Updated ADCRANGE and config setter failure tests to expect dirty/resync
+  behavior.
+
+### Commands Run
+
+| Command | Result |
+| --- | --- |
+| `git status --short` | showed intended modified files before final report |
+| `git diff --check` | PASS; only Git CRLF normalization warnings were printed |
+| `python tools/check_core_timing_guard.py` | PASS: `Core timing guard PASSED` |
+| `python tools/check_cli_contract.py` | PASS: `CLI contract PASSED` |
+| `python tools/check_idf_example_contract.py` | PASS: `IDF example contract PASSED` |
+| `python scripts/generate_version.py check` | PASS: `Version.h` up to date |
+| `python -m platformio test -e native` | PASS: 114/114 native tests succeeded; PlatformIO warned obsolete Core 6.1.18 is used and 6.1.19 also exists |
+| `python -m platformio run -e esp32s3dev` | PASS: ESP32-S3 Arduino build succeeded |
+| `python -m platformio run -e esp32s2dev` | PASS: ESP32-S2 Arduino build succeeded |
+| `python -m platformio pkg pack` | PASS: wrote `INA228-1.3.0.tar.gz`; tarball was removed after recording the result |
+| `idf.py --version` | NOT AVAILABLE: PowerShell reported `idf.py : The term 'idf.py' is not recognized as the name of a cmdlet, function, script file, or operable program.` |
+
+### Commands Not Run
+
+| Command | Reason |
+| --- | --- |
+| `idf.py -C examples/esp_idf/basic set-target esp32s3 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+| `idf.py -C examples/esp_idf/basic set-target esp32s2 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+| Hardware validation procedures | Not run because no explicit hardware setup, approval, and log-capture plan were available. |
+
+### Remaining Risks
+
+- Current GitHub Actions results for this branch must still be reviewed.
+- Local pure ESP-IDF build proof is still missing because `idf.py` is not
+  available in this shell.
+- `library.json` / generated `Version.h` remain at `1.3.0` while substantial
+  behavior/API changes are in `Unreleased`; SemVer must be decided before a
+  release tag.
+- No hardware validation rows are marked `PASS`; all hardware validation remains
+  pending in `docs/INA228_HARDWARE_VALIDATION_MATRIX.md`.
+- No sanitizer, coverage, hardware-in-loop, multi-OS, or long-soak automation
+  was added.
+
+### Merge And Release Verdict
+
+Merge readiness: `Ready to merge, not ready to release`.
+
+Release readiness: not ready for a release tag or production/industry-grade
+claim. The safe wording is "industry-readiness hardened pre-production
+candidate pending checked-in hardware validation."

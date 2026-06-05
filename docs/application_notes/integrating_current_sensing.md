@@ -65,4 +65,5 @@ Level 3: Shunt → INA226 (direct shunt ADC + compute) → Controller
 - The INA228's ±82.mV full-scale differential input means very small R_shunt values work well
 - The 20-bit ADC provides even more headroom to use smaller shunt resistors with lower power dissipation
 - On-chip current and power registers eliminate most host-side math
-- Programmable alert replaces external comparator circuits for overcurrent protection
+- Programmable alert can report threshold events, but it does not replace
+  independent overcurrent protection hardware or certified safety functions

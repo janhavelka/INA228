@@ -52,9 +52,12 @@ The document catalogs TI's digital current-sense device portfolio, positioning t
 
 ## Relevance to INA228 Implementation
 **Directly relevant.** The INA228 uses I2C/SMBus interface. Key implementation notes:
-- Supports I2C high-speed mode up to **2.94 MHz**
+- The device supports I2C high-speed mode up to **2.94 MHz**, but this library
+  does not enter high-speed mode or own the bus; the application-supplied
+  transport owns bus speed, pins, pull-ups, timeout, locking, and recovery
 - Has SMBus-compatible **Alert pin** for fault notification (overcurrent, overvoltage, overpower)
 - Can coexist with SMBus/PMBus devices on the same bus
 - For higher data rates or simpler bus topology, consider INA229 (SPI, same sensing performance, 10 MHz)
-- SMBus bus timeout prevents bus lockup — relevant for reliability-critical designs
+- SMBus timeout behavior is a bus-manager policy, not a core-driver feature;
+  configure it in the application-owned transport if the platform supports it
 - Pull-up resistor value affects max bus speed via RC time constant with bus capacitance

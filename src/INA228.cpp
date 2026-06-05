@@ -14,6 +14,11 @@ namespace {
 
 static constexpr size_t MAX_WRITE_LEN = 6;
 static constexpr uint8_t RESET_VERIFY_ATTEMPTS = 3;
+static constexpr uint16_t DIAG_EVIDENCE_MASK =
+    cmd::DIAG_ENERGYOF | cmd::DIAG_CHARGEOF | cmd::DIAG_MATHOF |
+    cmd::DIAG_TMPOL | cmd::DIAG_SHNTOL | cmd::DIAG_SHNTUL |
+    cmd::DIAG_BUSOL | cmd::DIAG_BUSUL | cmd::DIAG_POL |
+    cmd::DIAG_CNVRF;
 
 class ScopedOfflineI2cAllowance {
 public:
@@ -363,6 +368,12 @@ Status INA228::begin(const Config& config) {
 }
 
 void INA228::tick(uint32_t nowMs) {
+  if (!_initialized) {
+    return;
+  }
+  if (!_trigPending && (_accumulationReady || !_modeSupportsAnyAccumulation())) {
+    return;
+  }
   bool ready = false;
   (void)pollConversionReady(nowMs, ready);
 }
@@ -515,11 +526,15 @@ Status INA228::readMeasurement(Measurement& out) {
   Status calStatus = _ensureCalibrated();
   if (!calStatus.ok()) return calStatus;
 
+  uint16_t diag = 0;
+  Status st = _readAndValidateMathDiag(diag);
+  if (!st.ok()) return st;
+
   Measurement result{};
 
   // Read shunt voltage (24-bit)
   uint32_t raw24 = 0;
-  Status st = readReg24(cmd::REG_VSHUNT, raw24);
+  st = readReg24(cmd::REG_VSHUNT, raw24);
   if (!st.ok()) return st;
   int32_t vshRaw = _signExtend20(raw24);
   const double vshLsb = (_config.adcRange == AdcRange::MV_40_96)
@@ -561,10 +576,6 @@ Status INA228::readMeasurement(Measurement& out) {
   const bool energyCandidate = _ensureEnergyAccumulatorReadable().ok();
   const bool chargeCandidate = _ensureChargeAccumulatorReadable().ok();
   if (energyCandidate || chargeCandidate) {
-    uint16_t diag = 0;
-    st = _readAccumulatorDiag(diag);
-    if (!st.ok()) return st;
-
     result.diagAlertValid = true;
     result.diagAlertRaw = diag;
     result.energyOverflow = (diag & cmd::DIAG_ENERGYOF) != 0;
@@ -725,8 +736,12 @@ Status INA228::readCurrent(float& out) {
   Status calStatus = _ensureCalibrated();
   if (!calStatus.ok()) return calStatus;
 
+  uint16_t diag = 0;
+  Status st = _readAndValidateMathDiag(diag);
+  if (!st.ok()) return st;
+
   uint32_t raw24 = 0;
-  Status st = readReg24(cmd::REG_CURRENT, raw24);
+  st = readReg24(cmd::REG_CURRENT, raw24);
   if (!st.ok()) return st;
 
   int32_t raw = _signExtend20(raw24);
@@ -747,8 +762,12 @@ Status INA228::readPower(float& out) {
   Status calStatus = _ensureCalibrated();
   if (!calStatus.ok()) return calStatus;
 
+  uint16_t diag = 0;
+  Status st = _readAndValidateMathDiag(diag);
+  if (!st.ok()) return st;
+
   uint32_t raw24 = 0;
-  Status st = readReg24(cmd::REG_POWER, raw24);
+  st = readReg24(cmd::REG_POWER, raw24);
   if (!st.ok()) return st;
 
   return assignFiniteFloat(cmd::POWER_COEFF * static_cast<double>(_currentLsb) *
@@ -862,7 +881,10 @@ Status INA228::setMode(Mode mode) {
   adcCfg = (adcCfg & ~cmd::MASK_ADC_MODE) |
            (static_cast<uint16_t>(mode) << cmd::BIT_ADC_MODE);
   Status st = writeReg16(cmd::REG_ADC_CONFIG, adcCfg);
-  if (!st.ok()) return st;
+  if (!st.ok()) {
+    _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
+    return st;
+  }
 
   _config.mode = mode;
   _markAccumulationInvalid();
@@ -896,7 +918,10 @@ Status INA228::triggerConversion(Mode mode) {
   adcCfg = (adcCfg & ~cmd::MASK_ADC_MODE) |
            (static_cast<uint16_t>(mode) << cmd::BIT_ADC_MODE);
   Status st = writeReg16(cmd::REG_ADC_CONFIG, adcCfg);
-  if (!st.ok()) return st;
+  if (!st.ok()) {
+    _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
+    return st;
+  }
 
   _config.mode = mode;
   _markAccumulationInvalid();
@@ -919,6 +944,7 @@ Status INA228::setVbusConvTime(ConvTime ct) {
   Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
   if (!st.ok()) {
     _config.vbusConvTime = old;
+    _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
   } else if (isTriggeredMode(_config.mode)) {
     _markTriggeredConversionStarted(_nowMs());
   } else {
@@ -942,6 +968,7 @@ Status INA228::setVshuntConvTime(ConvTime ct) {
   Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
   if (!st.ok()) {
     _config.vshuntConvTime = old;
+    _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
   } else if (isTriggeredMode(_config.mode)) {
     _markTriggeredConversionStarted(_nowMs());
   } else {
@@ -965,6 +992,7 @@ Status INA228::setTempConvTime(ConvTime ct) {
   Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
   if (!st.ok()) {
     _config.vtempConvTime = old;
+    _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
   } else if (isTriggeredMode(_config.mode)) {
     _markTriggeredConversionStarted(_nowMs());
   } else {
@@ -988,6 +1016,7 @@ Status INA228::setAveraging(Averaging avg) {
   Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
   if (!st.ok()) {
     _config.averaging = old;
+    _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
   } else if (isTriggeredMode(_config.mode)) {
     _markTriggeredConversionStarted(_nowMs());
   } else {
@@ -1036,6 +1065,7 @@ Status INA228::setAdcRange(AdcRange range) {
 
   Status st = writeReg16(cmd::REG_CONFIG, newConfigReg);
   if (!st.ok()) {
+    _markHardwareDirty(cmd::REG_CONFIG, st);
     return st;
   }
 
@@ -1047,9 +1077,9 @@ Status INA228::setAdcRange(AdcRange range) {
     _shuntCal = oldShuntCal;
     _calibrationClamped = oldClamped;
     _maxCurrentExceedsShuntRange = oldMaxCurrentExceedsRange;
+    _markHardwareDirty(cmd::REG_SHUNT_CAL, st);
     if (!rollback.ok()) {
-      _markHardwareDirty(cmd::REG_CONFIG);
-      _markHardwareDirty(cmd::REG_SHUNT_CAL);
+      _markHardwareDirty(cmd::REG_CONFIG, rollback);
     }
     return st;
   } else {
@@ -1125,6 +1155,7 @@ Status INA228::setShuntTempCoeff(uint16_t ppmPerC) {
   Status st = writeReg16(cmd::REG_SHUNT_TEMPCO, val);
   if (!st.ok()) {
     _config.shuntTempCoeffPpmC = old;
+    _markHardwareDirty(cmd::REG_SHUNT_TEMPCO, st);
   }
   return st;
 }
@@ -1141,6 +1172,7 @@ Status INA228::setTempCompensation(bool enable) {
   Status st = writeReg16(cmd::REG_CONFIG, _buildConfig());
   if (!st.ok()) {
     _config.tempCompEnabled = old;
+    _markHardwareDirty(cmd::REG_CONFIG, st);
   }
   return st;
 }
@@ -1157,6 +1189,7 @@ Status INA228::setConversionDelay(uint8_t steps2ms) {
   Status st = writeReg16(cmd::REG_CONFIG, _buildConfig());
   if (!st.ok()) {
     _config.convDelayMs2 = old;
+    _markHardwareDirty(cmd::REG_CONFIG, st);
   } else {
     _markAccumulationInvalid();
   }
@@ -1645,7 +1678,12 @@ Status INA228::writeRegister16(uint8_t reg, uint16_t value) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
   Status st = writeReg16(reg, value);
-  if (st.ok() && reg == cmd::REG_DIAG_ALRT) {
+  if (!st.ok() &&
+      (reg == cmd::REG_DIAG_ALRT || reg == cmd::REG_CONFIG ||
+       reg == cmd::REG_SHUNT_CAL || reg == cmd::REG_ADC_CONFIG ||
+       reg == cmd::REG_SHUNT_TEMPCO)) {
+    _markHardwareDirty(reg, st);
+  } else if (st.ok() && reg == cmd::REG_DIAG_ALRT) {
     _diagAlertConfigBits = value & cmd::DIAG_CONFIG_MASK;
   } else if (st.ok() && reg == cmd::REG_CONFIG &&
              ((value & cmd::CONFIG_RST) != 0)) {
@@ -1694,9 +1732,14 @@ Status INA228::_readDiagAlertRaw(uint16_t& raw) {
 }
 
 void INA228::_captureDiagAlert(uint16_t raw) {
+  const uint16_t preservedEvidence =
+      _diagAlertSnapshot.valid ? (_diagAlertSnapshot.raw & DIAG_EVIDENCE_MASK) : 0;
+  const uint16_t combinedRaw =
+      (raw & cmd::DIAG_CONFIG_MASK) | (raw & cmd::DIAG_MEMSTAT) |
+      preservedEvidence | (raw & DIAG_EVIDENCE_MASK);
   _diagAlertSnapshot.valid = true;
-  _diagAlertSnapshot.raw = raw;
-  parseDiagAlert(raw, _diagAlertSnapshot.diag);
+  _diagAlertSnapshot.raw = combinedRaw;
+  parseDiagAlert(combinedRaw, _diagAlertSnapshot.diag);
   _diagAlertSnapshot.capturedMs = _nowMs();
   _diagAlertConfigBits = raw & cmd::DIAG_CONFIG_MASK;
   if (((raw & cmd::DIAG_CNVRF) != 0) && _modeSupportsAnyAccumulation()) {
@@ -1712,6 +1755,8 @@ Status INA228::_writeDiagAlertConfig(uint16_t configBits) {
   Status st = writeReg16(cmd::REG_DIAG_ALRT, sanitized);
   if (st.ok()) {
     _diagAlertConfigBits = sanitized;
+  } else {
+    _markHardwareDirty(cmd::REG_DIAG_ALRT, st);
   }
   return st;
 }
@@ -1996,6 +2041,19 @@ Status INA228::_readAccumulatorDiag(uint16_t& raw) {
   Status st = _readDiagAlertTracked(raw);
   if (!st.ok()) {
     return st;
+  }
+  return Status::Ok();
+}
+
+Status INA228::_readAndValidateMathDiag(uint16_t& raw) {
+  raw = 0;
+  Status st = _readDiagAlertTracked(raw);
+  if (!st.ok()) {
+    return st;
+  }
+  if ((raw & cmd::DIAG_MATHOF) != 0) {
+    return Status::Error(Err::MATH_OVERFLOW, "INA228 math overflow",
+                         static_cast<int32_t>(raw & DIAG_EVIDENCE_MASK));
   }
   return Status::Ok();
 }

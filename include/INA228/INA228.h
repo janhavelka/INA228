@@ -118,10 +118,12 @@ struct DiagAlert {
 /// @brief Cache-only preserved DIAG_ALRT evidence from prior driver reads.
 /// @note This snapshot does not touch I2C and may be older than the current
 /// hardware state. It exists so internal CNVRF polling does not discard alert
-/// evidence when a DIAG_ALRT read clears hardware status bits.
+/// evidence when a DIAG_ALRT read clears hardware status bits. Clearable/event
+/// evidence is sticky until the next begin()/recover()/reset path replaces the
+/// driver state; alert config bits and MEMSTAT reflect the latest captured read.
 struct DiagAlertSnapshot {
   bool valid = false;       ///< True after the driver captured a DIAG_ALRT value
-  uint16_t raw = 0;         ///< Raw DIAG_ALRT value captured by the driver
+  uint16_t raw = 0;         ///< Preserved DIAG_ALRT evidence plus latest config/MEMSTAT bits
   DiagAlert diag{};         ///< Parsed DIAG_ALRT fields
   uint32_t capturedMs = 0;  ///< Timestamp from Config::nowMs, or 0 if unavailable
 };
@@ -158,9 +160,9 @@ public:
   /// @return Status::Ok() on success, error otherwise. Definite address NACK
   /// during identity/MEMSTAT reads maps to DEVICE_NOT_FOUND; timeout, data
   /// NACK, bus, and generic I2C errors are returned with their transport code.
-  /// @note Startup verifies MEMSTAT by reading DIAG_ALRT. The raw value is
-  /// preserved in getDiagAlertSnapshot(), but the hardware read can still clear
-  /// CNVRF and latched diagnostic evidence.
+  /// @note Startup verifies MEMSTAT by reading DIAG_ALRT. The observed evidence
+  /// is preserved in getDiagAlertSnapshot(), but the hardware read can still
+  /// clear CNVRF and latched diagnostic evidence.
   Status begin(const Config& config);
 
   /// Process pending operations (call regularly from loop)
@@ -189,8 +191,8 @@ public:
 
   /// Attempt to recover from DEGRADED/OFFLINE state by re-validating IDs, MEMSTAT, and cached config
   /// @return Status::Ok() if device now responsive and configuration is re-applied, error otherwise
-  /// @note Recovery verifies MEMSTAT by reading DIAG_ALRT. The observed raw
-  /// value is preserved, but the hardware read is status-clearing.
+  /// @note Recovery verifies MEMSTAT by reading DIAG_ALRT. The observed
+  /// evidence is preserved, but the hardware read is status-clearing.
   Status recover();
 
   /// Populate a cache-only settings snapshot without touching I2C.
@@ -292,12 +294,18 @@ public:
 
   /// Read calculated current in amperes (requires calibration)
   /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
+  /// @note Returns MATH_OVERFLOW when DIAG_ALRT.MATHOF indicates current or
+  /// power data may be invalid; this check performs a destructive DIAG_ALRT
+  /// read and preserves the evidence in getDiagAlertSnapshot().
   /// @param out Current (A)
   /// @return Status::Ok() on success
   Status readCurrent(float& out);
 
   /// Read calculated power in watts (requires calibration)
   /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
+  /// @note Returns MATH_OVERFLOW when DIAG_ALRT.MATHOF indicates current or
+  /// power data may be invalid; this check performs a destructive DIAG_ALRT
+  /// read and preserves the evidence in getDiagAlertSnapshot().
   /// @param out Power (W)
   /// @return Status::Ok() on success
   Status readPower(float& out);
@@ -592,10 +600,10 @@ private:
   /// Read 16-bit register (raw, no health tracking)
   Status _readReg16Raw(uint8_t reg, uint16_t& value);
 
-  /// Read DIAG_ALRT through tracked transport and preserve the raw evidence.
+  /// Read DIAG_ALRT through tracked transport and preserve diagnostic evidence.
   Status _readDiagAlertTracked(uint16_t& raw);
 
-  /// Read DIAG_ALRT through raw transport and preserve the raw evidence.
+  /// Read DIAG_ALRT through raw transport and preserve diagnostic evidence.
   Status _readDiagAlertRaw(uint16_t& raw);
 
   /// Parse and store a DIAG_ALRT value without touching I2C.
@@ -640,6 +648,7 @@ private:
   Status _ensureEnergyAccumulatorReadable() const;
   Status _ensureChargeAccumulatorReadable() const;
   Status _readAccumulatorDiag(uint16_t& raw);
+  Status _readAndValidateMathDiag(uint16_t& raw);
   Status _validateAccumulatorDiag(uint16_t raw, uint16_t overflowBit,
                                   const char* overflowMsg) const;
   bool _triggerDeadlineElapsed(uint32_t nowMs) const;

@@ -49,4 +49,9 @@ This reference design implements a closed-loop constant power drive using an INA
 - Load resistance varied from 1.33Ω (-18°C) to 1.75Ω (+23°C); algorithm compensated successfully
 
 ## Relevance to INA228 Implementation
-This app note uses the INA234 (28V, 12-bit), not the INA228 directly. However, the constant-power control loop pattern is directly transferable to INA228-based designs. The INA228 offers significant advantages for this use case: 85V common-mode range, 20-bit ADC resolution, and built-in power/energy registers. The I2C read pattern (`read power → compute correction → actuate`) is the same. The INA228's higher precision (0.05% gain error, 1 µV offset) would yield tighter power control than the ±3% demonstrated here. The energy accumulation register in the INA228 could additionally track total energy delivered to the heater.
+This app note uses the INA234 (28V, 12-bit), not the INA228 directly. Treat the
+constant-power control-loop pattern as conceptual guidance for INA228 designs:
+read power, compute a correction, then actuate. INA228-specific use still needs
+control-loop stability analysis, timing review, calibration, shunt thermal
+design, and hardware validation. Do not infer tighter power-control performance
+or high-voltage system suitability from the INA234 validation results.

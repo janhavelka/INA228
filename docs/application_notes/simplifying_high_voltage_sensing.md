@@ -46,7 +46,11 @@ Historically, Hall-effect sensors suffered from high drift over temperature and 
 This note is **indirectly relevant** — it positions the INA228 family as the high-accuracy alternative to Hall-effect sensors. For INA228 implementations:
 
 - The INA228's shunt-based approach provides superior accuracy (<1% drift) compared to the ±1.75% of the best Hall-effect devices
-- If your system already uses an INA228, this note confirms it's the right choice when accuracy is the priority
+- If your system already uses an INA228, this note is useful comparison context
+  when accuracy is the priority; it is not validation of a specific INA228
+  high-voltage design
 - For systems where the INA228's accuracy is overkill and design simplicity/cost is prioritized, the TMCS1123 is the Hall-effect alternative — useful context if evaluating sensor trade-offs
-- The INA228's 85V common-mode range covers many of the high-voltage applications discussed (EV chargers, solar inverters)
+- The INA228's 85V common-mode rating is an IC input capability only. Confirm
+  isolation, transients, creepage/clearance, bus voltage, shunt dissipation, and
+  protection requirements before using it in any high-voltage system
 - The INA228 requires more careful PCB design (precision shunt, high/low-side power) compared to a drop-in Hall-effect sensor — a trade-off to be aware of at the system level

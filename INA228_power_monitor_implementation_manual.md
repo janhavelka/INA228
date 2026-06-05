@@ -1,5 +1,16 @@
 # INA228 — Extraction Document
 
+> Current library contract: this is a reference/extraction document, not a
+> hardware validation report. The INA228 85 V rating is an IC input capability,
+> not a system safety rating. The library does not provide isolation, fusing,
+> creepage/clearance, shunt thermal design, bus locking, or bus recovery.
+> Converted current, power, energy, and charge require valid calibration and a
+> clean hardware/cache state. ENERGY and CHARGE are valid only in supported
+> continuous accumulation modes, and DIAG_ALRT / accumulator reads can clear
+> diagnostic evidence. See `README.md` and
+> `docs/INA228_HARDWARE_VALIDATION_MATRIX.md` for the current safety and
+> validation contract.
+
 ## 1. Source Documents
 
 | # | Document Title | Filename | TI Literature # | Pages | Role |
@@ -555,7 +566,7 @@ Power [W] = 3.2 × CURRENT_LSB × POWER
 
 | Bits | Field | Type | Reset | Description |
 |------|-------|------|-------|-------------|
-| 39:0 | ENERGY | R | 0 | 40-bit accumulated energy in Joules. Unsigned, positive only. Rolls over to zero on overflow. |
+| 39:0 | ENERGY | R | 0 | 40-bit raw accumulated energy count. Convert to joules only with valid calibration and continuous accumulation. Unsigned, positive only. Rolls over to zero on overflow. |
 
 (INA228_datasheet.pdf, p26, Table 7-14)
 
@@ -570,7 +581,7 @@ Energy [J] = 16 × 3.2 × CURRENT_LSB × ENERGY
 
 | Bits | Field | Type | Reset | Description |
 |------|-------|------|-------|-------------|
-| 39:0 | CHARGE | R | 0 | 40-bit accumulated charge in Coulombs. Two's complement (signed). Rolls over to zero on overflow. |
+| 39:0 | CHARGE | R | 0 | 40-bit raw accumulated charge count. Convert to coulombs only with valid calibration and continuous accumulation. Two's complement (signed). Rolls over to zero on overflow. |
 
 (INA228_datasheet.pdf, p26, Table 7-15)
 
@@ -1214,7 +1225,7 @@ Automotive qualified version: **INA228-Q1** (Q100 qualified for high-reliability
 
 2. **ALERT pin for interrupt-driven operation.** Configure CNVR=1 in DIAG_ALRT to assert ALERT on conversion complete, enabling interrupt-driven reads instead of polling. (INA228_datasheet.pdf, p17)
 
-3. **Reading data registers at any time is safe.** The device can be read at any time; data from the last completed conversion remains available. Reading does not affect conversions in progress. (INA228_datasheet.pdf, p14)
+3. **Latest data registers can be read without stopping conversions, but some reads have evidence side effects.** Data from the last completed conversion remains available and reading measurement registers does not stop conversions in progress. However, `DIAG_ALRT` reads can clear status flags, ENERGY/CHARGE reads can clear overflow evidence, and current-derived converted values require valid calibration plus no observed `MATHOF`. (INA228_datasheet.pdf, p14)
 
 4. **For energy/charge applications, use continuous mode.** Triggered mode does not track time; only continuous mode provides valid energy and charge accumulation. (INA228_datasheet.pdf, p14)
 
