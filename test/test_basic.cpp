@@ -32,6 +32,7 @@ struct FakeBus {
   uint32_t readCalls = 0;
   uint8_t lastWriteReg = 0;
   uint16_t lastWrite16 = 0;
+  uint8_t lastReadReg = 0;
 
   int readErrorRemaining = 0;
   int writeErrorRemaining = 0;
@@ -60,6 +61,15 @@ Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user)
     if (reg == cmd::REG_DIAG_ALRT) {
       bus->diagAlrt = (bus->diagAlrt & ~cmd::DIAG_CONFIG_MASK) |
                       (value & cmd::DIAG_CONFIG_MASK);
+    } else if (reg == cmd::REG_ADC_CONFIG) {
+      const uint16_t modeBits = value & cmd::MASK_ADC_MODE;
+      const uint16_t shutdownBits =
+          static_cast<uint16_t>(Mode::SHUTDOWN) << cmd::BIT_ADC_MODE;
+      const uint16_t shutdown2Bits =
+          static_cast<uint16_t>(Mode::SHUTDOWN2) << cmd::BIT_ADC_MODE;
+      if (modeBits != shutdownBits && modeBits != shutdown2Bits) {
+        bus->diagAlrt &= ~cmd::DIAG_CNVRF;
+      }
     }
   }
   return Status::Ok();
@@ -78,6 +88,7 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
   }
 
   const uint8_t reg = txData[0];
+  bus->lastReadReg = reg;
   for (size_t i = 0; i < rxLen; ++i) {
     rxData[i] = 0;
   }
@@ -774,6 +785,80 @@ void test_shutdown_conversion_time_ignores_configured_delay() {
   TEST_ASSERT_EQUAL_UINT32(0u, dev.estimateConversionTimeMs());
 }
 
+void test_conversion_time_defaults_and_maximum() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::TRIG_ALL;
+  cfg.vbusConvTime = ConvTime::US_4120;
+  cfg.vshuntConvTime = ConvTime::US_4120;
+  cfg.vtempConvTime = ConvTime::US_4120;
+  cfg.averaging = Averaging::AVG_1024;
+  cfg.convDelayMs2 = 255;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  // CONVDLY 510 ms + (3 channels x 4120 us x 1024 avg) = 13,166,640 us.
+  TEST_ASSERT_EQUAL_UINT32(13166640u, dev.estimateConversionTimeUs());
+  TEST_ASSERT_EQUAL_UINT32(13167u, dev.estimateConversionTimeMs());
+}
+
+void test_begin_marks_each_triggered_mode_pending() {
+  const Mode modes[] = {
+      Mode::TRIG_BUS,        Mode::TRIG_SHUNT,      Mode::TRIG_SHUNT_BUS,
+      Mode::TRIG_TEMP,       Mode::TRIG_TEMP_BUS,   Mode::TRIG_TEMP_SHUNT,
+      Mode::TRIG_ALL,
+  };
+
+  for (Mode mode : modes) {
+    FakeBus bus;
+    INA228::INA228 dev;
+    Config cfg = makeConfig(bus);
+    cfg.mode = mode;
+    bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF | cmd::DIAG_BUSOL;
+
+    Status st = dev.begin(cfg);
+    TEST_ASSERT_TRUE(st.ok());
+
+    SettingsSnapshot snap{};
+    st = dev.getSettings(snap);
+    TEST_ASSERT_TRUE(st.ok());
+    TEST_ASSERT_TRUE(snap.triggeredConversionPending);
+    TEST_ASSERT_EQUAL_UINT32(bus.nowMs, snap.triggeredConversionStartMs);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(mode), static_cast<uint8_t>(snap.mode));
+
+    const uint16_t modeBits =
+        static_cast<uint16_t>(mode) << cmd::BIT_ADC_MODE;
+    TEST_ASSERT_EQUAL_UINT16(modeBits,
+                             bus.reg16[cmd::REG_ADC_CONFIG] & cmd::MASK_ADC_MODE);
+    TEST_ASSERT_FALSE((bus.diagAlrt & cmd::DIAG_CNVRF) != 0);
+  }
+}
+
+void test_begin_triggered_reads_do_not_return_stale_registers_before_cnvrf() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::TRIG_BUS;
+  bus.reg24[cmd::REG_VBUS] = 0x001000;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  const uint32_t readsBefore = bus.readCalls;
+  float volts = 123.0f;
+  Status st = dev.readBusVoltage(volts);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MEASUREMENT_NOT_READY),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_FLOAT(123.0f, volts);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+
+  RawSample raw{};
+  raw.vbus = 0x12345u;
+  st = dev.readRawSample(raw);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MEASUREMENT_NOT_READY),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(0x12345u, raw.vbus);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+}
+
 void test_conversion_ready_clears_completed_trigger_state() {
   FakeBus bus;
   INA228::INA228 dev;
@@ -828,6 +913,91 @@ void test_triggered_conversion_gates_reads_until_cnvrf() {
   TEST_ASSERT_TRUE(st.ok());
   TEST_ASSERT_FALSE(snap.triggeredConversionPending);
   TEST_ASSERT_EQUAL_UINT32(0u, snap.triggeredConversionStartMs);
+}
+
+void test_tick_timestamp_completes_trigger_without_now_hook() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.nowMs = nullptr;
+  cfg.timeUser = nullptr;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  Status st = dev.triggerConversion(Mode::TRIG_ALL);
+  TEST_ASSERT_TRUE(st.inProgress());
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+
+  const uint32_t dueMs = dev.estimateConversionTimeMs();
+  dev.tick(dueMs);
+
+  SettingsSnapshot settings{};
+  st = dev.getSettings(settings);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(settings.triggeredConversionPending);
+  TEST_ASSERT_EQUAL_UINT32(0u, settings.triggeredConversionStartMs);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SHUTDOWN),
+                          static_cast<uint8_t>(settings.mode));
+}
+
+void test_tick_deadline_is_wraparound_safe() {
+  FakeBus bus;
+  bus.nowMs = std::numeric_limits<uint32_t>::max() - 1u;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  Status st = dev.triggerConversion(Mode::TRIG_ALL);
+  TEST_ASSERT_TRUE(st.inProgress());
+  const uint32_t startMs = bus.nowMs;
+  const uint32_t dueMs = dev.estimateConversionTimeMs();
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+  const uint32_t readsBefore = bus.readCalls;
+
+  dev.tick(startMs + dueMs - 1u);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  SettingsSnapshot settings{};
+  st = dev.getSettings(settings);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(settings.triggeredConversionPending);
+
+  dev.tick(startMs + dueMs);
+  TEST_ASSERT_TRUE(bus.readCalls > readsBefore);
+  st = dev.getSettings(settings);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(settings.triggeredConversionPending);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SHUTDOWN),
+                          static_cast<uint8_t>(settings.mode));
+}
+
+void test_public_diag_read_consuming_cnvrf_does_not_strand_pending_trigger() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  Status st = dev.triggerConversion(Mode::TRIG_ALL);
+  TEST_ASSERT_TRUE(st.inProgress());
+  bus.nowMs += dev.estimateConversionTimeMs();
+  bus.clearDiagOnRead = true;
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF | cmd::DIAG_BUSOL;
+
+  uint16_t raw = 0;
+  st = dev.readDiagAlertRaw(raw);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE((raw & cmd::DIAG_CNVRF) != 0);
+  TEST_ASSERT_FALSE((bus.diagAlrt & cmd::DIAG_CNVRF) != 0);
+
+  SettingsSnapshot settings{};
+  st = dev.getSettings(settings);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(settings.triggeredConversionPending);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SHUTDOWN),
+                          static_cast<uint8_t>(settings.mode));
+
+  DiagAlertSnapshot snap{};
+  st = dev.getDiagAlertSnapshot(snap);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(snap.valid);
+  TEST_ASSERT_TRUE(snap.diag.cnvrf);
+  TEST_ASSERT_TRUE(snap.diag.busOL);
 }
 
 void test_tick_preserves_diag_alert_evidence_when_polling_cnvrf() {
@@ -1268,8 +1438,14 @@ int main() {
   RUN_TEST(test_conversion_time_estimate);
   RUN_TEST(test_conversion_time_with_averaging);
   RUN_TEST(test_shutdown_conversion_time_ignores_configured_delay);
+  RUN_TEST(test_conversion_time_defaults_and_maximum);
+  RUN_TEST(test_begin_marks_each_triggered_mode_pending);
+  RUN_TEST(test_begin_triggered_reads_do_not_return_stale_registers_before_cnvrf);
   RUN_TEST(test_conversion_ready_clears_completed_trigger_state);
   RUN_TEST(test_triggered_conversion_gates_reads_until_cnvrf);
+  RUN_TEST(test_tick_timestamp_completes_trigger_without_now_hook);
+  RUN_TEST(test_tick_deadline_is_wraparound_safe);
+  RUN_TEST(test_public_diag_read_consuming_cnvrf_does_not_strand_pending_trigger);
   RUN_TEST(test_tick_preserves_diag_alert_evidence_when_polling_cnvrf);
   RUN_TEST(test_readiness_path_preserves_diag_alert_evidence_for_measurement_gate);
   RUN_TEST(test_alert_config_setters_do_not_read_live_diag_alrt);

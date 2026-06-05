@@ -35,7 +35,8 @@ using I2cWriteReadFn = Status (*)(uint8_t addr, const uint8_t* txData, size_t tx
 /// @param user User context pointer passed through from Config
 /// @return Current monotonic milliseconds
 /// @note Framework-neutral builds do not call platform time APIs; if unset,
-/// health timestamps use 0 and triggered-conversion helpers cannot advance from wall time.
+/// health timestamps use 0. Triggered conversions can still be advanced by
+/// caller-supplied timestamps passed to tick() or pollConversionReady().
 using NowMsFn = uint32_t (*)(void* user);
 
 /// @brief ADC operating mode (MODE field in ADC_CONFIG register, bits 15:12).

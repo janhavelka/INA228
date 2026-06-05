@@ -118,7 +118,8 @@ void loop() {
 | `readPower(p)` | Power in watts (requires calibration) |
 | `readEnergy(e)` | Accumulated energy in joules |
 | `readCharge(q)` | Accumulated charge in coulombs |
-| `isConversionReady(r)` | Check CNVRF flag |
+| `isConversionReady(r)` | Check CNVRF flag using `Config::nowMs` for pending-trigger deadline gating |
+| `pollConversionReady(nowMs, r)` | Check CNVRF using a caller-supplied timestamp |
 
 ### Configuration
 
@@ -207,6 +208,7 @@ end() --------> UNINIT
 5. **Memory behavior**: No heap allocation after `begin()`.
 6. **Error handling**: All fallible APIs return `Status`. Check with `st.ok()`.
 7. **Recovery model**: `OFFLINE` is latched. Supervisors should call `recover()` after applying any bus-level recovery policy.
+8. **Measurement freshness**: Continuous-mode reads return the latest hardware register contents at read time; they are not guaranteed fresh since the previous API call. Driver-tracked triggered conversions return `MEASUREMENT_NOT_READY` until the software deadline has elapsed and CNVRF is observed. `tick(nowMs)` and `pollConversionReady(nowMs, ready)` use the supplied timestamp, so they can advance pending triggered conversions even when `Config::nowMs` is unset.
 
 ## INA228 Address Configuration
 

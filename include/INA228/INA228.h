@@ -112,7 +112,8 @@ public:
   Status begin(const Config& config);
 
   /// Process pending operations (call regularly from loop)
-  /// @param nowMs Current timestamp in milliseconds
+  /// @param nowMs Current monotonic timestamp in milliseconds. This timestamp
+  /// is used directly for triggered-conversion deadline checks.
   void tick(uint32_t nowMs);
 
   /// Shutdown the driver and release resources
@@ -181,57 +182,82 @@ public:
   // Measurement API
   // =========================================================================
 
-  /// Read all available measurements into a float structure
-  /// Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
+  /// Read all available measurements into a float structure.
+  ///
+  /// Continuous modes return the latest hardware register contents available at
+  /// read time; they do not guarantee freshness since the previous call. While
+  /// a driver-tracked triggered conversion is pending, this returns
+  /// MEASUREMENT_NOT_READY and leaves @p out unchanged.
   /// @param out Measurement result
   /// @return Status::Ok() on success
   Status readMeasurement(Measurement& out);
 
-  /// Read raw register values for all channels
-  /// Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
+  /// Read raw register values for all channels.
+  ///
+  /// Continuous modes return the latest hardware register contents available at
+  /// read time; they do not guarantee freshness since the previous call. While
+  /// a driver-tracked triggered conversion is pending, this returns
+  /// MEASUREMENT_NOT_READY and leaves @p out unchanged.
   /// @param out RawSample structure
   /// @return Status::Ok() on success
   Status readRawSample(RawSample& out);
 
   /// Read shunt voltage in volts
+  /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
   /// @param out Shunt voltage (V)
   /// @return Status::Ok() on success
   Status readShuntVoltage(float& out);
 
   /// Read bus voltage in volts
+  /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
   /// @param out Bus voltage (V)
   /// @return Status::Ok() on success
   Status readBusVoltage(float& out);
 
   /// Read die temperature in Celsius
+  /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
   /// @param out Temperature (°C)
   /// @return Status::Ok() on success
   Status readTemperature(float& out);
 
   /// Read calculated current in amperes (requires calibration)
+  /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
   /// @param out Current (A)
   /// @return Status::Ok() on success
   Status readCurrent(float& out);
 
   /// Read calculated power in watts (requires calibration)
+  /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
   /// @param out Power (W)
   /// @return Status::Ok() on success
   Status readPower(float& out);
 
   /// Read accumulated energy in joules (requires calibration, continuous mode)
+  /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
   /// @param out Energy (J)
   /// @return Status::Ok() on success
   Status readEnergy(double& out);
 
   /// Read accumulated charge in coulombs (requires calibration, continuous mode)
+  /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
   /// @param out Charge (C)
   /// @return Status::Ok() on success
   Status readCharge(double& out);
 
-  /// Check if conversion is ready
+  /// Check if conversion is ready using Config::nowMs when a trigger is pending.
   /// @param ready Set to true if conversion complete
   /// @return Status::Ok() on success
   Status isConversionReady(bool& ready);
+
+  /// Poll conversion readiness using the caller-provided timestamp.
+  ///
+  /// This is the status-returning variant used by tick(). It allows triggered
+  /// conversions to advance deterministically even when Config::nowMs is unset.
+  /// CNVRF remains authoritative after the software deadline has elapsed.
+  /// @param nowMs Current monotonic timestamp in milliseconds
+  /// @param ready Set to true if CNVRF was observed on this poll
+  /// @return Status::Ok() on success
+  Status pollConversionReady(uint32_t nowMs, bool& ready);
 
   // =========================================================================
   // Configuration
@@ -480,6 +506,10 @@ private:
   Status _applyCalibration();
   Status _ensureMeasurementReadyForRead();
   uint32_t _nowMs() const;
+  bool _triggerDeadlineElapsed(uint32_t nowMs) const;
+  void _markTriggeredConversionStarted(uint32_t nowMs);
+  void _completeTriggeredConversion();
+  void _clearCapturedConversionReadyFlag();
 
   /// Build ADC_CONFIG register value from current config
   uint16_t _buildAdcConfig() const;

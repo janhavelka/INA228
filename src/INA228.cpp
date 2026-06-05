@@ -296,25 +296,16 @@ Status INA228::begin(const Config& config) {
 
   _initialized = true;
   _driverState = DriverState::READY;
+  if (isTriggeredMode(_config.mode)) {
+    _markTriggeredConversionStarted(_nowMs());
+  }
 
   return Status::Ok();
 }
 
 void INA228::tick(uint32_t nowMs) {
-  if (!_initialized || !_trigPending) {
-    return;
-  }
-  if ((nowMs - _trigStartMs) < estimateConversionTimeMs()) {
-    return;
-  }
-
   bool ready = false;
-  Status st = isConversionReady(ready);
-  if (st.ok() && ready) {
-    _trigPending = false;
-    _trigStartMs = 0;
-    _config.mode = Mode::SHUTDOWN;
-  }
+  (void)pollConversionReady(nowMs, ready);
 }
 
 void INA228::end() {
@@ -425,6 +416,9 @@ Status INA228::recover() {
     st = _applyCalibration();
     if (!st.ok()) {
       return st;
+    }
+    if (isTriggeredMode(_config.mode)) {
+      _markTriggeredConversionStarted(_nowMs());
     }
 
     return Status::Ok();
@@ -713,11 +707,15 @@ Status INA228::readCharge(double& out) {
 }
 
 Status INA228::isConversionReady(bool& ready) {
+  return pollConversionReady(_nowMs(), ready);
+}
+
+Status INA228::pollConversionReady(uint32_t nowMs, bool& ready) {
   ready = false;
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
-  if (_trigPending && ((_nowMs() - _trigStartMs) < estimateConversionTimeMs())) {
+  if (_trigPending && !_triggerDeadlineElapsed(nowMs)) {
     return Status::Ok();
   }
 
@@ -726,11 +724,6 @@ Status INA228::isConversionReady(bool& ready) {
   if (!st.ok()) return st;
 
   ready = (diag & cmd::DIAG_CNVRF) != 0;
-  if (_trigPending && ready) {
-    _trigPending = false;
-    _trigStartMs = 0;
-    _config.mode = Mode::SHUTDOWN;
-  }
   return Status::Ok();
 }
 
@@ -754,12 +747,10 @@ Status INA228::setMode(Mode mode) {
 
   _config.mode = mode;
   if (isTriggeredMode(mode)) {
-    _trigPending = true;
-    _trigStartMs = _nowMs();
+    _markTriggeredConversionStarted(_nowMs());
     return Status{Err::IN_PROGRESS, 0, "Conversion started"};
   }
-  _trigPending = false;
-  _trigStartMs = 0;
+  _completeTriggeredConversion();
   return Status::Ok();
 }
 
@@ -786,8 +777,7 @@ Status INA228::triggerConversion(Mode mode) {
   if (!st.ok()) return st;
 
   _config.mode = mode;
-  _trigPending = true;
-  _trigStartMs = _nowMs();
+  _markTriggeredConversionStarted(_nowMs());
   return Status{Err::IN_PROGRESS, 0, "Conversion started"};
 }
 
@@ -804,6 +794,8 @@ Status INA228::setVbusConvTime(ConvTime ct) {
   Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
   if (!st.ok()) {
     _config.vbusConvTime = old;
+  } else if (isTriggeredMode(_config.mode)) {
+    _markTriggeredConversionStarted(_nowMs());
   }
   return st;
 }
@@ -821,6 +813,8 @@ Status INA228::setVshuntConvTime(ConvTime ct) {
   Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
   if (!st.ok()) {
     _config.vshuntConvTime = old;
+  } else if (isTriggeredMode(_config.mode)) {
+    _markTriggeredConversionStarted(_nowMs());
   }
   return st;
 }
@@ -838,6 +832,8 @@ Status INA228::setTempConvTime(ConvTime ct) {
   Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
   if (!st.ok()) {
     _config.vtempConvTime = old;
+  } else if (isTriggeredMode(_config.mode)) {
+    _markTriggeredConversionStarted(_nowMs());
   }
   return st;
 }
@@ -855,6 +851,8 @@ Status INA228::setAveraging(Averaging avg) {
   Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
   if (!st.ok()) {
     _config.averaging = old;
+  } else if (isTriggeredMode(_config.mode)) {
+    _markTriggeredConversionStarted(_nowMs());
   }
   return st;
 }
@@ -1172,6 +1170,9 @@ Status INA228::softReset() {
   }
 
   st = _applyCalibration();
+  if (st.ok() && isTriggeredMode(_config.mode)) {
+    _markTriggeredConversionStarted(_nowMs());
+  }
   if (startedOffline && !st.ok() && !st.inProgress()) {
     _reassertOfflineLatch();
   }
@@ -1404,6 +1405,9 @@ void INA228::_captureDiagAlert(uint16_t raw) {
   parseDiagAlert(raw, _diagAlertSnapshot.diag);
   _diagAlertSnapshot.capturedMs = _nowMs();
   _diagAlertConfigBits = raw & cmd::DIAG_CONFIG_MASK;
+  if (_trigPending && ((raw & cmd::DIAG_CNVRF) != 0)) {
+    _completeTriggeredConversion();
+  }
 }
 
 Status INA228::_writeDiagAlertConfig(uint16_t configBits) {
@@ -1515,12 +1519,13 @@ Status INA228::_ensureMeasurementReadyForRead() {
   if (!_trigPending) {
     return Status::Ok();
   }
-  if ((_nowMs() - _trigStartMs) < estimateConversionTimeMs()) {
+  const uint32_t now = _nowMs();
+  if (!_triggerDeadlineElapsed(now)) {
     return Status::Error(Err::MEASUREMENT_NOT_READY, "Triggered conversion not ready");
   }
 
   bool ready = false;
-  Status st = isConversionReady(ready);
+  Status st = pollConversionReady(now, ready);
   if (!st.ok()) {
     return st;
   }
@@ -1528,10 +1533,34 @@ Status INA228::_ensureMeasurementReadyForRead() {
     return Status::Error(Err::MEASUREMENT_NOT_READY, "Triggered conversion not ready");
   }
 
+  return Status::Ok();
+}
+
+bool INA228::_triggerDeadlineElapsed(uint32_t nowMs) const {
+  return (nowMs - _trigStartMs) >= estimateConversionTimeMs();
+}
+
+void INA228::_markTriggeredConversionStarted(uint32_t nowMs) {
+  _trigPending = true;
+  _trigStartMs = nowMs;
+  _clearCapturedConversionReadyFlag();
+}
+
+void INA228::_completeTriggeredConversion() {
+  const bool wasTriggeredMode = isTriggeredMode(_config.mode);
   _trigPending = false;
   _trigStartMs = 0;
-  _config.mode = Mode::SHUTDOWN;
-  return Status::Ok();
+  if (wasTriggeredMode) {
+    _config.mode = Mode::SHUTDOWN;
+  }
+}
+
+void INA228::_clearCapturedConversionReadyFlag() {
+  if (!_diagAlertSnapshot.valid || ((_diagAlertSnapshot.raw & cmd::DIAG_CNVRF) == 0)) {
+    return;
+  }
+  _diagAlertSnapshot.raw &= ~cmd::DIAG_CNVRF;
+  parseDiagAlert(_diagAlertSnapshot.raw, _diagAlertSnapshot.diag);
 }
 
 Status INA228::_applyConfig() {

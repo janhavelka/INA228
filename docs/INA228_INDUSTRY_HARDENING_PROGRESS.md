@@ -213,3 +213,82 @@ Four read-only agents were used before implementation:
 - Chunk 03 still needs to define broader triggered-mode freshness and `tick(nowMs)` semantics.
 - Chunk 04 still needs ENERGY/CHARGE validity and overflow policy.
 - Public generic `writeRegister16(REG_DIAG_ALRT, value)` remains diagnostic raw access and can desynchronize user expectations; this is documented as raw-register risk and remains part of the broader API cleanup.
+
+## Chunk 03 - Triggered Conversion, Freshness, and Timing Semantics
+
+Date: 2026-06-05
+Branch: `hardening/ina228-industry-readiness`
+Starting commit: `7ca345abc72eda124842db89805a78a5ce35f78d`
+Commit: pending at report-update time; final response records the committed hash.
+
+### Scope
+
+Chunk 03 defined and implemented deterministic triggered-conversion freshness semantics. It did not attempt ENERGY/CHARGE validity, calibration/ADCRANGE atomicity, reset accumulator policy, or broader API cleanup planned for later chunks.
+
+### Subagent Findings
+
+Four read-only agents were used before implementation:
+
+| Agent | Finding summary |
+| --- | --- |
+| `triggered-datasheet-agent` | Confirmed triggered modes perform one conversion sequence then shutdown, output registers retain prior contents until replaced, CNVRF is set after conversions/averaging complete, CNVRF can be cleared by DIAG_ALRT reads, and CONVDLY participates in first-conversion timing. |
+| `timing-code-agent` | Found begin-time triggered modes were not marked pending, `tick(nowMs)` delegated to readiness code using `Config::nowMs`, public DIAG_ALRT reads could consume CNVRF while a trigger remained pending, and ADC_CONFIG timing writes could restart triggered conversion timing without cache reset. |
+| `api-contract-agent` | Recommended a backward-compatible contract: continuous reads return latest registers, pending triggered reads return `MEASUREMENT_NOT_READY`, `begin(TRIG_*)` marks pending, and a status-returning `pollConversionReady(nowMs, ready)` should back `tick(nowMs)`. |
+| `tests-agent` | Proposed native fake-bus tests for begin-time triggered modes, stale-register prevention, caller-timestamp polling without `Config::nowMs`, wraparound deadlines, DIAG_ALRT CNVRF consumption, and conversion-time limits. |
+
+### Changes
+
+- Added `pollConversionReady(uint32_t nowMs, bool& ready)` and changed `tick(nowMs)` to use caller-supplied time directly.
+- Marked `begin()` with a triggered initial mode as pending instead of silently treating stale output registers as readable.
+- Centralized triggered start/completion handling so `setMode()`, `triggerConversion()`, recover reapply, soft reset reapply, and ADC_CONFIG timing setters keep pending state and start timestamps coherent.
+- Made completion respond to any preserved DIAG_ALRT read that observes CNVRF, so a public diagnostic read cannot strand a pending conversion after consuming CNVRF.
+- Kept continuous measurement reads as latest-register reads and made pending triggered reads return `MEASUREMENT_NOT_READY` before output mutation.
+- Updated Doxygen, `Config::nowMs` notes, and README behavioral contracts for latest-vs-fresh and caller-supplied polling semantics.
+- Updated the native fake bus so ADC_CONFIG writes to active conversion modes clear CNVRF, matching the datasheet side effect.
+
+### API Changes
+
+- Added public method `Status pollConversionReady(uint32_t nowMs, bool& ready)`.
+- Existing `tick(uint32_t nowMs)` now advances triggered polling using the supplied timestamp and no longer depends on `Config::nowMs`.
+- Existing measurement APIs now explicitly document that continuous reads are latest-register reads and pending triggered reads return `MEASUREMENT_NOT_READY`.
+
+### Tests Added Or Updated
+
+- Added native tests for:
+  - every begin-time triggered mode marking a pending conversion.
+  - triggered reads refusing stale register contents before CNVRF.
+  - `tick(nowMs)` completing a trigger without a `Config::nowMs` hook.
+  - wraparound-safe trigger deadlines.
+  - public DIAG_ALRT raw reads consuming CNVRF without stranding pending conversion state.
+  - default and maximum conversion-time estimates.
+- Updated existing triggered/DIAG_ALRT tests to run against the new completion path.
+
+### Commands Run
+
+| Command | Result |
+| --- | --- |
+| `git status --short` | showed modified implementation/docs/test files before commit |
+| `python tools/check_core_timing_guard.py` | PASS: `Core timing guard PASSED` |
+| `python tools/check_cli_contract.py` | PASS: `CLI contract PASSED` |
+| `python tools/check_idf_example_contract.py` | PASS: `IDF example contract PASSED` |
+| `python scripts/generate_version.py check` | PASS: `Up to date: C:\Users\Honza\Documents\Projects\INA228\include\INA228\Version.h` |
+| `python -m platformio test -e native` | PASS: 59 tests passed in native environment. PlatformIO warned that obsolete Core 6.1.18 is used and a previous 6.1.19 also exists. |
+| `python -m platformio run -e esp32s3dev` | PASS: ESP32-S3 Arduino build succeeded. |
+| `python -m platformio run -e esp32s2dev` | PASS: ESP32-S2 Arduino build succeeded. |
+| `python -m platformio pkg pack` | PASS: wrote `INA228-1.3.0.tar.gz`; generated tarball was removed after recording the result. |
+| `idf.py --version` | NOT AVAILABLE: PowerShell reported `idf.py : The term 'idf.py' is not recognized as the name of a cmdlet, function, script file, or operable program.` |
+
+### Commands Not Run
+
+| Command | Reason |
+| --- | --- |
+| `idf.py -C examples/esp_idf/basic set-target esp32s3 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+| `idf.py -C examples/esp_idf/basic set-target esp32s2 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+
+### Remaining Risks
+
+- No hardware validation was performed or claimed.
+- Pure ESP-IDF build proof is still missing because `idf.py` is unavailable locally.
+- `isConversionReady()` still relies on `Config::nowMs` when a trigger is pending; use `pollConversionReady(nowMs, ready)` or `tick(nowMs)` when no clock hook is installed.
+- Conversion timing is still a software readiness estimate plus CNVRF verification, not a hardware timing guarantee validated on physical INA228 devices.
+- ENERGY/CHARGE validity, overflow policy, calibration/ADCRANGE atomicity, reset/RSTACC semantics, and broader output atomicity remain for later chunks.
