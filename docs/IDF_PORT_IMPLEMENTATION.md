@@ -20,6 +20,9 @@ Implemented after the ESP-IDF port branch was merged into `main`.
 - `examples/esp_idf/basic` demonstrates application-owned bus/device setup with
   the new `driver/i2c_master.h` API and maps `esp_err_t` values into
   `INA228::Status`.
+- The ESP-IDF transport in the example is single-owner diagnostic glue. It is
+  not a shared-bus or multitask manager; production projects should add an
+  external bus manager, locking, stable handles, and recovery policy.
 - The ESP-IDF entry point uses native `app_main`, `esp_timer`, FreeRTOS delays,
   stdio input, and fixed command buffers. It implements the same address scan,
   measurements, calibration, alerts, raw-register diagnostics, health/recovery,
@@ -30,6 +33,8 @@ Implemented after the ESP-IDF port branch was merged into `main`.
   without putting bus ownership into the driver core.
 - Added `tools/check_idf_example_contract.py` to guard native IDF dependencies,
   ban Arduino compatibility facades, and verify Arduino/IDF CLI command parity.
+- CI is configured to build `examples/esp_idf/basic` with ESP-IDF 6.0.1 for
+  ESP32-S3 and ESP32-S2.
 
 ## Validation
 
@@ -42,12 +47,15 @@ Implemented after the ESP-IDF port branch was merged into `main`.
 - Arduino examples remain under `examples/01_basic_bringup_cli` and continue to
   provide `Wire` and `millis()` through example-local callbacks.
 - IDF builds were not run in this environment because `idf.py` was not on PATH.
+  GitHub Actions has an ESP-IDF build matrix; do not claim local IDF build
+  results unless `idf.py` output is captured.
 - Arduino example behavior has owner hardware-test coverage and remains the
   reference behavior for this pass. ESP-IDF hardware validation has not been
   performed in this environment.
 
 ## Remaining Hardware Work
 
-- Build `examples/esp_idf/basic` for ESP32-S3 and ESP32-S2 with ESP-IDF 6.0.1.
+- Review the GitHub Actions ESP-IDF build results for ESP32-S3 and ESP32-S2,
+  and rerun locally when `idf.py` is available.
 - Validate manufacturer ID `0x5449`, device ID `0x2281`, MEMSTAT, measurement
   scaling, alert APIs, and health/recovery behavior on hardware.

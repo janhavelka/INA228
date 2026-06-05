@@ -37,13 +37,15 @@ Official ESP-IDF references:
   example has separate native command, scan, timing, and transport glue.
 
 Readiness verdict: the driver core is framework-neutral and the ESP-IDF example
-uses the new I2C master driver plus the full bring-up CLI. Final readiness still
-requires an ESP-IDF 6.0.1 build and hardware validation.
+uses the new I2C master driver plus the full bring-up CLI. CI is configured to
+build the example with ESP-IDF 6.0.1 for ESP32-S3 and ESP32-S2. Local readiness
+still depends on an installed `idf.py`, and hardware validation remains
+outstanding.
 
 ## Portability Blockers
 
 - ESP-IDF compilation has not been verified in this shell because `idf.py` was
-  unavailable.
+  unavailable; GitHub Actions now has a dedicated ESP-IDF build matrix.
 - Hardware validation remains outstanding.
 - Arduino example behavior has owner hardware-test coverage and remains the
   reference behavior for parity checks in this pass.
@@ -86,6 +88,10 @@ requires an ESP-IDF 6.0.1 build and hardware validation.
 - Keep the IDF adapter outside the driver core. It owns the IDF I2C bus/device
   handles, supports address-window probes for the CLI, and supplies callbacks
   to `INA228::Config`.
+- Treat `examples/esp_idf/basic` as single-owner diagnostic example glue, not a
+  production shared-bus manager. Multitask/shared-bus systems should provide an
+  external bus manager, mutex, stable device handles, and recovery policy before
+  calling the driver.
 - Keep bus setup, pins, pull-ups, clock speed, and bus lifetime in the
   application/example, not in the INA228 class.
 - Preserve existing health semantics:
@@ -125,10 +131,11 @@ Callback behavior:
   addresses are `0x40` through `0x4F`.
 - Map `ESP_OK` to `INA228::Status::Ok()`.
 - Map `ESP_ERR_TIMEOUT` to `INA228::Err::I2C_TIMEOUT`.
-- Map `ESP_ERR_INVALID_RESPONSE` to an I2C NACK-related status. The simple
-  ESP-IDF master APIs do not distinguish address and data phase, so prefer
-  `INA228::Err::I2C_ERROR` with `Status.detail = ESP_ERR_INVALID_RESPONSE`
-  unless a custom adapter can prove the phase.
+- Map `i2c_master_probe()` `ESP_ERR_INVALID_RESPONSE` or `ESP_ERR_NOT_FOUND` to
+  `INA228::Err::I2C_NACK_ADDR`.
+- Map transfer-time `ESP_ERR_INVALID_RESPONSE` to `INA228::Err::I2C_ERROR`
+  unless a custom adapter can prove address versus data phase. Preserve
+  `Status.detail = ESP_ERR_INVALID_RESPONSE`.
 - Map invalid adapter state to `INA228::Err::I2C_BUS` or
   `INA228::Err::INVALID_CONFIG`, depending on whether setup or runtime detected
   it.

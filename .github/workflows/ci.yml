@@ -71,6 +71,26 @@ jobs:
       - name: Run native tests
         run: pio test -e native
 
+  esp-idf-basic:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - esp32s3
+          - esp32s2
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build ESP-IDF basic ${{ matrix.target }}
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.0.1
+          target: ${{ matrix.target }}
+          path: examples/esp_idf/basic
+
   validate-library:
     runs-on: ubuntu-latest
     steps:

@@ -806,3 +806,112 @@ Five read-only agents were used before implementation:
   behavior, rather than the fake bus defaulting all DIAG reads to destructive.
 - Example-level ESP-IDF NACK mapping and scanner display precision remain for a
   later focused chunk.
+
+## Chunk 09 - ESP-IDF, Arduino Examples, and CI Build Matrix
+
+Date: 2026-06-05
+Branch: `hardening/ina228-industry-readiness`
+Starting commit: `0814ecebbfe3e54c48f913bd3201d46ee44fb5c2`
+Commit: pending at report-update time; final response records the committed hash.
+
+### Scope
+
+Chunk 09 made build and example claims more reproducible and explicit. It added
+CI coverage for pure ESP-IDF builds, tightened the native IDF example boundary,
+aligned Arduino/ESP-IDF CLI warnings, and documented local validation limits.
+No hardware validation was performed.
+
+### Subagent Findings
+
+Five read-only agents were used before implementation:
+
+| Agent | Finding summary |
+| --- | --- |
+| `ci-agent` | Existing CI ran PlatformIO S2/S3 builds, native tests, static contract checks, and package validation but no `idf.py` build. Recommended an ESP-IDF `esp32s3`/`esp32s2` matrix using Espressif's CI action and IDF v6.0.1. |
+| `idf-agent` | Confirmed the native IDF example is pure IDF, but probe NACK mapping was generic, `scanina` hid `I2C_ERROR` as an empty address, the example was not labeled as single-owner glue, and `std::fgets()` blocks periodic `tick()` progress. |
+| `arduino-agent` | Confirmed local PlatformIO/Arduino structure and API usage looked source-correct. Noted unpinned `platform = espressif32`, weaker destructive/accumulation help text, and unconditional aggregate output without validity flags. |
+| `docs-agent` | Recommended a prominent high-voltage safety warning, clearer validation wording, single-owner IDF adapter labeling, destructive DIAG help text, accumulation validity help/output, and IDF raw-write help parity. |
+| `review-agent` | Confirmed no core framework leak, but CI evidence was weaker than ESP-IDF support claims, IDF main CMake exposed the repo root include path, and the core timing guard was too narrow. |
+
+### Changes
+
+- Added `.github/workflows/ci.yml` job `esp-idf-basic` for `esp32s3` and
+  `esp32s2` using `espressif/esp-idf-ci-action@v1` with ESP-IDF `v6.0.1`.
+- Narrowed the ESP-IDF example main component `INCLUDE_DIRS` to `"."` and rely
+  on `REQUIRES INA228` for library headers.
+- Labeled the ESP-IDF transport as single-owner diagnostic example glue, not a
+  production shared-bus/multitask manager.
+- Split ESP-IDF error mapping into probe and transfer paths:
+  - `i2c_master_probe()` `ESP_ERR_INVALID_RESPONSE`/`ESP_ERR_NOT_FOUND` maps to
+    `I2C_NACK_ADDR`;
+  - transfer-time `ESP_ERR_INVALID_RESPONSE` remains `I2C_ERROR` because the
+    standard API does not prove address versus data phase;
+  - `ESP_ERR_TIMEOUT` remains timeout and `ESP_ERR_INVALID_ARG` maps to
+    `INVALID_PARAM`.
+- Updated IDF `scanina` so only `I2C_NACK_ADDR` is shown as an empty address;
+  timeouts, bus errors, and generic I2C errors remain visible.
+- Aligned Arduino and ESP-IDF CLI help/runtime text for:
+  - destructive/status-clearing `DIAG_ALRT` reads;
+  - `scanina`, `probe`, and `selftest` consuming DIAG_ALRT evidence;
+  - continuous-accumulation-only energy/charge reads;
+  - raw register diagnostic access and raw write cache-desync risk;
+  - high-voltage safety warnings.
+- Added energy/charge validity and overflow flag output to Arduino and ESP-IDF
+  aggregate measurement/raw sample views.
+- Neutralized package metadata and README wording from "Production-grade" to
+  "Framework-neutral" until validation evidence is broader.
+- Added README/Doxygen safety wording for high-voltage systems.
+- Strengthened `tools/check_core_timing_guard.py` to reject core Wire/Arduino,
+  ESP-IDF/FreeRTOS includes, example includes, platform timing calls, and common
+  framework tokens in `include/` and `src/`.
+- Strengthened `tools/check_idf_example_contract.py` to require the ESP-IDF CI
+  matrix, narrowed CMake include boundary, IDF probe NACK mapping tokens, and
+  aligned CLI warning tokens.
+
+### API Changes
+
+- No functional core API change.
+- Public Doxygen gained a high-voltage safety warning.
+- `library.json` and `idf_component.yml` description text changed from
+  "Production-grade" to "Framework-neutral".
+
+### Tests Added Or Updated
+
+- No native driver tests were added in this chunk.
+- Static contract checks were extended to cover the new CI/example contracts.
+
+### Commands Run
+
+| Command | Result |
+| --- | --- |
+| `git status --short` | showed only intended modifications before commit; generated package tarball was removed |
+| `git diff --check` | PASS; only Git CRLF normalization warnings were printed |
+| `python tools/check_core_timing_guard.py` | PASS: `Core timing guard PASSED` |
+| `python tools/check_cli_contract.py` | PASS: `CLI contract PASSED` |
+| `python tools/check_idf_example_contract.py` | PASS: `IDF example contract PASSED` |
+| `python scripts/generate_version.py check` | PASS: `Up to date: C:\Users\Honza\Documents\Projects\INA228\include\INA228\Version.h` |
+| `python -m platformio test -e native` | PASS: 111/111 native tests succeeded in 1.245 s; PlatformIO warned obsolete Core 6.1.18 is used and 6.1.19 also exists |
+| `python -m platformio run -e esp32s3dev` | PASS: ESP32-S3 Arduino build succeeded with PlatformIO espressif32 54.3.20, Arduino 3.2.0, IDF libs 5.4.0 |
+| `python -m platformio run -e esp32s2dev` | PASS: ESP32-S2 Arduino build succeeded with PlatformIO espressif32 54.3.20, Arduino 3.2.0, IDF libs 5.4.0 |
+| `python -m platformio pkg pack` | PASS: wrote `INA228-1.3.0.tar.gz`; tarball was removed after recording the result |
+| `idf.py --version` | NOT AVAILABLE: PowerShell reported `idf.py : The term 'idf.py' is not recognized as the name of a cmdlet, function, script file, or operable program.` |
+
+### Commands Not Run
+
+| Command | Reason |
+| --- | --- |
+| `idf.py -C examples/esp_idf/basic set-target esp32s3 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. CI is now configured to run this command-equivalent target. |
+| `idf.py -C examples/esp_idf/basic set-target esp32s2 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. CI is now configured to run this command-equivalent target. |
+
+### Remaining Risks
+
+- No hardware validation was performed or claimed.
+- Local pure ESP-IDF build proof is still missing because `idf.py` is
+  unavailable locally; the new GitHub Actions job must be reviewed after push.
+- `espressif/esp-idf-ci-action@v1` is a moving major action tag and adds CI time.
+- The IDF example CLI still uses blocking `std::fgets()`, so `tick()` advances
+  between commands rather than on a periodic console loop.
+- ESP-IDF transfer-time NACKs remain `I2C_ERROR` because the standard transfer
+  APIs do not expose address versus data phase.
+- `platform = espressif32` remains unpinned; local S2/S3 builds passed here, but
+  future PlatformIO framework changes can affect reproducibility.

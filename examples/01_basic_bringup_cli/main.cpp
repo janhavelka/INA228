@@ -175,6 +175,7 @@ void printProbeSnapshot(const ProbeSnapshot& snapshot) {
 
 void scanIna228Addresses() {
   Serial.println("=== INA228 Address Probe (0x40-0x4F) ===");
+  Serial.println("Note: INA228 probes read DIAG_ALRT for MEMSTAT and can clear CNVRF/latched diagnostic evidence.");
   uint8_t healthyCount = 0;
   for (uint8_t address = INA228_ADDR_MIN; address <= INA228_ADDR_MAX; ++address) {
     ProbeSnapshot snapshot{};
@@ -592,6 +593,17 @@ void printMeasurement() {
   Serial.printf("  Power:   %.6f W\n", m.powerW);
   Serial.printf("  Energy:  %.9f J\n", m.energyJ);
   Serial.printf("  Charge:  %.9f C\n", m.chargeC);
+  Serial.printf("  Accum valid: energy=%s charge=%s\n",
+                log_bool_str(m.energyValid),
+                log_bool_str(m.chargeValid));
+  Serial.printf("  Accum overflow: ENERGYOF=%s CHARGEOF=%s MATHOF=%s\n",
+                log_bool_str(m.energyOverflow),
+                log_bool_str(m.chargeOverflow),
+                log_bool_str(m.mathOverflow));
+  if (m.diagAlertValid) {
+    Serial.printf("  DIAG_ALRT snapshot before accumulator reads: 0x%04X\n",
+                  m.diagAlertRaw);
+  }
 }
 
 void printRawSample() {
@@ -620,6 +632,17 @@ void printRawSample() {
                 static_cast<unsigned long>(raw.power));
   Serial.printf("  Energy: %lld\n", static_cast<long long>(raw.energy));
   Serial.printf("  Charge: %lld\n", static_cast<long long>(raw.charge));
+  Serial.printf("  Accum valid: energy=%s charge=%s\n",
+                log_bool_str(raw.energyValid),
+                log_bool_str(raw.chargeValid));
+  Serial.printf("  Accum overflow: ENERGYOF=%s CHARGEOF=%s MATHOF=%s\n",
+                log_bool_str(raw.energyOverflow),
+                log_bool_str(raw.chargeOverflow),
+                log_bool_str(raw.mathOverflow));
+  if (raw.diagAlertValid) {
+    Serial.printf("  DIAG_ALRT snapshot before accumulator reads: 0x%04X\n",
+                  raw.diagAlertRaw);
+  }
 }
 
 void printDiag() {
@@ -632,6 +655,7 @@ void printDiag() {
   }
 
   Serial.println("=== DIAG_ALRT Flags ===");
+  Serial.println("  Note: this read is destructive/status-clearing for CNVRF and latched diagnostic evidence.");
   Serial.printf("  MEMSTAT:   %s\n", log_bool_str(diag.memstat));
   Serial.printf("  CNVRF:     %s\n", log_bool_str(diag.cnvrf));
   Serial.printf("  ALATCH:    %s\n", log_bool_str(diag.alatch));
@@ -1088,7 +1112,8 @@ void runSelfTest() {
     report(name, Outcome::SKIP, note);
   };
 
-  Serial.println("=== INA228 selftest (safe commands) ===");
+  Serial.println("=== INA228 selftest (diagnostic commands; reads DIAG_ALRT) ===");
+  Serial.println("Note: DIAG_ALRT reads can clear CNVRF and latched evidence.");
 
   const uint32_t succBefore = device.totalSuccess();
   const uint32_t failBefore = device.totalFailures();
@@ -1188,14 +1213,15 @@ void runSelfTest() {
 void printHelp() {
   Serial.println();
   cli::printHelpHeader("INA228 CLI Help");
+  LOGW("Safety: this example does not make 85 V systems safe. Use qualified design practices, isolation where needed, fusing, creepage/clearance, shunt power checks, and USB-ground care.");
 
   cli::printHelpSection("Common");
   cli::printHelpItem("help / ?", "Show this help");
   cli::printHelpItem("version / ver", "Print firmware and library version info");
   cli::printHelpItem("scan", "Scan I2C bus and probe 0x40-0x4F for INA228 IDs");
-  cli::printHelpItem("scanina", "Probe 0x40-0x4F for valid INA228 IDs");
-  cli::printHelpItem("read", "Read all measurements");
-  cli::printHelpItem("raw", "Read raw register values");
+  cli::printHelpItem("scanina", "Probe INA228 IDs; reads DIAG_ALRT/MEMSTAT");
+  cli::printHelpItem("read", "Read all measurements with accumulator validity flags");
+  cli::printHelpItem("raw", "Read raw register values with validity flags");
   cli::printHelpItem("timing", "Show conversion timing and calibration info");
 
   cli::printHelpSection("Measurement");
@@ -1204,8 +1230,8 @@ void printHelp() {
   cli::printHelpItem("temp", "Read die temperature");
   cli::printHelpItem("current", "Read current");
   cli::printHelpItem("power", "Read power");
-  cli::printHelpItem("energy", "Read accumulated energy");
-  cli::printHelpItem("charge", "Read accumulated charge");
+  cli::printHelpItem("energy", "Read accumulated energy (continuous accumulation only)");
+  cli::printHelpItem("charge", "Read accumulated charge (continuous accumulation only)");
   cli::printHelpItem("ready", "Check if conversion is ready");
   cli::printHelpItem("trigger [mode]", "Trigger single-shot conversion (0-7)");
 
@@ -1226,8 +1252,8 @@ void printHelp() {
   cli::printHelpItem("rstacc", "Reset energy/charge accumulators");
 
   cli::printHelpSection("Alert & Diagnostics");
-  cli::printHelpItem("diag", "Read diagnostic/alert flags");
-  cli::printHelpItem("diagraw", "Read raw DIAG_ALRT register");
+  cli::printHelpItem("diag", "Read DIAG_ALRT flags (destructive/status-clearing)");
+  cli::printHelpItem("diagraw", "Read raw DIAG_ALRT (destructive/status-clearing)");
   cli::printHelpItem("limits", "Read alert limit registers with decoded units");
   cli::printHelpItem("alatch [0|1]", "Show or set alert latch mode");
   cli::printHelpItem("cnvralert [0|1]", "Show or enable conversion-ready alert output");
@@ -1241,19 +1267,19 @@ void printHelp() {
   cli::printHelpItem("pwrlim [watts]", "Show or set power over-limit threshold");
   cli::printHelpItem("mfgid", "Read manufacturer ID (expect 0x5449)");
   cli::printHelpItem("devid", "Read device ID (expect 0x2281)");
-  cli::printHelpItem("reg16 <addr>", "Read 16-bit register");
-  cli::printHelpItem("reg24 <addr>", "Read 24-bit register");
-  cli::printHelpItem("reg40 <addr>", "Read 40-bit register");
+  cli::printHelpItem("reg16 <addr>", "Read 16-bit register (diagnostic; may clear flags)");
+  cli::printHelpItem("reg24 <addr>", "Read 24-bit register (diagnostic; may clear flags)");
+  cli::printHelpItem("reg40 <addr>", "Read 40-bit register (diagnostic; may clear flags)");
   cli::printHelpItem("wreg16 <addr> <val>", "Write 16-bit register (diagnostic only; may desync cached config)");
 
   cli::printHelpSection("Diagnostics");
   cli::printHelpItem("drv", "Show driver state and health");
-  cli::printHelpItem("probe", "Probe device (no health tracking)");
+  cli::printHelpItem("probe", "Probe device; reads DIAG_ALRT; no health tracking");
   cli::printHelpItem("recover", "Manual recovery attempt");
   cli::printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   cli::printHelpItem("stress [N]", "Run N measurement cycles (default 10)");
   cli::printHelpItem("stress_mix [N]", "Run N mixed-operation cycles (default 50)");
-  cli::printHelpItem("selftest", "Run safe command self-test report");
+  cli::printHelpItem("selftest", "Run diagnostic self-test; reads DIAG_ALRT");
 }
 
 // ============================================================================
@@ -1679,6 +1705,7 @@ void processCommand(const String& cmdLine) {
     auto st = device.readDiagAlertRaw(raw);
     if (st.ok()) {
       LOGI("DIAG_ALRT raw: 0x%04X", raw);
+      LOGW("DIAG_ALRT reads are destructive/status-clearing.");
     } else {
       printStatus(st);
     }
@@ -1895,7 +1922,7 @@ void processCommand(const String& cmdLine) {
     args.trim();
     const int split = args.indexOf(' ');
     if (split < 0) {
-      LOGW("Usage: wreg16 <addr> <val>");
+      LOGW("Usage: wreg16 <addr> <val> (diagnostic only)");
       return;
     }
     uint32_t addr = 0;
@@ -1903,7 +1930,7 @@ void processCommand(const String& cmdLine) {
     if (!parseU32(args.substring(0, split), addr) ||
         !parseU32(args.substring(split + 1), value) ||
         addr > 0xFFu || value > 0xFFFFu) {
-      LOGW("Usage: wreg16 <addr> <val>");
+      LOGW("Usage: wreg16 <addr> <val> (diagnostic only)");
       return;
     }
     auto st = device.writeRegister16(static_cast<uint8_t>(addr), static_cast<uint16_t>(value));
@@ -1980,7 +2007,9 @@ void processCommand(const String& cmdLine) {
 
   if (cmd == "probe") {
     const uint8_t address = configuredAddress();
-    LOGI("Probing address 0x%02X (raw, no health tracking)...", address);
+    LOGI("Probing address 0x%02X (raw, no health tracking; reads DIAG_ALRT)...",
+         address);
+    LOGW("DIAG_ALRT reads can clear CNVRF and latched evidence.");
     ProbeSnapshot snapshot{};
     auto st = probeAddressRaw(address, snapshot);
     printStatus(st);

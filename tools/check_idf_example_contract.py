@@ -93,6 +93,21 @@ FORBIDDEN_IDF_TOKENS = [
     "IdfArduinoCompat",
     CLI_SOURCE_INCLUDE,
 ]
+CI_REQUIRED_TOKENS = [
+    "esp-idf-basic:",
+    "uses: espressif/esp-idf-ci-action@v1",
+    "esp_idf_version: v6.0.1",
+    "target: ${{ matrix.target }}",
+    "path: examples/esp_idf/basic",
+    "esp32s3",
+    "esp32s2",
+]
+CLI_WARNING_TOKENS = [
+    "Safety:",
+    "destructive/status-clearing",
+    "continuous accumulation only",
+    "validity flags",
+]
 
 
 def fail(msg: str) -> None:
@@ -145,6 +160,8 @@ def main() -> int:
     cmake = (
         ROOT / "examples" / "esp_idf" / "basic" / "main" / "CMakeLists.txt"
     ).read_text(encoding="utf-8", errors="replace")
+    if "../../../.." in cmake or "examples/common" in cmake:
+        fail("ESP-IDF main CMake must not expose repo root or examples/common include paths")
     for component in REQUIRED_COMPONENTS:
         if re.search(rf"\b{re.escape(component)}\b", cmake) is None:
             fail(f"ESP-IDF CMake missing required component '{component}'")
@@ -164,6 +181,11 @@ def main() -> int:
         "i2c_master_probe",
         "i2c_master_transmit",
         "i2c_master_transmit_receive",
+        "mapEspProbeErr",
+        "ESP_ERR_NOT_FOUND",
+        "I2C_NACK_ADDR",
+        "I2C NACK, ESP-IDF phase unavailable",
+        "single-owner",
     ):
         require_token(transport, token, "ESP-IDF transport")
     for token in FORBIDDEN_IDF_TOKENS:
@@ -173,6 +195,11 @@ def main() -> int:
     cli = (ROOT / "examples" / "01_basic_bringup_cli" / "main.cpp").read_text(
         encoding="utf-8", errors="replace"
     )
+    for text, label in ((cli, "Arduino CLI"), (idf_main, "native ESP-IDF CLI")):
+        for token in CLI_WARNING_TOKENS:
+            require_token(text, token, label)
+    if "st.code == INA228::Err::I2C_NACK_ADDR || st.code == INA228::Err::I2C_ERROR" in idf_main:
+        fail("native ESP-IDF scan must not hide generic I2C_ERROR as an empty address")
     for command in MANDATORY_COMMANDS:
         if f'printHelpItem("{command}' not in cli:
             fail(f"Arduino CLI missing help item '{command}'")
@@ -186,6 +213,12 @@ def main() -> int:
     manifest = (ROOT / "idf_component.yml").read_text(encoding="utf-8", errors="replace")
     for token in ("esp32s2", "esp32s3", "idf:"):
         require_token(manifest, token, "idf_component.yml")
+
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    for token in CI_REQUIRED_TOKENS:
+        require_token(ci, token, "CI ESP-IDF build matrix")
 
     print("IDF example contract PASSED")
     return 0

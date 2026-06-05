@@ -1,6 +1,6 @@
 # INA228 Driver Library
 
-Production-grade INA228 85-V, 20-bit I2C power/energy/charge monitor driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use).
+Framework-neutral INA228 85-V, 20-bit I2C power/energy/charge monitor driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use).
 
 Library version: `v1.3.0`
 
@@ -35,7 +35,10 @@ or the component manager metadata, then provide `Config::i2cWrite`,
 `Config::i2cWriteRead`, and `Config::nowMs` from your application-owned I2C
 adapter. The native example in `examples/esp_idf/basic` uses ESP-IDF
 `driver/i2c_master.h`, `app_main`, `esp_timer`, FreeRTOS delays, and fixed
-command buffers while preserving Arduino CLI command coverage.
+command buffers while preserving Arduino CLI command coverage. Its transport is
+single-owner diagnostic example glue; production shared-bus or multitask
+systems should provide an external bus manager, locking, stable device handles,
+and application-specific recovery policy.
 
 ## Release 1.3.0 Highlights
 
@@ -44,8 +47,17 @@ command buffers while preserving Arduino CLI command coverage.
 - Preserves Arduino and ESP-IDF user-visible CLI parity for scan/probe, measurements, calibration, alert limits, raw register diagnostics, stress, and self-test workflows.
 - Keeps the driver core framework-neutral; hardware access remains callback-injected and timing comes from application-provided `Config::nowMs`.
 - Arduino example behavior has owner hardware-test coverage and remains the
-  reference behavior. ESP-IDF support is implemented and statically guarded,
-  but still requires an ESP-IDF build and hardware validation before release.
+  reference behavior. ESP-IDF support is implemented, statically guarded, and
+  configured for CI `idf.py` builds, but local ESP-IDF and hardware validation
+  results must be reported separately.
+
+## High-Voltage Safety
+
+INA228 can monitor bus voltages up to 85 V, but this library and its examples
+do not make high-voltage systems safe. They do not provide isolation, fusing,
+creepage/clearance, enclosure safety, shunt power/thermal design, mains safety,
+or protection against USB-ground hazards. Use qualified hardware design and
+validation before connecting non-isolated, mains-derived, or high-energy rails.
 
 ## Quick Start
 
@@ -267,6 +279,10 @@ The canonical bringup example now includes address-aware diagnostics for shared 
 Raw register access is intended for diagnostics and bring-up. Reads of status-sensitive registers such as `DIAG_ALRT` can consume diagnostic evidence, and reads of `ENERGY` or `CHARGE` can affect overflow evidence. Writes bypass typed config helpers and can desynchronize cached state from hardware, so use `recover()`, `softReset()`, or `begin()` to restore cached settings after manual register edits.
 
 ## Validation
+
+These are validation targets, not hardware-validation claims. GitHub Actions is
+configured to run the PlatformIO and ESP-IDF build/test commands; local results
+depend on the installed toolchains and must be reported with exact failures.
 
 ```bash
 python tools/check_cli_contract.py

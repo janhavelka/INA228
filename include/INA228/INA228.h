@@ -1,5 +1,8 @@
 /// @file INA228.h
 /// @brief Main driver class for INA228 85-V, 20-bit power/energy/charge monitor
+/// @warning The driver and examples do not provide isolation, fusing,
+/// creepage/clearance, or electrical safety protection. High-voltage systems
+/// require qualified hardware design, validation, and operating procedures.
 #pragma once
 
 #include <cstddef>

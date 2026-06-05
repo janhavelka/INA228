@@ -11,13 +11,32 @@ SCAN_DIRS = ("src", "include")
 VALID_SUFFIXES = {".c", ".cc", ".cpp", ".h", ".hpp"}
 
 FORBIDDEN_CALLS = {
+    "delay": re.compile(r"\bdelay\s*\("),
     "millis": re.compile(r"\bmillis\s*\("),
     "micros": re.compile(r"\bmicros\s*\("),
     "delayMicroseconds": re.compile(r"\bdelayMicroseconds\s*\("),
     "yield": re.compile(r"\byield\s*\("),
+    "vTaskDelay": re.compile(r"\bvTaskDelay\s*\("),
+    "xTaskGetTickCount": re.compile(r"\bxTaskGetTickCount\s*\("),
+    "esp_timer_get_time": re.compile(r"\besp_timer_get_time\s*\("),
 }
 
-INCLUDE_ARDUINO_RE = re.compile(r'^\s*#\s*include\s*[<\"]Arduino\.h[>\"]', re.MULTILINE)
+FORBIDDEN_CODE_TOKENS = {
+    "Wire": re.compile(r"\bWire\b"),
+    "TwoWire": re.compile(r"\bTwoWire\b"),
+    "Serial": re.compile(r"\bSerial\b"),
+    "String": re.compile(r"\bString\b"),
+    "esp_err_t": re.compile(r"\besp_err_t\b"),
+    "i2c_master": re.compile(r"\bi2c_master_\w+"),
+    "FreeRTOS": re.compile(r"\bFreeRTOS\b"),
+}
+
+FORBIDDEN_INCLUDE_RE = re.compile(
+    r'^\s*#\s*include\s*[<\"]'
+    r'(Arduino\.h|Wire\.h|driver/[^>\"]+|esp_[^>\"]+|freertos/[^>\"]+|FreeRTOS\.h|examples/[^>\"]+)'
+    r'[>\"]',
+    re.MULTILINE,
+)
 BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
@@ -47,6 +66,7 @@ def collect_sources() -> list[pathlib.Path]:
 def main() -> int:
     observed_calls: Dict[str, Dict[str, int]] = {}
     observed_includes: Dict[str, int] = {}
+    observed_tokens: Dict[str, Dict[str, int]] = {}
 
     for path in collect_sources():
         rel = path.relative_to(ROOT).as_posix()
@@ -61,7 +81,15 @@ def main() -> int:
         if call_counts:
             observed_calls[rel] = call_counts
 
-        include_count = len(INCLUDE_ARDUINO_RE.findall(raw))
+        token_counts: Dict[str, int] = {}
+        for token_name, pattern in FORBIDDEN_CODE_TOKENS.items():
+            count = len(pattern.findall(code))
+            if count > 0:
+                token_counts[token_name] = count
+        if token_counts:
+            observed_tokens[rel] = token_counts
+
+        include_count = len(FORBIDDEN_INCLUDE_RE.findall(raw))
         if include_count > 0:
             observed_includes[rel] = include_count
 
@@ -95,15 +123,18 @@ def main() -> int:
         exp = ALLOWED_INCLUDE_COUNTS.get(rel, 0)
         if count != exp:
             errors.append(
-                f"Arduino include count mismatch in {rel}: observed={count}, expected={exp}"
+                f"framework include count mismatch in {rel}: observed={count}, expected={exp}"
             )
 
     for rel, exp in ALLOWED_INCLUDE_COUNTS.items():
         obs = observed_includes.get(rel, 0)
         if obs != exp:
             errors.append(
-                f"Arduino include count mismatch in {rel}: observed={obs}, expected={exp}"
+                f"framework include count mismatch in {rel}: observed={obs}, expected={exp}"
             )
+
+    for rel, counts in observed_tokens.items():
+        errors.append(f"forbidden framework/core-boundary tokens in {rel}: {counts}")
 
     if errors:
         print("Core timing guard FAILED:")

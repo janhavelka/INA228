@@ -5,6 +5,9 @@
  * The ESP-IDF example intentionally uses native IDF entry, timing, GPIO, I2C,
  * delays, and fixed command buffers. It does not include Arduino headers,
  * Arduino CLI sources, or compatibility facades.
+ *
+ * This is diagnostic single-owner example glue. Shared-bus or multitask
+ * applications need an external bus manager, locking, and stable device handles.
  */
 
 #include <cctype>
@@ -404,6 +407,8 @@ void scanBus() {
 
 void scanIna228Addresses() {
   std::printf("=== INA228 Address Probe (0x40-0x4F) ===\n");
+  std::printf("Note: INA228 probes read DIAG_ALRT for MEMSTAT and can clear "
+              "CNVRF/latched diagnostic evidence.\n");
   uint8_t healthyCount = 0;
   for (uint8_t address = INA228_ADDR_MIN; address <= INA228_ADDR_MAX; ++address) {
     ProbeSnapshot snapshot;
@@ -413,7 +418,7 @@ void scanIna228Addresses() {
       ++healthyCount;
       std::printf("%sINA228%s (MFG=0x%04X DEV=0x%04X MEMSTAT=OK)\n",
                   COLOR_GREEN, COLOR_RESET, snapshot.manufacturerId, snapshot.deviceId);
-    } else if (st.code == INA228::Err::I2C_NACK_ADDR || st.code == INA228::Err::I2C_ERROR) {
+    } else if (st.code == INA228::Err::I2C_NACK_ADDR) {
       std::printf("--\n");
     } else if (st.code == INA228::Err::DEVICE_ID_MISMATCH) {
       std::printf("%sID mismatch%s (MFG=0x%04X DEV=0x%04X)\n",
@@ -585,6 +590,15 @@ void printMeasurement() {
   std::printf("  Power:   %.6f W\n", m.powerW);
   std::printf("  Energy:  %.9f J\n", m.energyJ);
   std::printf("  Charge:  %.9f C\n", m.chargeC);
+  std::printf("  Accum valid: energy=%s charge=%s\n",
+              boolStr(m.energyValid), boolStr(m.chargeValid));
+  std::printf("  Accum overflow: ENERGYOF=%s CHARGEOF=%s MATHOF=%s\n",
+              boolStr(m.energyOverflow), boolStr(m.chargeOverflow),
+              boolStr(m.mathOverflow));
+  if (m.diagAlertValid) {
+    std::printf("  DIAG_ALRT snapshot before accumulator reads: 0x%04X\n",
+                m.diagAlertRaw);
+  }
 }
 
 void printRawSample() {
@@ -607,6 +621,15 @@ void printRawSample() {
               static_cast<unsigned long>(raw.power));
   std::printf("  Energy: %llu\n", static_cast<unsigned long long>(raw.energy));
   std::printf("  Charge: %lld\n", static_cast<long long>(raw.charge));
+  std::printf("  Accum valid: energy=%s charge=%s\n",
+              boolStr(raw.energyValid), boolStr(raw.chargeValid));
+  std::printf("  Accum overflow: ENERGYOF=%s CHARGEOF=%s MATHOF=%s\n",
+              boolStr(raw.energyOverflow), boolStr(raw.chargeOverflow),
+              boolStr(raw.mathOverflow));
+  if (raw.diagAlertValid) {
+    std::printf("  DIAG_ALRT snapshot before accumulator reads: 0x%04X\n",
+                raw.diagAlertRaw);
+  }
 }
 
 void printDiag() {
@@ -617,6 +640,8 @@ void printDiag() {
     return;
   }
   std::printf("=== DIAG_ALRT Flags ===\n");
+  std::printf("  Note: this read is destructive/status-clearing for CNVRF and "
+              "latched diagnostic evidence.\n");
   std::printf("  MEMSTAT:   %s\n", boolStr(diag.memstat));
   std::printf("  CNVRF:     %s\n", boolStr(diag.cnvrf));
   std::printf("  ALATCH:    %s\n", boolStr(diag.alatch));
@@ -776,13 +801,20 @@ void printHelpItem(const char* command, const char* description) {
 
 void printHelp() {
   std::printf("\n%s=== INA228 CLI Help ===%s\n", COLOR_CYAN, COLOR_RESET);
+  std::printf("%sSafety:%s This example does not make 85 V systems safe. Use "
+              "qualified design practices, isolation where needed, fusing, "
+              "creepage/clearance, shunt power checks, and USB-ground care.\n",
+              COLOR_YELLOW, COLOR_RESET);
+  std::printf("%sIDF bus model:%s single-owner diagnostic glue; shared buses "
+              "need an external manager and lock.\n",
+              COLOR_YELLOW, COLOR_RESET);
   std::printf("\n%s[Common]%s\n", COLOR_GREEN, COLOR_RESET);
   printHelpItem("help / ?", "Show this help");
   printHelpItem("version / ver", "Print firmware and library version info");
   printHelpItem("scan", "Scan I2C bus and probe 0x40-0x4F for INA228 IDs");
-  printHelpItem("scanina", "Probe 0x40-0x4F for valid INA228 IDs");
-  printHelpItem("read", "Read all measurements");
-  printHelpItem("raw", "Read raw register values");
+  printHelpItem("scanina", "Probe INA228 IDs; reads DIAG_ALRT/MEMSTAT");
+  printHelpItem("read", "Read all measurements with accumulator validity flags");
+  printHelpItem("raw", "Read raw register values with validity flags");
   printHelpItem("timing", "Show conversion timing and calibration info");
 
   std::printf("\n%s[Measurement]%s\n", COLOR_GREEN, COLOR_RESET);
@@ -791,8 +823,8 @@ void printHelp() {
   printHelpItem("temp", "Read die temperature");
   printHelpItem("current", "Read current");
   printHelpItem("power", "Read power");
-  printHelpItem("energy", "Read accumulated energy");
-  printHelpItem("charge", "Read accumulated charge");
+  printHelpItem("energy", "Read accumulated energy (continuous accumulation only)");
+  printHelpItem("charge", "Read accumulated charge (continuous accumulation only)");
   printHelpItem("ready", "Check if conversion is ready");
   printHelpItem("trigger [mode]", "Trigger single-shot conversion (0-7)");
 
@@ -813,8 +845,8 @@ void printHelp() {
   printHelpItem("rstacc", "Reset energy/charge accumulators");
 
   std::printf("\n%s[Alert & Diagnostics]%s\n", COLOR_GREEN, COLOR_RESET);
-  printHelpItem("diag", "Read diagnostic/alert flags");
-  printHelpItem("diagraw", "Read raw DIAG_ALRT register");
+  printHelpItem("diag", "Read DIAG_ALRT flags (destructive/status-clearing)");
+  printHelpItem("diagraw", "Read raw DIAG_ALRT (destructive/status-clearing)");
   printHelpItem("limits", "Read alert limit registers with decoded units");
   printHelpItem("alatch [0|1]", "Show or set alert latch mode");
   printHelpItem("cnvralert [0|1]", "Show or enable conversion-ready alert output");
@@ -828,19 +860,19 @@ void printHelp() {
   printHelpItem("pwrlim [watts]", "Show or set power over-limit threshold");
   printHelpItem("mfgid", "Read manufacturer ID (expect 0x5449)");
   printHelpItem("devid", "Read device ID (expect 0x2281)");
-  printHelpItem("reg16 <addr>", "Read 16-bit register");
-  printHelpItem("reg24 <addr>", "Read 24-bit register");
-  printHelpItem("reg40 <addr>", "Read 40-bit register");
-  printHelpItem("wreg16 <addr> <val>", "Write 16-bit register");
+  printHelpItem("reg16 <addr>", "Read 16-bit register (diagnostic; may clear flags)");
+  printHelpItem("reg24 <addr>", "Read 24-bit register (diagnostic; may clear flags)");
+  printHelpItem("reg40 <addr>", "Read 40-bit register (diagnostic; may clear flags)");
+  printHelpItem("wreg16 <addr> <val>", "Write 16-bit register (diagnostic only; may desync cached config)");
 
   std::printf("\n%s[Diagnostics]%s\n", COLOR_GREEN, COLOR_RESET);
   printHelpItem("drv", "Show driver state and health");
-  printHelpItem("probe", "Probe device (no health tracking)");
+  printHelpItem("probe", "Probe device; reads DIAG_ALRT; no health tracking");
   printHelpItem("recover", "Manual recovery attempt");
   printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   printHelpItem("stress [N]", "Run N measurement cycles (default 10)");
   printHelpItem("stress_mix [N]", "Run N mixed-operation cycles (default 50)");
-  printHelpItem("selftest", "Run safe command self-test report");
+  printHelpItem("selftest", "Run diagnostic self-test; reads DIAG_ALRT");
 }
 
 void printVersionInfo() {
@@ -1030,7 +1062,8 @@ void skipSelftest(SelftestStats& stats, const char* name, const char* note) {
 
 void runSelfTest() {
   SelftestStats stats;
-  std::printf("=== INA228 selftest (safe commands) ===\n");
+  std::printf("=== INA228 selftest (diagnostic commands; reads DIAG_ALRT) ===\n");
+  std::printf("Note: DIAG_ALRT reads can clear CNVRF and latched evidence.\n");
   ProbeSnapshot snapshot;
   INA228::Status st = probeAddressRaw(configuredAddress(), snapshot);
   if (!st.ok()) {
@@ -1331,7 +1364,12 @@ void processCommand(char* cmd) {
   } else if (std::strcmp(cmd, "diagraw") == 0) {
     uint16_t raw = 0;
     INA228::Status st = device.readDiagAlertRaw(raw);
-    if (st.ok()) std::printf("DIAG_ALRT raw: 0x%04X\n", raw); else printStatus(st);
+    if (st.ok()) {
+      std::printf("DIAG_ALRT raw: 0x%04X\n", raw);
+      std::printf("Note: DIAG_ALRT reads are destructive/status-clearing.\n");
+    } else {
+      printStatus(st);
+    }
   } else if (std::strcmp(cmd, "limits") == 0) {
     printAlertLimits();
   } else if (std::strcmp(cmd, "alatch") == 0 || std::strcmp(cmd, "cnvralert") == 0 ||
@@ -1434,7 +1472,7 @@ void processCommand(char* cmd) {
     if (!splitTwoArgs(arg, regText, sizeof(regText), valueText, sizeof(valueText)) ||
         !parseU32(regText, reg) || !parseU32(valueText, value) ||
         reg > 0xFFU || value > 0xFFFFU) {
-      std::printf("Usage: wreg16 <addr> <val>\n");
+      std::printf("Usage: wreg16 <addr> <val> (diagnostic only)\n");
       return;
     }
     printStatus(device.writeRegister16(static_cast<uint8_t>(reg), static_cast<uint16_t>(value)));
@@ -1467,7 +1505,9 @@ void processCommand(char* cmd) {
     }
   } else if (std::strcmp(cmd, "probe") == 0) {
     const uint8_t address = configuredAddress();
-    std::printf("Probing address 0x%02X (raw, no health tracking)...\n", address);
+    std::printf("Probing address 0x%02X (raw, no health tracking; reads DIAG_ALRT)...\n",
+                address);
+    std::printf("Note: DIAG_ALRT reads can clear CNVRF and latched evidence.\n");
     ProbeSnapshot snapshot;
     INA228::Status st = probeAddressRaw(address, snapshot);
     printStatus(st);
