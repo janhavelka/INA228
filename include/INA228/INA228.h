@@ -81,6 +81,7 @@ struct SettingsSnapshot {
   bool maxCurrentExceedsShuntRange = false; ///< True when max A * shunt ohms exceeds ADC full-scale
   bool hardwareDirty = false;          ///< True after unresolved partial config/calibration hardware state
   uint64_t dirtyRegisterMask = 0;      ///< Bit mask of possibly dirty registers, indexed by register address
+  Status hardwareDirtyCause{};         ///< First failure/status that made hardwareDirty true
   bool thresholdsDirty = false;        ///< True when scaling changed after engineering-unit thresholds were set
   bool triggeredConversionPending = false;
   uint32_t triggeredConversionStartMs = 0;
@@ -429,12 +430,20 @@ public:
   // Device Control
   // =========================================================================
 
-  /// Software reset (equivalent to POR)
+  /// Software reset (equivalent to POR).
+  ///
+  /// This is bounded and contains no platform delay. The driver writes RST,
+  /// verifies finite readback of CONFIG.RST/RSTACC clear plus identity and
+  /// MEMSTAT, then replays cached configuration/calibration. If reset or replay
+  /// cannot be verified, SettingsSnapshot::hardwareDirty remains true and typed
+  /// converted reads fail until recover() or another successful softReset().
   Status softReset();
 
   /// Reset energy and charge accumulators.
   ///
   /// This clears the device's accumulated ENERGY and CHARGE registers and
+  /// explicitly writes CONFIG again with RSTACC clear because self-clear is not
+  /// assumed. The driver verifies CONFIG.RSTACC is clear and
   /// invalidates driver-side accumulator readiness until a continuous CNVRF is
   /// observed again.
   Status resetAccumulators();
@@ -546,7 +555,11 @@ private:
   // =========================================================================
 
   Status _applyConfig();
+  Status _applyStaticConfig();
   Status _applyCalibration();
+  Status _resyncCachedHardware();
+  Status _verifyResetComplete();
+  Status _verifyIdentityAndMemstat(bool preserveAlertConfig);
   Status _ensureHardwareClean() const;
   Status _ensureCalibrated() const;
   Status _ensureMeasurementReadyForRead();
@@ -565,8 +578,12 @@ private:
   void _completeTriggeredConversion();
   void _clearCapturedConversionReadyFlag();
   void _markHardwareDirty(uint8_t reg);
+  void _markHardwareDirty(uint8_t reg, const Status& cause);
+  void _markConfigReplayDirty(const Status& cause);
+  void _markCalibrationDirty(const Status& cause);
   void _clearHardwareDirty();
   void _markThresholdsDirty();
+  bool _isThresholdRegister(uint8_t reg) const;
 
   /// Build ADC_CONFIG register value from current config
   uint16_t _buildAdcConfig() const;
@@ -604,6 +621,7 @@ private:
   bool _maxCurrentExceedsShuntRange = false;
   bool _hardwareDirty = false;
   uint64_t _dirtyRegisterMask = 0;
+  Status _hardwareDirtyCause = Status::Ok();
   bool _thresholdsDirty = false;
 
   // Triggered conversion tracking

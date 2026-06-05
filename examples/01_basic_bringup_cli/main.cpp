@@ -790,6 +790,9 @@ void printSettings() {
                 log_bool_str(snap.hardwareDirty),
                 static_cast<unsigned long>(snap.dirtyRegisterMask >> 32),
                 static_cast<unsigned long>(snap.dirtyRegisterMask & 0xFFFFFFFFULL));
+  Serial.printf("  Dirty cause:      %s detail=%ld\n",
+                errToStr(snap.hardwareDirtyCause.code),
+                static_cast<long>(snap.hardwareDirtyCause.detail));
   Serial.printf("  Thresholds dirty: %s\n", log_bool_str(snap.thresholdsDirty));
   Serial.printf("  Triggered state:  pending=%s start=%lu ms\n",
                 log_bool_str(snap.triggeredConversionPending),

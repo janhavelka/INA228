@@ -480,3 +480,105 @@ Four read-only agents were used before implementation:
 - Threshold dirty tracking is global, not per-threshold; applications must deliberately reapply engineering-unit thresholds after scale changes before relying on ALERT comparisons.
 - `MATHOF` is already enforced for accumulator reads, but broader current/power semantic policy from live DIAG_ALRT remains a later hardening topic.
 - Full reset/RSTACC hardware timing and output atomicity policy remains for later chunks.
+
+## Chunk 06 - Reset, RSTACC, Recovery, and Partial-State Handling
+
+Date: 2026-06-05
+Branch: `hardening/ina228-industry-readiness`
+Starting commit: `d9d41ccd9be5928b8904910d4aa70a1e2ffce3c3`
+Commit: pending at report-update time; final response records the committed hash.
+
+### Scope
+
+Chunk 06 defines bounded software reset verification, explicit accumulator reset handling, and recovery replay semantics for partial hardware/cache state. It also locks aggregate measurement output assignment to all-or-nothing behavior under I2C failures. No hardware validation was performed.
+
+### Subagent Findings
+
+Four read-only agents were used before implementation:
+
+| Agent | Finding summary |
+| --- | --- |
+| `reset-datasheet-agent` | Confirmed software reset via `CONFIG.RST` is POR-equivalent and self-clearing, POR startup is 300 us, `DIAG_ALRT` reset is `0x0001`, `MEMSTAT=1` means trim memory OK, and `RSTACC` clears ENERGY/CHARGE but self-clear is not explicitly proven. Recommended no hidden delay and finite readback verification. |
+| `partial-state-agent` | Found `softReset()` and `recover()` could return after partial replay failure without marking clean cache/hardware divergence dirty, threshold registers are reset by software reset but not replayed, and raw register dirty coverage missed some threshold registers and reset-domain writes. |
+| `recover-agent` | Found `recover()` could read live `DIAG_ALRT` for MEMSTAT and accidentally overwrite desired cached alert config before replay. Recommended preserving desired DIAG config across verification and replaying cached state with ADC shutdown first and final ADC mode last. |
+| `test-agent` | Proposed fake-bus reset modeling, nth read/write failures, reset success/failure tests, `RSTACC` clear/readback tests, recover partial-failure tests, and aggregate all-or-nothing output tests. |
+
+### Changes
+
+- Added `SettingsSnapshot::hardwareDirtyCause` to preserve the first status that made hardware/cache state dirty.
+- Added bounded `softReset()` verification:
+  - writes `CONFIG.RST`;
+  - marks reset-domain config/calibration state dirty until replay succeeds;
+  - performs finite `CONFIG.RST/RSTACC` clear readback attempts;
+  - verifies manufacturer ID, device ID, and `MEMSTAT`;
+  - preserves desired cached DIAG_ALRT alert config while reading live DIAG_ALRT for MEMSTAT;
+  - replays cached hardware state and clears dirty only after full success.
+- Added cached-hardware resync order for `recover()` and `softReset()`:
+  - force `ADC_CONFIG` shutdown first;
+  - write cached `CONFIG`, DIAG_ALRT config bits, and `SHUNT_TEMPCO`;
+  - write `SHUNT_CAL`;
+  - write final cached `ADC_CONFIG` last.
+- Made `recover()` use the same verified replay path and mark replay failures dirty instead of returning with ambiguous clean state.
+- Made `resetAccumulators()` explicitly write cached `CONFIG` again with `RSTACC` clear, verify reset bits are clear, and invalidate accumulation on attempted hardware reset.
+- Extended raw `writeRegister16()` dirty policy for raw `CONFIG.RST`, raw `CONFIG.RSTACC`, and all alert threshold registers.
+- Added dirty-state guards to typed configuration, alert, threshold, and accumulator-reset setters; `recover()`, `softReset()`, and raw diagnostics remain the intentional dirty-state escape paths.
+- Kept `readMeasurement()` and `readRawSample()` all-or-nothing through local result structs and added tests proving caller outputs remain unchanged after failures at each register read point.
+- Updated README, Doxygen comments, and Arduino/ESP-IDF settings output for dirty cause and reset/RSTACC behavior.
+
+### API Changes
+
+- Added `SettingsSnapshot::hardwareDirtyCause`.
+- `softReset()` can now return `TIMEOUT` if finite reset-bit readback does not observe `CONFIG.RST/RSTACC` clear.
+- `softReset()` and `recover()` leave `hardwareDirty=true` and a dirty register mask if reset/replay cannot be verified.
+- `resetAccumulators()` now verifies `RSTACC` clear and can return `HARDWARE_DIRTY` on later typed reads if the reset write or clear/readback path leaves CONFIG uncertain.
+- Typed config/alert/threshold setters now return `HARDWARE_DIRTY` without touching I2C while cache/hardware state is unresolved.
+
+### Tests Added Or Updated
+
+- Extended the native fake bus with:
+  - attempted write history;
+  - per-register nth write failures;
+  - per-register nth read failures;
+  - CONFIG reset modeling with configurable reset-bit clear behavior;
+  - helpers for clearing write/read histories and counting register writes.
+- Added native tests for:
+  - successful `softReset()` reset-bit verification, identity/MEMSTAT verification, cached DIAG config preservation, replay order, and dirty clear;
+  - software reset write failure dirty-domain handling;
+  - software reset timeout without replay;
+  - `resetAccumulators()` clearing accumulators, clearing overflow flags, explicitly clearing `RSTACC`, and invalidating accumulation until the next continuous CNVRF;
+  - `resetAccumulators()` write failure dirty/invalidation handling;
+  - soft-reset replay failure at each relevant write position;
+  - recover replay failure preserving dirty state until a full successful recover;
+  - `readMeasurement()` output unchanged after failures at VSHUNT, VBUS, DIETEMP, CURRENT, POWER, DIAG_ALRT, ENERGY, and CHARGE;
+  - `readRawSample()` output unchanged after the same failure points.
+- Updated settings snapshot tests for `hardwareDirtyCause`.
+
+### Commands Run
+
+| Command | Result |
+| --- | --- |
+| `git status --short` | showed modified implementation/docs/example/test files before commit |
+| `python tools/check_core_timing_guard.py` | PASS: `Core timing guard PASSED` |
+| `python tools/check_cli_contract.py` | PASS: `CLI contract PASSED` |
+| `python tools/check_idf_example_contract.py` | PASS: `IDF example contract PASSED` |
+| `python scripts/generate_version.py check` | PASS: `Up to date: C:\Users\Honza\Documents\Projects\INA228\include\INA228\Version.h` |
+| `python -m platformio test -e native` | First run failed because one new nth-write-failure test did not reset fake-bus match counters after begin; test setup was corrected. Final run PASS: 92 tests passed in native environment. PlatformIO warned that obsolete Core 6.1.18 is used and a previous 6.1.19 also exists. |
+| `python -m platformio run -e esp32s3dev` | PASS: ESP32-S3 Arduino build succeeded. |
+| `python -m platformio run -e esp32s2dev` | PASS: ESP32-S2 Arduino build succeeded. |
+| `python -m platformio pkg pack` | PASS: wrote `INA228-1.3.0.tar.gz`; generated tarball was removed after recording the result. |
+| `idf.py --version` | NOT AVAILABLE: PowerShell reported `idf.py : The term 'idf.py' is not recognized as the name of a cmdlet, function, script file, or operable program.` |
+
+### Commands Not Run
+
+| Command | Reason |
+| --- | --- |
+| `idf.py -C examples/esp_idf/basic set-target esp32s3 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+| `idf.py -C examples/esp_idf/basic set-target esp32s2 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+
+### Remaining Risks
+
+- No hardware validation was performed or claimed.
+- Pure ESP-IDF build proof is still missing because `idf.py` is unavailable locally.
+- `softReset()` uses finite readback attempts with no hidden delay; on real hardware an application may need to call it only after bus/device timing is suitable or retry after a `TIMEOUT`.
+- Threshold dirty tracking is still global, not per-threshold, and threshold registers are not replayed after software reset.
+- RSTACC self-clear remains unproven from local docs, so the driver explicitly clears and verifies CONFIG reset bits instead of relying on self-clear.

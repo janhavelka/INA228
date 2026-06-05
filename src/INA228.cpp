@@ -13,6 +13,7 @@ namespace INA228 {
 namespace {
 
 static constexpr size_t MAX_WRITE_LEN = 6;
+static constexpr uint8_t RESET_VERIFY_ATTEMPTS = 3;
 
 class ScopedOfflineI2cAllowance {
 public:
@@ -212,6 +213,7 @@ Status INA228::begin(const Config& config) {
   _maxCurrentExceedsShuntRange = false;
   _hardwareDirty = false;
   _dirtyRegisterMask = 0;
+  _hardwareDirtyCause = Status::Ok();
   _thresholdsDirty = false;
   _trigPending = false;
   _trigStartMs = 0;
@@ -286,6 +288,7 @@ Status INA228::begin(const Config& config) {
     _maxCurrentExceedsShuntRange = false;
     _hardwareDirty = false;
     _dirtyRegisterMask = 0;
+    _hardwareDirtyCause = Status::Ok();
     _thresholdsDirty = false;
     _trigPending = false;
     _trigStartMs = 0;
@@ -383,6 +386,7 @@ void INA228::end() {
   _maxCurrentExceedsShuntRange = false;
   _hardwareDirty = false;
   _dirtyRegisterMask = 0;
+  _hardwareDirtyCause = Status::Ok();
   _thresholdsDirty = false;
   _diagAlertConfigBits = 0;
   _diagAlertSnapshot = DiagAlertSnapshot{};
@@ -429,47 +433,13 @@ Status INA228::recover() {
   ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
   Status result = [this]() -> Status {
     _markAccumulationInvalid();
-    uint16_t mfgId = 0;
-    Status st = readReg16(cmd::REG_MANUFACTURER_ID, mfgId);
-    if (!st.ok()) {
-      return st;
-    }
-    if (mfgId != cmd::MANUFACTURER_ID) {
-      return _recordFailure(
-          Status::Error(Err::DEVICE_ID_MISMATCH, "Manufacturer ID mismatch",
-                        static_cast<int32_t>(mfgId)));
-    }
-
-    uint16_t devId = 0;
-    st = readReg16(cmd::REG_DEVICE_ID, devId);
-    if (!st.ok()) {
-      return st;
-    }
-    if (devId != cmd::DEVICE_ID) {
-      return _recordFailure(
-          Status::Error(Err::DEVICE_ID_MISMATCH, "Device ID mismatch",
-                        static_cast<int32_t>(devId)));
-    }
-
-    uint16_t diagAlrt = 0;
-    st = _readDiagAlertTracked(diagAlrt);
-    if (!st.ok()) {
-      return st;
-    }
-    if ((diagAlrt & cmd::DIAG_MEMSTAT) == 0) {
-      return _recordFailure(
-          Status::Error(Err::MEMORY_ERROR, "NV trim memory checksum error"));
-    }
+    Status st = _verifyIdentityAndMemstat(true);
+    if (!st.ok()) return st;
 
     _trigPending = false;
     _trigStartMs = 0;
 
-    st = _applyConfig();
-    if (!st.ok()) {
-      return st;
-    }
-
-    st = _applyCalibration();
+    st = _resyncCachedHardware();
     if (!st.ok()) {
       return st;
     }
@@ -511,6 +481,7 @@ Status INA228::getSettings(SettingsSnapshot& out) const {
   out.maxCurrentExceedsShuntRange = _maxCurrentExceedsShuntRange;
   out.hardwareDirty = _hardwareDirty;
   out.dirtyRegisterMask = _dirtyRegisterMask;
+  out.hardwareDirtyCause = _hardwareDirtyCause;
   out.thresholdsDirty = _thresholdsDirty;
   out.triggeredConversionPending = _trigPending;
   out.triggeredConversionStartMs = _trigStartMs;
@@ -874,6 +845,8 @@ Status INA228::setMode(Mode mode) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
   if (!isValidMode(mode)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid mode");
   }
@@ -906,6 +879,8 @@ Status INA228::triggerConversion(Mode mode) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
   if (!isTriggeredMode(mode)) {
     return Status::Error(Err::INVALID_PARAM, "Not a triggered mode (0x1-0x7)");
   }
@@ -926,6 +901,8 @@ Status INA228::setVbusConvTime(ConvTime ct) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
   if (!isValidConvTime(ct)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid conversion time");
   }
@@ -947,6 +924,8 @@ Status INA228::setVshuntConvTime(ConvTime ct) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
   if (!isValidConvTime(ct)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid conversion time");
   }
@@ -968,6 +947,8 @@ Status INA228::setTempConvTime(ConvTime ct) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
   if (!isValidConvTime(ct)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid conversion time");
   }
@@ -989,6 +970,8 @@ Status INA228::setAveraging(Averaging avg) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
   if (!isValidAveraging(avg)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid averaging count");
   }
@@ -1123,6 +1106,8 @@ Status INA228::setShuntTempCoeff(uint16_t ppmPerC) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
   if (ppmPerC > cmd::TEMPCO_MAX) {
     return Status::Error(Err::INVALID_PARAM, "Temp coeff exceeds 16383 ppm/C");
   }
@@ -1141,6 +1126,8 @@ Status INA228::setTempCompensation(bool enable) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
 
   const bool old = _config.tempCompEnabled;
   _config.tempCompEnabled = enable;
@@ -1155,6 +1142,8 @@ Status INA228::setConversionDelay(uint8_t steps2ms) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
 
   const uint8_t old = _config.convDelayMs2;
   _config.convDelayMs2 = steps2ms;
@@ -1196,6 +1185,8 @@ Status INA228::setAlertLatch(bool latch) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
 
   uint16_t diag = _diagAlertConfigBits;
   if (latch) {
@@ -1210,6 +1201,8 @@ Status INA228::setConversionReadyAlert(bool enable) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
 
   uint16_t diag = _diagAlertConfigBits;
   if (enable) {
@@ -1224,6 +1217,8 @@ Status INA228::setSlowAlert(bool enable) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
 
   uint16_t diag = _diagAlertConfigBits;
   if (enable) {
@@ -1238,6 +1233,8 @@ Status INA228::setAlertPolarity(bool activeHigh) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
 
   uint16_t diag = _diagAlertConfigBits;
   if (activeHigh) {
@@ -1252,6 +1249,8 @@ Status INA228::setShuntOvervoltageThreshold(float voltageV) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
   if (!std::isfinite(voltageV)) {
     return Status::Error(Err::INVALID_PARAM, "Threshold must be finite");
   }
@@ -1271,6 +1270,8 @@ Status INA228::setShuntUndervoltageThreshold(float voltageV) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
   if (!std::isfinite(voltageV)) {
     return Status::Error(Err::INVALID_PARAM, "Threshold must be finite");
   }
@@ -1290,6 +1291,8 @@ Status INA228::setBusOvervoltageThreshold(float voltageV) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
   if (!std::isfinite(voltageV) || voltageV < 0.0f || voltageV > 85.0f) {
     return Status::Error(Err::INVALID_PARAM, "Bus threshold out of range");
   }
@@ -1304,6 +1307,8 @@ Status INA228::setBusUndervoltageThreshold(float voltageV) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
   if (!std::isfinite(voltageV) || voltageV < 0.0f || voltageV > 85.0f) {
     return Status::Error(Err::INVALID_PARAM, "Bus threshold out of range");
   }
@@ -1318,6 +1323,8 @@ Status INA228::setTemperatureOverlimitThreshold(float tempC) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
   if (!std::isfinite(tempC)) {
     return Status::Error(Err::INVALID_PARAM, "Temperature threshold must be finite");
   }
@@ -1363,12 +1370,24 @@ Status INA228::softReset() {
   ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
   Status st = writeReg16(cmd::REG_CONFIG, cmd::CONFIG_RST);
   if (!st.ok()) {
+    _markConfigReplayDirty(st);
+    _markCalibrationDirty(st);
+    _markThresholdsDirty();
+    if (startedOffline) {
+      _reassertOfflineLatch();
+    }
     return st;
   }
   _markAccumulationInvalid();
+  _trigPending = false;
+  _trigStartMs = 0;
+  const Status resetPending =
+      Status::Error(Err::HARDWARE_DIRTY, "Software reset replay pending");
+  _markConfigReplayDirty(resetPending);
+  _markCalibrationDirty(resetPending);
+  _markThresholdsDirty();
 
-  // After reset, re-apply all configuration
-  st = _applyConfig();
+  st = _verifyResetComplete();
   if (!st.ok()) {
     if (startedOffline) {
       _reassertOfflineLatch();
@@ -1376,7 +1395,15 @@ Status INA228::softReset() {
     return st;
   }
 
-  st = _applyCalibration();
+  st = _verifyIdentityAndMemstat(true);
+  if (!st.ok()) {
+    if (startedOffline) {
+      _reassertOfflineLatch();
+    }
+    return st;
+  }
+
+  st = _resyncCachedHardware();
   if (st.ok() && isTriggeredMode(_config.mode)) {
     _clearHardwareDirty();
     _markTriggeredConversionStarted(_nowMs());
@@ -1394,12 +1421,40 @@ Status INA228::resetAccumulators() {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
 
   uint16_t cfg = _buildConfig();
-  cfg |= cmd::CONFIG_RSTACC;
-  Status st = writeReg16(cmd::REG_CONFIG, cfg);
-  if (st.ok()) {
-    _markAccumulationInvalid();
+  Status st = writeReg16(cmd::REG_CONFIG, cfg | cmd::CONFIG_RSTACC);
+  if (!st.ok()) {
+    if (st.code != Err::BUSY &&
+        st.code != Err::INVALID_CONFIG &&
+        st.code != Err::INVALID_PARAM &&
+        st.code != Err::NOT_INITIALIZED) {
+      _markAccumulationInvalid();
+      _markHardwareDirty(cmd::REG_CONFIG, st);
+    }
+    return st;
+  }
+
+  _markAccumulationInvalid();
+  st = writeReg16(cmd::REG_CONFIG, cfg);
+  if (!st.ok()) {
+    _markHardwareDirty(cmd::REG_CONFIG, st);
+    return st;
+  }
+
+  uint16_t readback = 0;
+  st = readReg16(cmd::REG_CONFIG, readback);
+  if (!st.ok()) {
+    _markHardwareDirty(cmd::REG_CONFIG, st);
+    return st;
+  }
+  if ((readback & (cmd::CONFIG_RST | cmd::CONFIG_RSTACC)) != 0) {
+    st = _recordFailure(
+        Status::Error(Err::TIMEOUT, "CONFIG reset bits did not clear",
+                      static_cast<int32_t>(readback)));
+    _markHardwareDirty(cmd::REG_CONFIG, st);
   }
   return st;
 }
@@ -1585,11 +1640,22 @@ Status INA228::writeRegister16(uint8_t reg, uint16_t value) {
   Status st = writeReg16(reg, value);
   if (st.ok() && reg == cmd::REG_DIAG_ALRT) {
     _diagAlertConfigBits = value & cmd::DIAG_CONFIG_MASK;
+  } else if (st.ok() && reg == cmd::REG_CONFIG &&
+             ((value & cmd::CONFIG_RST) != 0)) {
+    _markAccumulationInvalid();
+    _markConfigReplayDirty(
+        Status::Error(Err::HARDWARE_DIRTY, "Raw software reset write"));
+    _markCalibrationDirty(
+        Status::Error(Err::HARDWARE_DIRTY, "Raw software reset write"));
+    _markThresholdsDirty();
+  } else if (st.ok() && reg == cmd::REG_CONFIG &&
+             ((value & cmd::CONFIG_RSTACC) != 0)) {
+    _markAccumulationInvalid();
+    _markHardwareDirty(reg);
   } else if (st.ok() && (reg == cmd::REG_CONFIG || reg == cmd::REG_SHUNT_CAL ||
                          reg == cmd::REG_ADC_CONFIG || reg == cmd::REG_SHUNT_TEMPCO)) {
     _markHardwareDirty(reg);
-  } else if (st.ok() && (reg == cmd::REG_SOVL || reg == cmd::REG_SUVL ||
-                         reg == cmd::REG_PWR_LIMIT)) {
+  } else if (st.ok() && _isThresholdRegister(reg)) {
     _markThresholdsDirty();
   }
   return st;
@@ -1784,6 +1850,93 @@ Status INA228::_ensureCalibrated() const {
   return Status::Ok();
 }
 
+Status INA228::_verifyResetComplete() {
+  uint16_t cfg = 0;
+  for (uint8_t attempt = 0; attempt < RESET_VERIFY_ATTEMPTS; ++attempt) {
+    Status st = readReg16(cmd::REG_CONFIG, cfg);
+    if (!st.ok()) {
+      return st;
+    }
+    if ((cfg & (cmd::CONFIG_RST | cmd::CONFIG_RSTACC)) == 0) {
+      return Status::Ok();
+    }
+  }
+  return _recordFailure(
+      Status::Error(Err::TIMEOUT, "CONFIG reset bits did not clear",
+                    static_cast<int32_t>(cfg)));
+}
+
+Status INA228::_verifyIdentityAndMemstat(bool preserveAlertConfig) {
+  const uint16_t desiredDiagConfig = _diagAlertConfigBits;
+
+  uint16_t mfgId = 0;
+  Status st = readReg16(cmd::REG_MANUFACTURER_ID, mfgId);
+  if (!st.ok()) {
+    return st;
+  }
+  if (mfgId != cmd::MANUFACTURER_ID) {
+    return _recordFailure(
+        Status::Error(Err::DEVICE_ID_MISMATCH, "Manufacturer ID mismatch",
+                      static_cast<int32_t>(mfgId)));
+  }
+
+  uint16_t devId = 0;
+  st = readReg16(cmd::REG_DEVICE_ID, devId);
+  if (!st.ok()) {
+    return st;
+  }
+  if (devId != cmd::DEVICE_ID) {
+    return _recordFailure(
+        Status::Error(Err::DEVICE_ID_MISMATCH, "Device ID mismatch",
+                      static_cast<int32_t>(devId)));
+  }
+
+  uint16_t diagAlrt = 0;
+  st = _readDiagAlertTracked(diagAlrt);
+  if (preserveAlertConfig) {
+    _diagAlertConfigBits = desiredDiagConfig;
+  }
+  if (!st.ok()) {
+    return st;
+  }
+  if ((diagAlrt & cmd::DIAG_MEMSTAT) == 0) {
+    return _recordFailure(
+        Status::Error(Err::MEMORY_ERROR, "NV trim memory checksum error"));
+  }
+  return Status::Ok();
+}
+
+Status INA228::_resyncCachedHardware() {
+  uint16_t shutdownAdc = _buildAdcConfig();
+  shutdownAdc = static_cast<uint16_t>(
+      (shutdownAdc & ~cmd::MASK_ADC_MODE) |
+      (static_cast<uint16_t>(Mode::SHUTDOWN) << cmd::BIT_ADC_MODE));
+
+  Status st = writeReg16(cmd::REG_ADC_CONFIG, shutdownAdc);
+  if (!st.ok()) {
+    _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
+    return st;
+  }
+
+  st = _applyStaticConfig();
+  if (!st.ok()) {
+    _markConfigReplayDirty(st);
+    return st;
+  }
+
+  st = _applyCalibration();
+  if (!st.ok()) {
+    _markCalibrationDirty(st);
+    return st;
+  }
+
+  st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
+  if (!st.ok()) {
+    _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
+  }
+  return st;
+}
+
 bool INA228::_triggerDeadlineElapsed(uint32_t nowMs) const {
   return (nowMs - _trigStartMs) >= estimateConversionTimeMs();
 }
@@ -1881,28 +2034,65 @@ void INA228::_clearCapturedConversionReadyFlag() {
 }
 
 void INA228::_markHardwareDirty(uint8_t reg) {
+  _markHardwareDirty(reg, Status::Error(Err::HARDWARE_DIRTY,
+                                        "Hardware register may differ from cache"));
+}
+
+void INA228::_markHardwareDirty(uint8_t reg, const Status& cause) {
+  if (!_hardwareDirty) {
+    _hardwareDirtyCause = cause.ok()
+                              ? Status::Error(Err::HARDWARE_DIRTY,
+                                              "Hardware register may differ from cache")
+                              : cause;
+  }
   _hardwareDirty = true;
   if (reg < 64) {
     _dirtyRegisterMask |= (uint64_t{1} << reg);
   }
 }
 
+void INA228::_markConfigReplayDirty(const Status& cause) {
+  _markHardwareDirty(cmd::REG_CONFIG, cause);
+  _markHardwareDirty(cmd::REG_ADC_CONFIG, cause);
+  _markHardwareDirty(cmd::REG_DIAG_ALRT, cause);
+  _markHardwareDirty(cmd::REG_SHUNT_TEMPCO, cause);
+}
+
+void INA228::_markCalibrationDirty(const Status& cause) {
+  _markHardwareDirty(cmd::REG_SHUNT_CAL, cause);
+}
+
 void INA228::_clearHardwareDirty() {
   _hardwareDirty = false;
   _dirtyRegisterMask = 0;
+  _hardwareDirtyCause = Status::Ok();
 }
 
 void INA228::_markThresholdsDirty() {
   _thresholdsDirty = true;
 }
 
+bool INA228::_isThresholdRegister(uint8_t reg) const {
+  return reg == cmd::REG_SOVL ||
+         reg == cmd::REG_SUVL ||
+         reg == cmd::REG_BOVL ||
+         reg == cmd::REG_BUVL ||
+         reg == cmd::REG_TEMP_LIMIT ||
+         reg == cmd::REG_PWR_LIMIT;
+}
+
 Status INA228::_applyConfig() {
+  Status st = _applyStaticConfig();
+  if (!st.ok()) {
+    return st;
+  }
+
+  return writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
+}
+
+Status INA228::_applyStaticConfig() {
   // Write CONFIG register
   Status st = writeReg16(cmd::REG_CONFIG, _buildConfig());
-  if (!st.ok()) return st;
-
-  // Write ADC_CONFIG register
-  st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
   if (!st.ok()) return st;
 
   st = _writeDiagAlertConfig(_diagAlertConfigBits);

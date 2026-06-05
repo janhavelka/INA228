@@ -18,6 +18,12 @@ using namespace INA228;
 
 namespace {
 
+struct WriteEvent {
+  uint8_t reg = 0;
+  uint16_t value = 0;
+  bool success = false;
+};
+
 struct FakeBus {
   uint16_t reg16[64] = {};
   uint32_t reg24[64] = {};
@@ -35,8 +41,22 @@ struct FakeBus {
   uint8_t lastReadReg = 0;
   uint8_t readHistory[256] = {};
   size_t readHistoryCount = 0;
+  WriteEvent writeHistory[256] = {};
+  size_t writeHistoryCount = 0;
   uint8_t writeFailureRegs[8] = {};
   size_t writeFailureCount = 0;
+  uint8_t nthWriteFailureRegs[8] = {};
+  uint8_t nthWriteFailureMatches[8] = {};
+  Status nthWriteFailureStatus[8] = {};
+  size_t nthWriteFailureCount = 0;
+  uint8_t nthReadFailureRegs[8] = {};
+  uint8_t nthReadFailureMatches[8] = {};
+  Status nthReadFailureStatus[8] = {};
+  size_t nthReadFailureCount = 0;
+  uint8_t writeMatchCount[64] = {};
+  uint8_t readMatchCount[64] = {};
+  uint8_t configResetReadsRemaining = 0;
+  bool configResetNeverClears = false;
 
   int readErrorRemaining = 0;
   int writeErrorRemaining = 0;
@@ -51,23 +71,66 @@ Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user)
     return Status::Error(Err::INVALID_PARAM, "invalid fake write args");
   }
   const uint8_t reg = data[0];
+  const uint16_t value = (len == 3) ?
+      static_cast<uint16_t>((static_cast<uint16_t>(data[1]) << 8) | data[2]) : 0;
+  if (reg < 64) {
+    bus->writeMatchCount[reg]++;
+  }
+  auto recordWrite = [&](bool success) {
+    if (bus->writeHistoryCount < sizeof(bus->writeHistory) / sizeof(bus->writeHistory[0])) {
+      bus->writeHistory[bus->writeHistoryCount++] = WriteEvent{reg, value, success};
+    }
+  };
+  for (size_t i = 0; i < bus->nthWriteFailureCount; ++i) {
+    if (bus->nthWriteFailureRegs[i] == reg &&
+        bus->nthWriteFailureMatches[i] == bus->writeMatchCount[reg]) {
+      const Status status = bus->nthWriteFailureStatus[i];
+      for (size_t j = i + 1; j < bus->nthWriteFailureCount; ++j) {
+        bus->nthWriteFailureRegs[j - 1] = bus->nthWriteFailureRegs[j];
+        bus->nthWriteFailureMatches[j - 1] = bus->nthWriteFailureMatches[j];
+        bus->nthWriteFailureStatus[j - 1] = bus->nthWriteFailureStatus[j];
+      }
+      bus->nthWriteFailureCount--;
+      recordWrite(false);
+      return status;
+    }
+  }
   if (bus->writeFailureCount > 0 && bus->writeFailureRegs[0] == reg) {
     for (size_t i = 1; i < bus->writeFailureCount; ++i) {
       bus->writeFailureRegs[i - 1] = bus->writeFailureRegs[i];
     }
     bus->writeFailureCount--;
+    recordWrite(false);
     return bus->writeError;
   }
   if (bus->writeErrorRemaining > 0) {
     bus->writeErrorRemaining--;
+    recordWrite(false);
     return bus->writeError;
   }
   if (len == 3) {
-    const uint16_t value = (static_cast<uint16_t>(data[1]) << 8) | data[2];
     bus->lastWriteReg = reg;
     bus->lastWrite16 = value;
     if (reg < 64) {
       bus->reg16[reg] = value;
+    }
+    if (reg == cmd::REG_CONFIG && ((value & cmd::CONFIG_RST) != 0)) {
+      for (size_t i = 0; i < 64; ++i) {
+        bus->reg16[i] = 0;
+        bus->reg24[i] = 0;
+        bus->reg40[i] = 0;
+      }
+      bus->reg16[cmd::REG_ADC_CONFIG] = cmd::ADC_CONFIG_RESET;
+      bus->reg16[cmd::REG_SHUNT_CAL] = cmd::SHUNT_CAL_RESET;
+      bus->reg16[cmd::REG_SHUNT_TEMPCO] = 0;
+      bus->reg16[cmd::REG_SOVL] = cmd::SOVL_RESET;
+      bus->reg16[cmd::REG_SUVL] = cmd::SUVL_RESET;
+      bus->reg16[cmd::REG_BOVL] = cmd::BOVL_RESET;
+      bus->reg16[cmd::REG_BUVL] = cmd::BUVL_RESET;
+      bus->reg16[cmd::REG_TEMP_LIMIT] = cmd::TEMP_LIMIT_RESET;
+      bus->reg16[cmd::REG_PWR_LIMIT] = cmd::PWR_LIMIT_RESET;
+      bus->diagAlrt = cmd::DIAG_ALRT_RESET;
+      bus->reg16[cmd::REG_CONFIG] = cmd::CONFIG_RST;
     }
     if (reg == cmd::REG_CONFIG && ((value & cmd::CONFIG_RSTACC) != 0)) {
       bus->reg40[cmd::REG_ENERGY] = 0;
@@ -88,6 +151,7 @@ Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user)
       }
     }
   }
+  recordWrite(true);
   return Status::Ok();
 }
 
@@ -105,8 +169,24 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
 
   const uint8_t reg = txData[0];
   bus->lastReadReg = reg;
+  if (reg < 64) {
+    bus->readMatchCount[reg]++;
+  }
   if (bus->readHistoryCount < sizeof(bus->readHistory)) {
     bus->readHistory[bus->readHistoryCount++] = reg;
+  }
+  for (size_t i = 0; i < bus->nthReadFailureCount; ++i) {
+    if (bus->nthReadFailureRegs[i] == reg &&
+        bus->nthReadFailureMatches[i] == bus->readMatchCount[reg]) {
+      const Status status = bus->nthReadFailureStatus[i];
+      for (size_t j = i + 1; j < bus->nthReadFailureCount; ++j) {
+        bus->nthReadFailureRegs[j - 1] = bus->nthReadFailureRegs[j];
+        bus->nthReadFailureMatches[j - 1] = bus->nthReadFailureMatches[j];
+        bus->nthReadFailureStatus[j - 1] = bus->nthReadFailureStatus[j];
+      }
+      bus->nthReadFailureCount--;
+      return status;
+    }
   }
   for (size_t i = 0; i < rxLen; ++i) {
     rxData[i] = 0;
@@ -131,6 +211,15 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
       bus->diagAlrt &= ~bus->diagClearOnReadMask;
     }
   } else if (rxLen == 2 && reg < 64) {
+    if (reg == cmd::REG_CONFIG && ((bus->reg16[reg] & cmd::CONFIG_RST) != 0)) {
+      if (!bus->configResetNeverClears) {
+        if (bus->configResetReadsRemaining > 0) {
+          bus->configResetReadsRemaining--;
+        } else {
+          bus->reg16[reg] &= ~cmd::CONFIG_RST;
+        }
+      }
+    }
     const uint16_t value = bus->reg16[reg];
     rxData[0] = static_cast<uint8_t>(value >> 8);
     rxData[1] = static_cast<uint8_t>(value & 0xFF);
@@ -194,12 +283,52 @@ size_t firstReadIndex(const FakeBus& bus, uint8_t reg) {
 void clearReadHistory(FakeBus& bus) {
   bus.readHistoryCount = 0;
   bus.lastReadReg = 0;
+  for (size_t i = 0; i < 64; ++i) {
+    bus.readMatchCount[i] = 0;
+  }
+}
+
+void clearWriteHistory(FakeBus& bus) {
+  bus.writeHistoryCount = 0;
+  bus.lastWriteReg = 0;
+  bus.lastWrite16 = 0;
+  for (size_t i = 0; i < 64; ++i) {
+    bus.writeMatchCount[i] = 0;
+  }
 }
 
 void queueWriteFailure(FakeBus& bus, uint8_t reg) {
   if (bus.writeFailureCount < sizeof(bus.writeFailureRegs)) {
     bus.writeFailureRegs[bus.writeFailureCount++] = reg;
   }
+}
+
+void queueNthWriteFailure(FakeBus& bus, uint8_t reg, uint8_t nthMatch) {
+  if (bus.nthWriteFailureCount < sizeof(bus.nthWriteFailureRegs)) {
+    const size_t index = bus.nthWriteFailureCount++;
+    bus.nthWriteFailureRegs[index] = reg;
+    bus.nthWriteFailureMatches[index] = nthMatch;
+    bus.nthWriteFailureStatus[index] = bus.writeError;
+  }
+}
+
+void queueNthReadFailure(FakeBus& bus, uint8_t reg, uint8_t nthMatch) {
+  if (bus.nthReadFailureCount < sizeof(bus.nthReadFailureRegs)) {
+    const size_t index = bus.nthReadFailureCount++;
+    bus.nthReadFailureRegs[index] = reg;
+    bus.nthReadFailureMatches[index] = nthMatch;
+    bus.nthReadFailureStatus[index] = bus.readError;
+  }
+}
+
+size_t countRegisterWrites(const FakeBus& bus, uint8_t reg) {
+  size_t count = 0;
+  for (size_t i = 0; i < bus.writeHistoryCount; ++i) {
+    if (bus.writeHistory[i].reg == reg) {
+      count++;
+    }
+  }
+  return count;
 }
 
 }  // namespace
@@ -211,6 +340,88 @@ void setUp() {
 }
 
 void tearDown() {}
+
+void loadPositiveMeasurementRegisters(FakeBus& bus) {
+  bus.reg24[cmd::REG_VSHUNT] = 0x4BF000;
+  bus.reg24[cmd::REG_VBUS] = 0x3C0000;
+  bus.reg16[cmd::REG_DIETEMP] = 0x0C80;
+  bus.reg24[cmd::REG_CURRENT] = 0x4CCCC0;
+  bus.reg24[cmd::REG_POWER] = 0x48000C;
+  bus.reg40[cmd::REG_ENERGY] = 0x003F480000ULL;
+  bus.reg40[cmd::REG_CHARGE] = 0x0043800000ULL;
+}
+
+Measurement sentinelMeasurement() {
+  Measurement m{};
+  m.shuntVoltageV = 1.0f;
+  m.busVoltageV = 2.0f;
+  m.temperatureC = 3.0f;
+  m.currentA = 4.0f;
+  m.powerW = 5.0f;
+  m.energyJ = 6.0;
+  m.chargeC = 7.0;
+  m.energyValid = true;
+  m.chargeValid = true;
+  m.energyOverflow = true;
+  m.chargeOverflow = true;
+  m.mathOverflow = true;
+  m.diagAlertValid = true;
+  m.diagAlertRaw = 0xA55A;
+  return m;
+}
+
+void assertSentinelMeasurement(const Measurement& m) {
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 1.0f, m.shuntVoltageV);
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 2.0f, m.busVoltageV);
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 3.0f, m.temperatureC);
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 4.0f, m.currentA);
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 5.0f, m.powerW);
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 6.0f, static_cast<float>(m.energyJ));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 7.0f, static_cast<float>(m.chargeC));
+  TEST_ASSERT_TRUE(m.energyValid);
+  TEST_ASSERT_TRUE(m.chargeValid);
+  TEST_ASSERT_TRUE(m.energyOverflow);
+  TEST_ASSERT_TRUE(m.chargeOverflow);
+  TEST_ASSERT_TRUE(m.mathOverflow);
+  TEST_ASSERT_TRUE(m.diagAlertValid);
+  TEST_ASSERT_EQUAL_HEX16(0xA55Au, m.diagAlertRaw);
+}
+
+RawSample sentinelRawSample() {
+  RawSample raw{};
+  raw.vshunt = -1;
+  raw.vbus = 2;
+  raw.dietemp = -3;
+  raw.current = -4;
+  raw.power = 5;
+  raw.energy = 6;
+  raw.charge = -7;
+  raw.energyValid = true;
+  raw.chargeValid = true;
+  raw.energyOverflow = true;
+  raw.chargeOverflow = true;
+  raw.mathOverflow = true;
+  raw.diagAlertValid = true;
+  raw.diagAlertRaw = 0x5AA5;
+  return raw;
+}
+
+void assertSentinelRawSample(const RawSample& raw) {
+  TEST_ASSERT_EQUAL_INT32(-1, raw.vshunt);
+  TEST_ASSERT_EQUAL_UINT32(2u, raw.vbus);
+  TEST_ASSERT_EQUAL_INT16(-3, raw.dietemp);
+  TEST_ASSERT_EQUAL_INT32(-4, raw.current);
+  TEST_ASSERT_EQUAL_UINT32(5u, raw.power);
+  TEST_ASSERT_EQUAL_UINT64(6u, raw.energy);
+  TEST_ASSERT_EQUAL_INT64(-7, raw.charge);
+  TEST_ASSERT_TRUE(raw.energyValid);
+  TEST_ASSERT_TRUE(raw.chargeValid);
+  TEST_ASSERT_TRUE(raw.energyOverflow);
+  TEST_ASSERT_TRUE(raw.chargeOverflow);
+  TEST_ASSERT_TRUE(raw.mathOverflow);
+  TEST_ASSERT_TRUE(raw.diagAlertValid);
+  TEST_ASSERT_EQUAL_HEX16(0x5AA5u, raw.diagAlertRaw);
+}
 
 // ===========================================================================
 // Status tests
@@ -315,6 +526,8 @@ void test_get_settings_snapshot() {
   TEST_ASSERT_TRUE(snap.maxCurrentExceedsShuntRange);
   TEST_ASSERT_FALSE(snap.hardwareDirty);
   TEST_ASSERT_EQUAL_UINT64(0u, snap.dirtyRegisterMask);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::OK),
+                          static_cast<uint8_t>(snap.hardwareDirtyCause.code));
   TEST_ASSERT_FALSE(snap.thresholdsDirty);
   TEST_ASSERT_FALSE(snap.triggeredConversionPending);
   TEST_ASSERT_EQUAL_UINT32(0u, snap.triggeredConversionStartMs);
@@ -722,6 +935,251 @@ void test_offline_reset_accumulators_returns_busy_without_i2c() {
   TEST_ASSERT_EQUAL_STRING("Driver is offline; call recover()", st.msg);
   TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
   TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+}
+
+void test_soft_reset_verifies_identity_memstat_and_replays_cache() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0162f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  cfg.shuntTempCoeffPpmC = 3900;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  TEST_ASSERT_TRUE(dev.setAlertLatch(true).ok());
+
+  clearReadHistory(bus);
+  clearWriteHistory(bus);
+  bus.configResetReadsRemaining = 1;
+  Status st = dev.softReset();
+  TEST_ASSERT_TRUE(st.ok());
+
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(7u, bus.writeHistoryCount);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CONFIG, bus.writeHistory[0].reg);
+  TEST_ASSERT_EQUAL_HEX16(cmd::CONFIG_RST, bus.writeHistory[0].value);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_ADC_CONFIG, bus.writeHistory[1].reg);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CONFIG, bus.writeHistory[2].reg);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_DIAG_ALRT, bus.writeHistory[3].reg);
+  TEST_ASSERT_EQUAL_HEX16(cmd::DIAG_ALATCH, bus.writeHistory[3].value);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_SHUNT_TEMPCO, bus.writeHistory[4].reg);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_SHUNT_CAL, bus.writeHistory[5].reg);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_ADC_CONFIG, bus.writeHistory[6].reg);
+
+  TEST_ASSERT_TRUE(wasRegisterRead(bus, cmd::REG_CONFIG));
+  TEST_ASSERT_TRUE(wasRegisterRead(bus, cmd::REG_MANUFACTURER_ID));
+  TEST_ASSERT_TRUE(wasRegisterRead(bus, cmd::REG_DEVICE_ID));
+  TEST_ASSERT_TRUE(wasRegisterRead(bus, cmd::REG_DIAG_ALRT));
+  TEST_ASSERT_EQUAL_HEX16(0x0FD2u, bus.reg16[cmd::REG_SHUNT_CAL]);
+  TEST_ASSERT_EQUAL_HEX16(3900u, bus.reg16[cmd::REG_SHUNT_TEMPCO]);
+  TEST_ASSERT_EQUAL_HEX16(cmd::DIAG_ALATCH,
+                          bus.diagAlrt & cmd::DIAG_CONFIG_MASK);
+  TEST_ASSERT_EQUAL_HEX16(0u, bus.reg16[cmd::REG_CONFIG] &
+                              (cmd::CONFIG_RST | cmd::CONFIG_RSTACC));
+
+  SettingsSnapshot snap{};
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_FALSE(snap.hardwareDirty);
+  TEST_ASSERT_EQUAL_UINT64(0u, snap.dirtyRegisterMask);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::OK),
+                          static_cast<uint8_t>(snap.hardwareDirtyCause.code));
+  TEST_ASSERT_TRUE(snap.thresholdsDirty);
+}
+
+void test_soft_reset_write_failure_marks_reset_domain_dirty() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0162f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  clearWriteHistory(bus);
+  queueNthWriteFailure(bus, cmd::REG_CONFIG, 1);
+  Status st = dev.softReset();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(1u, bus.writeHistoryCount);
+  TEST_ASSERT_EQUAL_UINT32(0u, countRegisterWrites(bus, cmd::REG_SHUNT_CAL));
+
+  SettingsSnapshot snap{};
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_TRUE(snap.hardwareDirty);
+  TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_CONFIG)) != 0);
+  TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_ADC_CONFIG)) != 0);
+  TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_SHUNT_CAL)) != 0);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+                          static_cast<uint8_t>(snap.hardwareDirtyCause.code));
+  TEST_ASSERT_TRUE(snap.thresholdsDirty);
+}
+
+void test_soft_reset_timeout_marks_dirty_without_replay() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0162f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  clearWriteHistory(bus);
+  bus.configResetNeverClears = true;
+  Status st = dev.softReset();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(1u, bus.writeHistoryCount);
+  TEST_ASSERT_EQUAL_UINT32(0u, countRegisterWrites(bus, cmd::REG_SHUNT_CAL));
+
+  SettingsSnapshot snap{};
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_TRUE(snap.hardwareDirty);
+  TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_CONFIG)) != 0);
+  TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_ADC_CONFIG)) != 0);
+  TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_DIAG_ALRT)) != 0);
+  TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_SHUNT_TEMPCO)) != 0);
+  TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_SHUNT_CAL)) != 0);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::HARDWARE_DIRTY),
+                          static_cast<uint8_t>(snap.hardwareDirtyCause.code));
+}
+
+void test_reset_accumulators_clears_rstacc_and_invalidates_until_cnvrf() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0162f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+  dev.tick(bus.nowMs);
+  bus.reg40[cmd::REG_ENERGY] = 123;
+  bus.reg40[cmd::REG_CHARGE] = 456;
+  bus.diagAlrt |= cmd::DIAG_ENERGYOF | cmd::DIAG_CHARGEOF | cmd::DIAG_MATHOF;
+
+  Status st = dev.resetAccumulators();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT64(0u, bus.reg40[cmd::REG_ENERGY]);
+  TEST_ASSERT_EQUAL_UINT64(0u, bus.reg40[cmd::REG_CHARGE]);
+  TEST_ASSERT_EQUAL_HEX16(0u, bus.reg16[cmd::REG_CONFIG] & cmd::CONFIG_RSTACC);
+  TEST_ASSERT_EQUAL_HEX16(0u, bus.diagAlrt &
+                              (cmd::DIAG_ENERGYOF | cmd::DIAG_CHARGEOF | cmd::DIAG_MATHOF));
+
+  double energy = 1.0;
+  st = dev.readEnergy(energy);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::ACCUMULATION_INVALID),
+                          static_cast<uint8_t>(st.code));
+
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+  dev.tick(bus.nowMs + 1u);
+  st = dev.readEnergy(energy);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 0.0f, static_cast<float>(energy));
+}
+
+void test_reset_accumulators_write_failure_marks_dirty_and_invalidates() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0162f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+  dev.tick(bus.nowMs);
+  clearWriteHistory(bus);
+  queueNthWriteFailure(bus, cmd::REG_CONFIG, 1);
+
+  Status st = dev.resetAccumulators();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+                          static_cast<uint8_t>(st.code));
+  SettingsSnapshot snap{};
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_TRUE(snap.hardwareDirty);
+  TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_CONFIG)) != 0);
+
+  double energy = 1.0;
+  st = dev.readEnergy(energy);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::HARDWARE_DIRTY),
+                          static_cast<uint8_t>(st.code));
+}
+
+void test_soft_reset_replay_failures_mark_dirty_for_each_write_position() {
+  struct Case {
+    uint8_t reg;
+    uint8_t nth;
+  };
+  const Case cases[] = {
+      {cmd::REG_ADC_CONFIG, 1},
+      {cmd::REG_CONFIG, 2},
+      {cmd::REG_DIAG_ALRT, 1},
+      {cmd::REG_SHUNT_TEMPCO, 1},
+      {cmd::REG_SHUNT_CAL, 1},
+      {cmd::REG_ADC_CONFIG, 2},
+  };
+
+  for (const Case& c : cases) {
+    FakeBus bus;
+    INA228::INA228 dev;
+    Config cfg = makeConfig(bus);
+    cfg.shuntResistanceOhm = 0.0162f;
+    cfg.maxExpectedCurrentA = 10.0f;
+    cfg.shuntTempCoeffPpmC = 3900;
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    clearWriteHistory(bus);
+    queueNthWriteFailure(bus, c.reg, c.nth);
+
+    Status st = dev.softReset();
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+                            static_cast<uint8_t>(st.code));
+    SettingsSnapshot snap{};
+    TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+    TEST_ASSERT_TRUE(snap.hardwareDirty);
+    TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_CONFIG)) != 0);
+    TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_ADC_CONFIG)) != 0);
+    TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_SHUNT_CAL)) != 0);
+
+    const uint32_t readsBefore = bus.readCalls;
+    float current = 0.0f;
+    st = dev.readCurrent(current);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::HARDWARE_DIRTY),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  }
+}
+
+void test_recover_replay_failure_preserves_dirty_until_full_recover() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  TEST_ASSERT_TRUE(dev.setAlertLatch(true).ok());
+  TEST_ASSERT_TRUE(dev.writeRegister16(cmd::REG_SHUNT_TEMPCO, 0x1234).ok());
+
+  SettingsSnapshot snap{};
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_TRUE(snap.hardwareDirty);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::HARDWARE_DIRTY),
+                          static_cast<uint8_t>(snap.hardwareDirtyCause.code));
+
+  clearWriteHistory(bus);
+  queueNthWriteFailure(bus, cmd::REG_DIAG_ALRT, 1);
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_TRUE(snap.hardwareDirty);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::HARDWARE_DIRTY),
+                          static_cast<uint8_t>(snap.hardwareDirtyCause.code));
+  TEST_ASSERT_EQUAL_HEX16(0x1234u, bus.reg16[cmd::REG_SHUNT_TEMPCO]);
+
+  const uint32_t readsBefore = bus.readCalls;
+  float busVoltage = 0.0f;
+  st = dev.readBusVoltage(busVoltage);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::HARDWARE_DIRTY),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+
+  st = dev.recover();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_HEX16(0u, bus.reg16[cmd::REG_SHUNT_TEMPCO]);
+  TEST_ASSERT_EQUAL_HEX16(cmd::DIAG_ALATCH,
+                          bus.diagAlrt & cmd::DIAG_CONFIG_MASK);
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_FALSE(snap.hardwareDirty);
 }
 
 // ===========================================================================
@@ -1633,6 +2091,72 @@ void test_read_raw_sample_uses_unsigned_vbus_and_energy() {
   TEST_ASSERT_EQUAL_UINT64(0xFFFFFFFFFFULL, raw.energy);
 }
 
+void test_read_measurement_failures_leave_output_unchanged() {
+  const uint8_t regs[] = {
+      cmd::REG_VSHUNT,
+      cmd::REG_VBUS,
+      cmd::REG_DIETEMP,
+      cmd::REG_CURRENT,
+      cmd::REG_POWER,
+      cmd::REG_DIAG_ALRT,
+      cmd::REG_ENERGY,
+      cmd::REG_CHARGE,
+  };
+
+  for (uint8_t reg : regs) {
+    FakeBus bus;
+    INA228::INA228 dev;
+    Config cfg = makeConfig(bus);
+    cfg.shuntResistanceOhm = 0.0162f;
+    cfg.maxExpectedCurrentA = 10.0f;
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+    dev.tick(bus.nowMs);
+    loadPositiveMeasurementRegisters(bus);
+    clearReadHistory(bus);
+    queueNthReadFailure(bus, reg, 1);
+
+    Measurement m = sentinelMeasurement();
+    Status st = dev.readMeasurement(m);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+                            static_cast<uint8_t>(st.code));
+    assertSentinelMeasurement(m);
+  }
+}
+
+void test_read_raw_sample_failures_leave_output_unchanged() {
+  const uint8_t regs[] = {
+      cmd::REG_VSHUNT,
+      cmd::REG_VBUS,
+      cmd::REG_DIETEMP,
+      cmd::REG_CURRENT,
+      cmd::REG_POWER,
+      cmd::REG_DIAG_ALRT,
+      cmd::REG_ENERGY,
+      cmd::REG_CHARGE,
+  };
+
+  for (uint8_t reg : regs) {
+    FakeBus bus;
+    INA228::INA228 dev;
+    Config cfg = makeConfig(bus);
+    cfg.shuntResistanceOhm = 0.0162f;
+    cfg.maxExpectedCurrentA = 10.0f;
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+    dev.tick(bus.nowMs);
+    loadPositiveMeasurementRegisters(bus);
+    clearReadHistory(bus);
+    queueNthReadFailure(bus, reg, 1);
+
+    RawSample raw = sentinelRawSample();
+    Status st = dev.readRawSample(raw);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+                            static_cast<uint8_t>(st.code));
+    assertSentinelRawSample(raw);
+  }
+}
+
 void test_calibration_vectors_program_exact_shunt_cal_and_lsb() {
   FakeBus bus0;
   INA228::INA228 dev0;
@@ -2224,6 +2748,13 @@ int main() {
   RUN_TEST(test_offline_read_bus_voltage_returns_busy_without_i2c);
   RUN_TEST(test_failed_recover_from_offline_keeps_latch_after_intermediate_success);
   RUN_TEST(test_offline_reset_accumulators_returns_busy_without_i2c);
+  RUN_TEST(test_soft_reset_verifies_identity_memstat_and_replays_cache);
+  RUN_TEST(test_soft_reset_write_failure_marks_reset_domain_dirty);
+  RUN_TEST(test_soft_reset_timeout_marks_dirty_without_replay);
+  RUN_TEST(test_reset_accumulators_clears_rstacc_and_invalidates_until_cnvrf);
+  RUN_TEST(test_reset_accumulators_write_failure_marks_dirty_and_invalidates);
+  RUN_TEST(test_soft_reset_replay_failures_mark_dirty_for_each_write_position);
+  RUN_TEST(test_recover_replay_failure_preserves_dirty_until_full_recover);
   RUN_TEST(test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init);
   RUN_TEST(test_example_transport_validates_params_and_handles_write_read);
   RUN_TEST(test_conversion_time_estimate);
@@ -2256,6 +2787,8 @@ int main() {
   RUN_TEST(test_math_overflow_blocks_accumulation_reads_and_is_preserved);
   RUN_TEST(test_reset_accumulators_invalidates_until_next_continuous_cnvrf);
   RUN_TEST(test_read_raw_sample_uses_unsigned_vbus_and_energy);
+  RUN_TEST(test_read_measurement_failures_leave_output_unchanged);
+  RUN_TEST(test_read_raw_sample_failures_leave_output_unchanged);
   RUN_TEST(test_calibration_vectors_program_exact_shunt_cal_and_lsb);
   RUN_TEST(test_set_adc_range_recomputes_shunt_cal_with_multiplier);
   RUN_TEST(test_prompt_positive_raw_vector_converts_all_outputs);

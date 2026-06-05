@@ -757,6 +757,9 @@ void printSettings() {
               boolStr(snap.hardwareDirty),
               static_cast<unsigned long>(snap.dirtyRegisterMask >> 32),
               static_cast<unsigned long>(snap.dirtyRegisterMask & 0xFFFFFFFFULL));
+  std::printf("  Dirty cause:       %s detail=%ld\n",
+              errToStr(snap.hardwareDirtyCause.code),
+              static_cast<long>(snap.hardwareDirtyCause.detail));
   std::printf("  Thresholds dirty:  %s\n", boolStr(snap.thresholdsDirty));
   std::printf("  Triggered state:   pending=%s start=%lu ms\n",
               boolStr(snap.triggeredConversionPending),
