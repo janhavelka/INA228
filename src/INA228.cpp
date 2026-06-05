@@ -136,6 +136,24 @@ static Status computeCalibration(float shuntOhm, float maxCurrentA, AdcRange ran
   return Status::Ok();
 }
 
+static void parseDiagAlert(uint16_t raw, DiagAlert& out) {
+  out.alatch    = (raw & cmd::DIAG_ALATCH) != 0;
+  out.cnvr      = (raw & cmd::DIAG_CNVR) != 0;
+  out.slowAlert = (raw & cmd::DIAG_SLOWALERT) != 0;
+  out.apol      = (raw & cmd::DIAG_APOL) != 0;
+  out.energyOF  = (raw & cmd::DIAG_ENERGYOF) != 0;
+  out.chargeOF  = (raw & cmd::DIAG_CHARGEOF) != 0;
+  out.mathOF    = (raw & cmd::DIAG_MATHOF) != 0;
+  out.tmpOL     = (raw & cmd::DIAG_TMPOL) != 0;
+  out.shntOL    = (raw & cmd::DIAG_SHNTOL) != 0;
+  out.shntUL    = (raw & cmd::DIAG_SHNTUL) != 0;
+  out.busOL     = (raw & cmd::DIAG_BUSOL) != 0;
+  out.busUL     = (raw & cmd::DIAG_BUSUL) != 0;
+  out.pOL       = (raw & cmd::DIAG_POL) != 0;
+  out.cnvrf     = (raw & cmd::DIAG_CNVRF) != 0;
+  out.memstat   = (raw & cmd::DIAG_MEMSTAT) != 0;
+}
+
 }  // namespace
 
 // ===========================================================================
@@ -159,6 +177,8 @@ Status INA228::begin(const Config& config) {
   _shuntCal = 0;
   _trigPending = false;
   _trigStartMs = 0;
+  _diagAlertConfigBits = 0;
+  _diagAlertSnapshot = DiagAlertSnapshot{};
 
   if (config.i2cWrite == nullptr || config.i2cWriteRead == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C callbacks not set");
@@ -221,6 +241,7 @@ Status INA228::begin(const Config& config) {
     _shuntCal = 0;
     _trigPending = false;
     _trigStartMs = 0;
+    _diagAlertConfigBits = 0;
     return failure;
   };
 
@@ -251,7 +272,7 @@ Status INA228::begin(const Config& config) {
 
   // Check MEMSTAT bit
   uint16_t diagAlrt = 0;
-  st = _readReg16Raw(cmd::REG_DIAG_ALRT, diagAlrt);
+  st = _readDiagAlertRaw(diagAlrt);
   if (!st.ok()) {
     return failBeginAfterConfig(
         Status::Error(Err::DEVICE_NOT_FOUND, "DIAG_ALRT read failed", st.detail));
@@ -317,6 +338,8 @@ void INA228::end() {
   _trigStartMs = 0;
   _currentLsb = 0.0f;
   _shuntCal = 0;
+  _diagAlertConfigBits = 0;
+  _diagAlertSnapshot = DiagAlertSnapshot{};
 }
 
 // ===========================================================================
@@ -382,7 +405,7 @@ Status INA228::recover() {
     }
 
     uint16_t diagAlrt = 0;
-    st = readReg16(cmd::REG_DIAG_ALRT, diagAlrt);
+    st = _readDiagAlertTracked(diagAlrt);
     if (!st.ok()) {
       return st;
     }
@@ -434,6 +457,11 @@ Status INA228::getSettings(SettingsSnapshot& out) const {
   out.shuntCal = _shuntCal;
   out.triggeredConversionPending = _trigPending;
   out.triggeredConversionStartMs = _trigStartMs;
+  return Status::Ok();
+}
+
+Status INA228::getDiagAlertSnapshot(DiagAlertSnapshot& out) const {
+  out = _diagAlertSnapshot;
   return Status::Ok();
 }
 
@@ -694,7 +722,7 @@ Status INA228::isConversionReady(bool& ready) {
   }
 
   uint16_t diag = 0;
-  Status st = readReg16(cmd::REG_DIAG_ALRT, diag);
+  Status st = _readDiagAlertTracked(diag);
   if (!st.ok()) return st;
 
   ready = (diag & cmd::DIAG_CNVRF) != 0;
@@ -944,24 +972,10 @@ Status INA228::readDiagAlert(DiagAlert& out) {
   }
 
   uint16_t raw = 0;
-  Status st = readReg16(cmd::REG_DIAG_ALRT, raw);
+  Status st = _readDiagAlertTracked(raw);
   if (!st.ok()) return st;
 
-  out.alatch    = (raw & cmd::DIAG_ALATCH) != 0;
-  out.cnvr      = (raw & cmd::DIAG_CNVR) != 0;
-  out.slowAlert = (raw & cmd::DIAG_SLOWALERT) != 0;
-  out.apol      = (raw & cmd::DIAG_APOL) != 0;
-  out.energyOF  = (raw & cmd::DIAG_ENERGYOF) != 0;
-  out.chargeOF  = (raw & cmd::DIAG_CHARGEOF) != 0;
-  out.mathOF    = (raw & cmd::DIAG_MATHOF) != 0;
-  out.tmpOL     = (raw & cmd::DIAG_TMPOL) != 0;
-  out.shntOL    = (raw & cmd::DIAG_SHNTOL) != 0;
-  out.shntUL    = (raw & cmd::DIAG_SHNTUL) != 0;
-  out.busOL     = (raw & cmd::DIAG_BUSOL) != 0;
-  out.busUL     = (raw & cmd::DIAG_BUSUL) != 0;
-  out.pOL       = (raw & cmd::DIAG_POL) != 0;
-  out.cnvrf     = (raw & cmd::DIAG_CNVRF) != 0;
-  out.memstat   = (raw & cmd::DIAG_MEMSTAT) != 0;
+  parseDiagAlert(raw, out);
 
   return Status::Ok();
 }
@@ -970,7 +984,7 @@ Status INA228::readDiagAlertRaw(uint16_t& raw) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
-  return readReg16(cmd::REG_DIAG_ALRT, raw);
+  return _readDiagAlertTracked(raw);
 }
 
 Status INA228::setAlertLatch(bool latch) {
@@ -978,16 +992,13 @@ Status INA228::setAlertLatch(bool latch) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  uint16_t diag = 0;
-  Status st = readReg16(cmd::REG_DIAG_ALRT, diag);
-  if (!st.ok()) return st;
-
+  uint16_t diag = _diagAlertConfigBits;
   if (latch) {
     diag |= cmd::DIAG_ALATCH;
   } else {
     diag &= ~cmd::DIAG_ALATCH;
   }
-  return writeReg16(cmd::REG_DIAG_ALRT, diag);
+  return _writeDiagAlertConfig(diag);
 }
 
 Status INA228::setConversionReadyAlert(bool enable) {
@@ -995,16 +1006,13 @@ Status INA228::setConversionReadyAlert(bool enable) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  uint16_t diag = 0;
-  Status st = readReg16(cmd::REG_DIAG_ALRT, diag);
-  if (!st.ok()) return st;
-
+  uint16_t diag = _diagAlertConfigBits;
   if (enable) {
     diag |= cmd::DIAG_CNVR;
   } else {
     diag &= ~cmd::DIAG_CNVR;
   }
-  return writeReg16(cmd::REG_DIAG_ALRT, diag);
+  return _writeDiagAlertConfig(diag);
 }
 
 Status INA228::setSlowAlert(bool enable) {
@@ -1012,16 +1020,13 @@ Status INA228::setSlowAlert(bool enable) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  uint16_t diag = 0;
-  Status st = readReg16(cmd::REG_DIAG_ALRT, diag);
-  if (!st.ok()) return st;
-
+  uint16_t diag = _diagAlertConfigBits;
   if (enable) {
     diag |= cmd::DIAG_SLOWALERT;
   } else {
     diag &= ~cmd::DIAG_SLOWALERT;
   }
-  return writeReg16(cmd::REG_DIAG_ALRT, diag);
+  return _writeDiagAlertConfig(diag);
 }
 
 Status INA228::setAlertPolarity(bool activeHigh) {
@@ -1029,16 +1034,13 @@ Status INA228::setAlertPolarity(bool activeHigh) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  uint16_t diag = 0;
-  Status st = readReg16(cmd::REG_DIAG_ALRT, diag);
-  if (!st.ok()) return st;
-
+  uint16_t diag = _diagAlertConfigBits;
   if (activeHigh) {
     diag |= cmd::DIAG_APOL;
   } else {
     diag &= ~cmd::DIAG_APOL;
   }
-  return writeReg16(cmd::REG_DIAG_ALRT, diag);
+  return _writeDiagAlertConfig(diag);
 }
 
 Status INA228::setShuntOvervoltageThreshold(float voltageV) {
@@ -1340,6 +1342,9 @@ Status INA228::readRegister16(uint8_t reg, uint16_t& value) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (reg == cmd::REG_DIAG_ALRT) {
+    return _readDiagAlertTracked(value);
+  }
   return readReg16(reg, value);
 }
 
@@ -1361,7 +1366,11 @@ Status INA228::writeRegister16(uint8_t reg, uint16_t value) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
-  return writeReg16(reg, value);
+  Status st = writeReg16(reg, value);
+  if (st.ok() && reg == cmd::REG_DIAG_ALRT) {
+    _diagAlertConfigBits = value & cmd::DIAG_CONFIG_MASK;
+  }
+  return st;
 }
 
 Status INA228::_readReg16Raw(uint8_t reg, uint16_t& value) {
@@ -1371,6 +1380,39 @@ Status INA228::_readReg16Raw(uint8_t reg, uint16_t& value) {
 
   value = (static_cast<uint16_t>(buf[0]) << 8) | buf[1];
   return Status::Ok();
+}
+
+Status INA228::_readDiagAlertTracked(uint16_t& raw) {
+  Status st = readReg16(cmd::REG_DIAG_ALRT, raw);
+  if (st.ok()) {
+    _captureDiagAlert(raw);
+  }
+  return st;
+}
+
+Status INA228::_readDiagAlertRaw(uint16_t& raw) {
+  Status st = _readReg16Raw(cmd::REG_DIAG_ALRT, raw);
+  if (st.ok()) {
+    _captureDiagAlert(raw);
+  }
+  return st;
+}
+
+void INA228::_captureDiagAlert(uint16_t raw) {
+  _diagAlertSnapshot.valid = true;
+  _diagAlertSnapshot.raw = raw;
+  parseDiagAlert(raw, _diagAlertSnapshot.diag);
+  _diagAlertSnapshot.capturedMs = _nowMs();
+  _diagAlertConfigBits = raw & cmd::DIAG_CONFIG_MASK;
+}
+
+Status INA228::_writeDiagAlertConfig(uint16_t configBits) {
+  const uint16_t sanitized = configBits & cmd::DIAG_CONFIG_MASK;
+  Status st = writeReg16(cmd::REG_DIAG_ALRT, sanitized);
+  if (st.ok()) {
+    _diagAlertConfigBits = sanitized;
+  }
+  return st;
 }
 
 // ===========================================================================
@@ -1499,6 +1541,9 @@ Status INA228::_applyConfig() {
 
   // Write ADC_CONFIG register
   st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
+  if (!st.ok()) return st;
+
+  st = _writeDiagAlertConfig(_diagAlertConfigBits);
   if (!st.ok()) return st;
 
   // Program the coefficient whenever configured; TEMPCOMP only gates its use.

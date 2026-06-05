@@ -133,4 +133,83 @@ None.
 - `DIAG_ALRT`, triggered freshness, ENERGY/CHARGE validity, ADCRANGE/calibration atomicity, reset/RSTACC semantics, transport error preservation, and exact datasheet vectors remain open for later chunks.
 - PlatformIO Arduino S2/S3 builds passed locally in this chunk, but pure ESP-IDF build proof is still missing.
 - No hardware validation was performed or claimed.
-- Commit hash is pending until this docs/setup commit is created.
+- Chunk 01 commit: `836c32bf7fdb7c05dc330132ea469d6d4265e449`.
+
+## Chunk 02 - DIAG_ALRT and Alert Configuration Side-Effect Safety
+
+Date: 2026-06-05
+Branch: `hardening/ina228-industry-readiness`
+Starting commit: `836c32bf7fdb7c05dc330132ea469d6d4265e449`
+Commit: pending at report-update time; final response records the committed hash.
+
+### Scope
+
+Chunk 02 fixed `DIAG_ALRT` side-effect safety for internal conversion-ready polling and alert configuration setters. It did not attempt the broader triggered freshness redesign planned for Chunk 03.
+
+### Subagent Findings
+
+Four read-only agents were used before implementation:
+
+| Agent | Finding summary |
+| --- | --- |
+| `diag-alrt-datasheet-agent` | Confirmed `DIAG_ALRT` mixes R/W config bits with live status bits, and conservative handling must treat reads as potentially clearing `CNVRF` and latched alert flags. |
+| `diag-alrt-code-agent` | Mapped all `REG_DIAG_ALRT` reads/writes in core, tests, and examples; identified `isConversionReady()` and alert setters as the key unsafe paths. |
+| `diag-alrt-test-agent` | Proposed fake-bus clear-on-read modeling and tests for preserved evidence, non-reading setters, and destructive public reads. |
+| `api-review-agent` | Recommended keeping existing public read names, documenting destructive side effects, and adding one cache-only preserved-evidence accessor. |
+
+### Changes
+
+- Added `DIAG_CONFIG_MASK` and `DIAG_CLEAR_ON_READ_MASK` constants.
+- Added `DiagAlertSnapshot` and `getDiagAlertSnapshot()` as a cache-only API for preserved `DIAG_ALRT` evidence.
+- Centralized parsing/capture of destructive `DIAG_ALRT` reads.
+- Updated `begin()`, `recover()`, `isConversionReady()`, `readDiagAlert()`, `readDiagAlertRaw()`, and `readRegister16(REG_DIAG_ALRT)` to preserve the full raw `DIAG_ALRT` value when they read it.
+- Reworked `setAlertLatch()`, `setConversionReadyAlert()`, `setSlowAlert()`, and `setAlertPolarity()` to write cached alert configuration bits without first reading live `DIAG_ALRT` status.
+- Reapplied cached alert configuration through `_applyConfig()`.
+- Updated README and Doxygen comments to state that public `DIAG_ALRT` reads are destructive and snapshots are non-I2C preserved evidence.
+
+### API Changes
+
+- Added public struct `DiagAlertSnapshot`.
+- Added public method `Status getDiagAlertSnapshot(DiagAlertSnapshot& out) const`.
+- Added public constants `cmd::DIAG_CONFIG_MASK` and `cmd::DIAG_CLEAR_ON_READ_MASK`.
+- Existing `readDiagAlert()` and `readDiagAlertRaw()` names remain, but their destructive-read contract is now explicit.
+
+### Tests Added Or Updated
+
+- Updated the native fake bus to model `DIAG_ALRT` clear-on-read behavior.
+- Added native tests for:
+  - `tick()` preserving `DIAG_ALRT` evidence while polling `CNVRF`.
+  - measurement readiness preserving alert evidence while gating triggered reads.
+  - alert configuration setters not reading live `DIAG_ALRT`.
+  - structured public diagnostic reads being destructive and preserved.
+  - raw public diagnostic reads being destructive.
+
+### Commands Run
+
+| Command | Result |
+| --- | --- |
+| `git status --short` | showed modified implementation/docs/test files before commit |
+| `python tools/check_core_timing_guard.py` | PASS: `Core timing guard PASSED` |
+| `python tools/check_cli_contract.py` | PASS: `CLI contract PASSED` |
+| `python tools/check_idf_example_contract.py` | PASS: `IDF example contract PASSED` |
+| `python scripts/generate_version.py check` | PASS: `Up to date: C:\Users\Honza\Documents\Projects\INA228\include\INA228\Version.h` |
+| `python -m platformio test -e native` | PASS: 53 tests passed in native environment. PlatformIO warned that obsolete Core 6.1.18 is used and a previous 6.1.19 also exists. |
+| `python -m platformio run -e esp32s3dev` | PASS: ESP32-S3 Arduino build succeeded. |
+| `python -m platformio run -e esp32s2dev` | PASS: ESP32-S2 Arduino build succeeded. |
+| `python -m platformio pkg pack` | PASS: wrote `INA228-1.3.0.tar.gz`; generated tarball was removed after recording the result. |
+| `idf.py --version` | NOT AVAILABLE: PowerShell reported `idf.py : The term 'idf.py' is not recognized as the name of a cmdlet, function, script file, or operable program.` |
+
+### Commands Not Run
+
+| Command | Reason |
+| --- | --- |
+| `idf.py -C examples/esp_idf/basic set-target esp32s3 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+| `idf.py -C examples/esp_idf/basic set-target esp32s2 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+
+### Remaining Risks
+
+- No hardware validation was performed or claimed.
+- Pure ESP-IDF build proof is still missing because `idf.py` is unavailable locally.
+- Chunk 03 still needs to define broader triggered-mode freshness and `tick(nowMs)` semantics.
+- Chunk 04 still needs ENERGY/CHARGE validity and overflow policy.
+- Public generic `writeRegister16(REG_DIAG_ALRT, value)` remains diagnostic raw access and can desynchronize user expectations; this is documented as raw-register risk and remains part of the broader API cleanup.

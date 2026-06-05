@@ -111,6 +111,11 @@ static constexpr uint16_t DIAG_CNVRF     = 0x0002; ///< Bit 1: Conversion ready 
 static constexpr uint16_t DIAG_MEMSTAT   = 0x0001; ///< Bit 0: Memory status (1=OK)
 
 static constexpr uint16_t DIAG_ALRT_RESET = 0x0001; ///< Default: MEMSTAT=1
+static constexpr uint16_t DIAG_CONFIG_MASK =
+    DIAG_ALATCH | DIAG_CNVR | DIAG_SLOWALERT | DIAG_APOL; ///< Writable alert config bits
+static constexpr uint16_t DIAG_CLEAR_ON_READ_MASK =
+    DIAG_TMPOL | DIAG_SHNTOL | DIAG_SHNTUL | DIAG_BUSOL |
+    DIAG_BUSUL | DIAG_POL | DIAG_CNVRF; ///< Status bits consumed by DIAG_ALRT reads
 
 // ============================================================================
 // Threshold Register Defaults

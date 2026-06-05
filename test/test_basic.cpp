@@ -25,6 +25,8 @@ struct FakeBus {
   uint16_t manufacturerId = cmd::MANUFACTURER_ID;
   uint16_t deviceId = cmd::DEVICE_ID;
   uint16_t diagAlrt = cmd::DIAG_ALRT_RESET;
+  bool clearDiagOnRead = false;
+  uint16_t diagClearOnReadMask = cmd::DIAG_CLEAR_ON_READ_MASK;
   uint32_t nowMs = 1000;
   uint32_t writeCalls = 0;
   uint32_t readCalls = 0;
@@ -56,7 +58,8 @@ Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user)
       bus->reg16[reg] = value;
     }
     if (reg == cmd::REG_DIAG_ALRT) {
-      bus->diagAlrt = value;
+      bus->diagAlrt = (bus->diagAlrt & ~cmd::DIAG_CONFIG_MASK) |
+                      (value & cmd::DIAG_CONFIG_MASK);
     }
   }
   return Status::Ok();
@@ -91,8 +94,12 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
   }
   // DIAG_ALRT: MEMSTAT=1 (bit 0)
   else if (reg == cmd::REG_DIAG_ALRT && rxLen >= 2) {
-    rxData[0] = static_cast<uint8_t>(bus->diagAlrt >> 8);
-    rxData[1] = static_cast<uint8_t>(bus->diagAlrt & 0xFF);
+    const uint16_t diag = bus->diagAlrt;
+    rxData[0] = static_cast<uint8_t>(diag >> 8);
+    rxData[1] = static_cast<uint8_t>(diag & 0xFF);
+    if (bus->clearDiagOnRead) {
+      bus->diagAlrt &= ~bus->diagClearOnReadMask;
+    }
   } else if (rxLen == 2 && reg < 64) {
     const uint16_t value = bus->reg16[reg];
     rxData[0] = static_cast<uint8_t>(value >> 8);
@@ -823,6 +830,171 @@ void test_triggered_conversion_gates_reads_until_cnvrf() {
   TEST_ASSERT_EQUAL_UINT32(0u, snap.triggeredConversionStartMs);
 }
 
+void test_tick_preserves_diag_alert_evidence_when_polling_cnvrf() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  Status st = dev.triggerConversion(Mode::TRIG_ALL);
+  TEST_ASSERT_TRUE(st.inProgress());
+  bus.nowMs += dev.estimateConversionTimeMs();
+
+  bus.clearDiagOnRead = true;
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_ALATCH |
+                 cmd::DIAG_CNVRF | cmd::DIAG_SHNTOL;
+
+  dev.tick(bus.nowMs);
+
+  SettingsSnapshot settings{};
+  st = dev.getSettings(settings);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(settings.triggeredConversionPending);
+  TEST_ASSERT_EQUAL_UINT32(0u, settings.triggeredConversionStartMs);
+  TEST_ASSERT_FALSE((bus.diagAlrt & cmd::DIAG_CNVRF) != 0);
+  TEST_ASSERT_FALSE((bus.diagAlrt & cmd::DIAG_SHNTOL) != 0);
+
+  DiagAlertSnapshot snap{};
+  st = dev.getDiagAlertSnapshot(snap);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(snap.valid);
+  TEST_ASSERT_EQUAL_HEX16(cmd::DIAG_MEMSTAT | cmd::DIAG_ALATCH |
+                          cmd::DIAG_CNVRF | cmd::DIAG_SHNTOL,
+                          snap.raw);
+  TEST_ASSERT_TRUE(snap.diag.cnvrf);
+  TEST_ASSERT_TRUE(snap.diag.shntOL);
+  TEST_ASSERT_TRUE(snap.diag.memstat);
+  TEST_ASSERT_EQUAL_UINT32(bus.nowMs, snap.capturedMs);
+}
+
+void test_readiness_path_preserves_diag_alert_evidence_for_measurement_gate() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  Status st = dev.triggerConversion(Mode::TRIG_ALL);
+  TEST_ASSERT_TRUE(st.inProgress());
+  bus.nowMs += dev.estimateConversionTimeMs();
+
+  bus.clearDiagOnRead = true;
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_ALATCH |
+                 cmd::DIAG_CNVRF | cmd::DIAG_BUSOL;
+  bus.reg24[cmd::REG_VBUS] = 0x001000;
+
+  float volts = 0.0f;
+  st = dev.readBusVoltage(volts);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(volts > 0.0f);
+  TEST_ASSERT_FALSE((bus.diagAlrt & cmd::DIAG_BUSOL) != 0);
+
+  DiagAlertSnapshot snap{};
+  st = dev.getDiagAlertSnapshot(snap);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(snap.valid);
+  TEST_ASSERT_TRUE(snap.diag.busOL);
+  TEST_ASSERT_TRUE(snap.diag.cnvrf);
+}
+
+void test_alert_config_setters_do_not_read_live_diag_alrt() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.clearDiagOnRead = true;
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF |
+                 cmd::DIAG_SHNTOL | cmd::DIAG_BUSOL;
+  const uint32_t readsBefore = bus.readCalls;
+
+  Status st = dev.setAlertLatch(true);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_DIAG_ALRT, bus.lastWriteReg);
+  TEST_ASSERT_EQUAL_HEX16(cmd::DIAG_ALATCH, bus.lastWrite16);
+  TEST_ASSERT_EQUAL_HEX16(cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF |
+                          cmd::DIAG_SHNTOL | cmd::DIAG_BUSOL | cmd::DIAG_ALATCH,
+                          bus.diagAlrt);
+
+  st = dev.setConversionReadyAlert(true);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_EQUAL_HEX16(cmd::DIAG_ALATCH | cmd::DIAG_CNVR, bus.lastWrite16);
+
+  st = dev.setSlowAlert(true);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_EQUAL_HEX16(cmd::DIAG_ALATCH | cmd::DIAG_CNVR |
+                          cmd::DIAG_SLOWALERT,
+                          bus.lastWrite16);
+
+  st = dev.setAlertPolarity(true);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_EQUAL_HEX16(cmd::DIAG_ALATCH | cmd::DIAG_CNVR |
+                          cmd::DIAG_SLOWALERT | cmd::DIAG_APOL,
+                          bus.lastWrite16);
+  TEST_ASSERT_EQUAL_HEX16(0u, bus.lastWrite16 & ~cmd::DIAG_CONFIG_MASK);
+  TEST_ASSERT_TRUE((bus.diagAlrt & cmd::DIAG_SHNTOL) != 0);
+  TEST_ASSERT_TRUE((bus.diagAlrt & cmd::DIAG_BUSOL) != 0);
+  TEST_ASSERT_TRUE((bus.diagAlrt & cmd::DIAG_CNVRF) != 0);
+}
+
+void test_public_read_diag_alert_is_destructive_and_preserved() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.clearDiagOnRead = true;
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_ALATCH |
+                 cmd::DIAG_CNVRF | cmd::DIAG_TMPOL |
+                 cmd::DIAG_ENERGYOF | cmd::DIAG_CHARGEOF;
+
+  DiagAlert diag{};
+  Status st = dev.readDiagAlert(diag);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(diag.memstat);
+  TEST_ASSERT_TRUE(diag.alatch);
+  TEST_ASSERT_TRUE(diag.cnvrf);
+  TEST_ASSERT_TRUE(diag.tmpOL);
+  TEST_ASSERT_TRUE(diag.energyOF);
+  TEST_ASSERT_TRUE(diag.chargeOF);
+
+  DiagAlertSnapshot snap{};
+  st = dev.getDiagAlertSnapshot(snap);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(snap.valid);
+  TEST_ASSERT_TRUE(snap.diag.tmpOL);
+  TEST_ASSERT_TRUE(snap.diag.cnvrf);
+
+  TEST_ASSERT_FALSE((bus.diagAlrt & cmd::DIAG_CNVRF) != 0);
+  TEST_ASSERT_FALSE((bus.diagAlrt & cmd::DIAG_TMPOL) != 0);
+  TEST_ASSERT_TRUE((bus.diagAlrt & cmd::DIAG_ENERGYOF) != 0);
+  TEST_ASSERT_TRUE((bus.diagAlrt & cmd::DIAG_CHARGEOF) != 0);
+}
+
+void test_public_read_diag_alert_raw_is_destructive() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.clearDiagOnRead = true;
+  const uint16_t seeded = cmd::DIAG_MEMSTAT | cmd::DIAG_ALATCH |
+                          cmd::DIAG_CNVRF | cmd::DIAG_BUSOL |
+                          cmd::DIAG_ENERGYOF;
+  bus.diagAlrt = seeded;
+
+  uint16_t raw = 0;
+  Status st = dev.readDiagAlertRaw(raw);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_HEX16(seeded, raw);
+
+  st = dev.readDiagAlertRaw(raw);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE((raw & cmd::DIAG_CNVRF) != 0);
+  TEST_ASSERT_FALSE((raw & cmd::DIAG_BUSOL) != 0);
+  TEST_ASSERT_TRUE((raw & cmd::DIAG_MEMSTAT) != 0);
+  TEST_ASSERT_TRUE((raw & cmd::DIAG_ALATCH) != 0);
+  TEST_ASSERT_TRUE((raw & cmd::DIAG_ENERGYOF) != 0);
+}
+
 // ===========================================================================
 // Measurement (basic - reads return zeros)
 // ===========================================================================
@@ -1098,6 +1270,11 @@ int main() {
   RUN_TEST(test_shutdown_conversion_time_ignores_configured_delay);
   RUN_TEST(test_conversion_ready_clears_completed_trigger_state);
   RUN_TEST(test_triggered_conversion_gates_reads_until_cnvrf);
+  RUN_TEST(test_tick_preserves_diag_alert_evidence_when_polling_cnvrf);
+  RUN_TEST(test_readiness_path_preserves_diag_alert_evidence_for_measurement_gate);
+  RUN_TEST(test_alert_config_setters_do_not_read_live_diag_alrt);
+  RUN_TEST(test_public_read_diag_alert_is_destructive_and_preserved);
+  RUN_TEST(test_public_read_diag_alert_raw_is_destructive);
   RUN_TEST(test_read_bus_voltage_requires_init);
   RUN_TEST(test_read_bus_voltage_zero_on_default);
   RUN_TEST(test_uncalibrated_current_power_energy_charge_fail_without_i2c);

@@ -149,8 +149,9 @@ explicitly programmed for deterministic readback.
 | `isOnline()` | True if READY or DEGRADED |
 | `probe()` | Check device presence (no health tracking) |
 | `recover()` | Re-validate manufacturer ID, device ID, MEMSTAT, then re-apply config/calibration |
-| `readDiagAlert(diag)` | Read all diagnostic/alert flags |
-| `readDiagAlertRaw(raw)` | Read raw `DIAG_ALRT` register value |
+| `readDiagAlert(diag)` | Read and consume current `DIAG_ALRT` flags |
+| `readDiagAlertRaw(raw)` | Read and consume raw `DIAG_ALRT` register value |
+| `getDiagAlertSnapshot(snapshot)` | Return last preserved `DIAG_ALRT` evidence without I2C |
 | `setAlertLatch(latch)` | Configure latched or transparent alert behavior |
 | `setConversionReadyAlert(enable)` | Route conversion-ready events to ALERT |
 | `setSlowAlert(enable)` | Compare alert thresholds against averaged values |
@@ -161,6 +162,11 @@ explicitly programmed for deterministic readback.
 | `setBusUndervoltageThreshold(v)` | Set bus undervoltage threshold |
 | `setTemperatureOverlimitThreshold(c)` | Set die temperature over-limit threshold |
 | `setPowerOverlimitThreshold(w)` | Set power over-limit threshold |
+
+`DIAG_ALRT` is a live, status-sensitive register. Reading it can clear `CNVRF`
+and latched alert flags, so internal conversion-ready polling preserves the
+full raw value in `getDiagAlertSnapshot()`. Alert configuration setters write
+cached configuration bits without first reading live `DIAG_ALRT` status.
 
 ### Raw Register Access
 

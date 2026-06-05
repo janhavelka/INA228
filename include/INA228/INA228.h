@@ -67,9 +67,9 @@ struct SettingsSnapshot {
 };
 
 /// @brief Diagnostic, alert configuration, and alert flag bits from DIAG_ALRT.
-/// @note Reading DIAG_ALRT can clear latched alert status bits according to the
-/// INA228 datasheet. Use readDiagAlertRaw() when exact register contents are
-/// needed without parsed fields.
+/// @note Values produced by readDiagAlert() come from a destructive hardware
+/// read. That read can clear CNVRF and latched alert status bits according to
+/// the INA228 datasheet.
 struct DiagAlert {
   bool alatch = false;     ///< Alert latch enabled
   bool cnvr = false;       ///< Conversion ready on ALERT pin
@@ -86,6 +86,17 @@ struct DiagAlert {
   bool pOL = false;        ///< Power over-limit
   bool cnvrf = false;      ///< Conversion ready flag
   bool memstat = false;    ///< Memory status (true = OK)
+};
+
+/// @brief Cache-only preserved DIAG_ALRT evidence from prior driver reads.
+/// @note This snapshot does not touch I2C and may be older than the current
+/// hardware state. It exists so internal CNVRF polling does not discard alert
+/// evidence when a DIAG_ALRT read clears hardware status bits.
+struct DiagAlertSnapshot {
+  bool valid = false;       ///< True after the driver captured a DIAG_ALRT value
+  uint16_t raw = 0;         ///< Raw DIAG_ALRT value captured by the driver
+  DiagAlert diag{};         ///< Parsed DIAG_ALRT fields
+  uint32_t capturedMs = 0;  ///< Timestamp from Config::nowMs, or 0 if unavailable
 };
 
 /// @brief Managed synchronous INA228 driver.
@@ -127,6 +138,9 @@ public:
 
   /// Populate a cache-only settings snapshot without touching I2C.
   Status getSettings(SettingsSnapshot& out) const;
+
+  /// Populate the last preserved DIAG_ALRT snapshot without touching I2C.
+  Status getDiagAlertSnapshot(DiagAlertSnapshot& out) const;
 
   // =========================================================================
   // Driver State
@@ -287,11 +301,15 @@ public:
 
   /// Read diagnostic, alert configuration, and alert flag bits.
   ///
-  /// DIAG_ALRT is a live hardware register; reading it can clear latched alert
-  /// flags depending on ALATCH and the active fault state.
+  /// This performs a destructive hardware read of DIAG_ALRT. It can clear
+  /// CNVRF and latched alert flags; the exact raw value is preserved in
+  /// getDiagAlertSnapshot().
   Status readDiagAlert(DiagAlert& out);
 
-  /// Read raw DIAG_ALRT register value
+  /// Read raw DIAG_ALRT register value.
+  ///
+  /// This performs a destructive hardware read and preserves the exact raw
+  /// value in getDiagAlertSnapshot().
   Status readDiagAlertRaw(uint16_t& raw);
 
   /// Configure alert latch mode
@@ -427,6 +445,18 @@ private:
   /// Read 16-bit register (raw, no health tracking)
   Status _readReg16Raw(uint8_t reg, uint16_t& value);
 
+  /// Read DIAG_ALRT through tracked transport and preserve the raw evidence.
+  Status _readDiagAlertTracked(uint16_t& raw);
+
+  /// Read DIAG_ALRT through raw transport and preserve the raw evidence.
+  Status _readDiagAlertRaw(uint16_t& raw);
+
+  /// Parse and store a DIAG_ALRT value without touching I2C.
+  void _captureDiagAlert(uint16_t raw);
+
+  /// Write cached DIAG_ALRT alert configuration bits without reading live flags.
+  Status _writeDiagAlertConfig(uint16_t configBits);
+
   // =========================================================================
   // Health Management
   // =========================================================================
@@ -487,6 +517,10 @@ private:
   // Triggered conversion tracking
   bool _trigPending = false;
   uint32_t _trigStartMs = 0;
+
+  // DIAG_ALRT cache and preserved evidence
+  uint16_t _diagAlertConfigBits = 0;
+  DiagAlertSnapshot _diagAlertSnapshot{};
 };
 
 } // namespace INA228
