@@ -27,7 +27,11 @@ enum class Err : uint8_t {
   I2C_NACK_ADDR,             ///< I2C address not acknowledged
   I2C_NACK_DATA,             ///< I2C data byte not acknowledged
   I2C_TIMEOUT,               ///< I2C transaction timeout
-  I2C_BUS                    ///< I2C bus error (arbitration lost, etc.)
+  I2C_BUS,                   ///< I2C bus error (arbitration lost, etc.)
+
+  // Accumulator validity details (append-only to preserve existing values)
+  ACCUMULATION_INVALID,      ///< ENERGY/CHARGE is not valid in the current state
+  ACCUMULATION_OVERFLOW      ///< ENERGY/CHARGE overflow evidence was observed
 };
 
 /// @brief Status structure returned by all fallible operations.

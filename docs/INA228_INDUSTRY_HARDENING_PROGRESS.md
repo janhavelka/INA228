@@ -292,3 +292,96 @@ Four read-only agents were used before implementation:
 - `isConversionReady()` still relies on `Config::nowMs` when a trigger is pending; use `pollConversionReady(nowMs, ready)` or `tick(nowMs)` when no clock hook is installed.
 - Conversion timing is still a software readiness estimate plus CNVRF verification, not a hardware timing guarantee validated on physical INA228 devices.
 - ENERGY/CHARGE validity, overflow policy, calibration/ADCRANGE atomicity, reset/RSTACC semantics, and broader output atomicity remain for later chunks.
+
+## Chunk 04 - ENERGY, CHARGE, and Overflow Validity
+
+Date: 2026-06-05
+Branch: `hardening/ina228-industry-readiness`
+Starting commit: `346e2926533a70367a8c72d903db989b9d4f6713`
+Commit: pending at report-update time; final response records the committed hash.
+
+### Scope
+
+Chunk 04 prevents ENERGY and CHARGE from being reported as valid when the INA228 cannot provide valid accumulation data. It also preserves overflow evidence before accumulator reads. It does not attempt the full calibration/ADCRANGE atomicity work planned for Chunk 05 or the broader reset policy planned for Chunk 06.
+
+### Subagent Findings
+
+Four read-only agents were used before implementation:
+
+| Agent | Finding summary |
+| --- | --- |
+| `accumulation-datasheet-agent` | Confirmed ENERGY/CHARGE require continuous conversion semantics, are invalid in triggered mode because elapsed time is not tracked, ENERGYOF clears when ENERGY is read, CHARGEOF clears when CHARGE is read, MATHOF indicates arithmetic overflow, and RSTACC clears ENERGY/CHARGE. |
+| `measurement-api-agent` | Found `readMeasurement()`, `readEnergy()`, and `readCharge()` only checked initialization, triggered readiness, and calibration; accumulator reads could clear overflow evidence without a prior DIAG_ALRT snapshot. |
+| `compatibility-agent` | Recommended strict scalar accumulator APIs plus structured validity flags in aggregate reads so voltage/current/power users are preserved while energy/charge validity is explicit. |
+| `test-agent` | Proposed fake-bus side effects and native tests for invalid modes, overflow preservation/statuses, MATHOF handling, and accumulator reset readiness. |
+
+### Changes
+
+- Added append-only status codes `ACCUMULATION_INVALID` and `ACCUMULATION_OVERFLOW`.
+- Added energy/charge validity, overflow, MATHOF, and captured DIAG_ALRT fields to `Measurement` and `RawSample`.
+- Added driver-side accumulation readiness tracking. Readiness is invalidated by begin/end/recover reapply, triggered starts/completion, mode changes, ADC timing changes, conversion delay changes, calibration/range changes, soft reset, and accumulator reset.
+- Marked accumulation ready only after a continuous-mode DIAG_ALRT read observes CNVRF.
+- Made `readEnergy()` and `readCharge()` fail with `ACCUMULATION_INVALID`, `ACCUMULATION_OVERFLOW`, or `MATH_OVERFLOW` instead of returning invalid accumulator data.
+- Made `readMeasurement()` keep returning other converted channels while marking energy/charge invalid or overflowed through explicit fields.
+- Made `readRawSample()` capture DIAG_ALRT before raw accumulator reads and expose validity/overflow fields.
+- Preserved DIAG_ALRT overflow evidence before any typed accumulator read can touch ENERGY or CHARGE.
+- Updated README and Doxygen for accumulator validity and reset behavior.
+
+### API Changes
+
+- Added `Err::ACCUMULATION_INVALID`.
+- Added `Err::ACCUMULATION_OVERFLOW`.
+- Added fields at the end of `Measurement`: `energyValid`, `chargeValid`, `energyOverflow`, `chargeOverflow`, `mathOverflow`, `diagAlertValid`, and `diagAlertRaw`.
+- Added the same validity/overflow fields at the end of `RawSample`.
+- `readEnergy()` and `readCharge()` now return non-OK statuses for invalid/overflowed accumulation rather than returning stale or invalid converted values.
+- `readMeasurement()` uses structured validity flags instead of failing the whole aggregate read for invalid energy/charge.
+
+### Tests Added Or Updated
+
+- Updated the native fake bus to:
+  - track register read order in a fixed array;
+  - clear ENERGYOF when ENERGY is read;
+  - clear CHARGEOF when CHARGE is read;
+  - clear fake ENERGY/CHARGE and overflow flags on RSTACC writes.
+- Added native tests for:
+  - continuous calibrated energy/charge after CNVRF;
+  - triggered modes rejecting scalar accumulator reads without accumulator I2C;
+  - shutdown modes rejecting scalar accumulator reads without accumulator I2C;
+  - `readMeasurement()` marking invalid accumulation without reading accumulators;
+  - DIAG_ALRT surfacing and preserving ENERGYOF/CHARGEOF/MATHOF;
+  - energy overflow status and preserved evidence;
+  - charge overflow status and preserved evidence;
+  - MATHOF blocking accumulator reads;
+  - RSTACC invalidating accumulation until the next continuous CNVRF.
+
+### Commands Run
+
+| Command | Result |
+| --- | --- |
+| `git status --short` | showed modified implementation/docs/test files before commit |
+| `git diff --check` | PASS; only Git CRLF working-copy warnings were printed |
+| `python tools/check_core_timing_guard.py` | PASS: `Core timing guard PASSED` |
+| `python tools/check_cli_contract.py` | PASS: `CLI contract PASSED` |
+| `python tools/check_idf_example_contract.py` | PASS: `IDF example contract PASSED` |
+| `python scripts/generate_version.py check` | PASS: `Up to date: C:\Users\Honza\Documents\Projects\INA228\include\INA228\Version.h` |
+| `python -m platformio test -e native` | First run failed because new tests used disabled Unity double-precision assertions; tests were changed to enabled float-compatible assertions. Final run PASS: 68 tests passed in native environment. PlatformIO warned that obsolete Core 6.1.18 is used and a previous 6.1.19 also exists. |
+| `python -m platformio run -e esp32s3dev` | PASS: ESP32-S3 Arduino build succeeded. |
+| `python -m platformio run -e esp32s2dev` | PASS: ESP32-S2 Arduino build succeeded. |
+| `python -m platformio pkg pack` | PASS: wrote `INA228-1.3.0.tar.gz`; generated tarball was removed after recording the result. |
+| `idf.py --version` | NOT AVAILABLE: PowerShell reported `idf.py : The term 'idf.py' is not recognized as the name of a cmdlet, function, script file, or operable program.` |
+
+### Commands Not Run
+
+| Command | Reason |
+| --- | --- |
+| `idf.py -C examples/esp_idf/basic set-target esp32s3 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+| `idf.py -C examples/esp_idf/basic set-target esp32s2 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. |
+
+### Remaining Risks
+
+- No hardware validation was performed or claimed.
+- Pure ESP-IDF build proof is still missing because `idf.py` is unavailable locally.
+- Generic raw register reads of ENERGY or CHARGE can still be destructive diagnostic access; typed accumulator APIs now preserve evidence first.
+- `MATHOF` is now enforced for accumulator reads and surfaced in aggregate flags, but broader current/power validity policy remains part of later API cleanup.
+- Calibration/ADCRANGE coherency and multi-register partial-state policy remain for Chunk 05.
+- Full reset/RSTACC hardware timing and readback policy remains for Chunk 06.

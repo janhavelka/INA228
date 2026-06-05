@@ -28,6 +28,13 @@ struct Measurement {
   float powerW = 0.0f;         ///< Power in watts
   double energyJ = 0.0;        ///< Accumulated energy in joules
   double chargeC = 0.0;        ///< Accumulated charge in coulombs
+  bool energyValid = false;    ///< True when energyJ is valid for this read
+  bool chargeValid = false;    ///< True when chargeC is valid for this read
+  bool energyOverflow = false; ///< ENERGYOF was observed before accumulator read
+  bool chargeOverflow = false; ///< CHARGEOF was observed before accumulator read
+  bool mathOverflow = false;   ///< MATHOF was observed before accumulator read
+  bool diagAlertValid = false; ///< True when diagAlertRaw came from DIAG_ALRT
+  uint16_t diagAlertRaw = 0;   ///< DIAG_ALRT captured before accumulator reads
 };
 
 /// @brief Raw measurement register values.
@@ -39,6 +46,13 @@ struct RawSample {
   uint32_t power = 0;   ///< Raw power (24-bit, unsigned)
   uint64_t energy = 0;  ///< Raw energy (40-bit, unsigned)
   int64_t charge = 0;   ///< Raw charge (40-bit, signed)
+  bool energyValid = false;    ///< True when raw energy is valid for this read
+  bool chargeValid = false;    ///< True when raw charge is valid for this read
+  bool energyOverflow = false; ///< ENERGYOF was observed before accumulator read
+  bool chargeOverflow = false; ///< CHARGEOF was observed before accumulator read
+  bool mathOverflow = false;   ///< MATHOF was observed before accumulator read
+  bool diagAlertValid = false; ///< True when diagAlertRaw came from DIAG_ALRT
+  uint16_t diagAlertRaw = 0;   ///< DIAG_ALRT captured before accumulator reads
 };
 
 /// @brief Snapshot of cached settings and runtime state without I2C access.
@@ -187,7 +201,9 @@ public:
   /// Continuous modes return the latest hardware register contents available at
   /// read time; they do not guarantee freshness since the previous call. While
   /// a driver-tracked triggered conversion is pending, this returns
-  /// MEASUREMENT_NOT_READY and leaves @p out unchanged.
+  /// MEASUREMENT_NOT_READY and leaves @p out unchanged. ENERGY and CHARGE are
+  /// reported only when their validity flags are true; otherwise the fields are
+  /// not valid accumulator data.
   /// @param out Measurement result
   /// @return Status::Ok() on success
   Status readMeasurement(Measurement& out);
@@ -197,7 +213,9 @@ public:
   /// Continuous modes return the latest hardware register contents available at
   /// read time; they do not guarantee freshness since the previous call. While
   /// a driver-tracked triggered conversion is pending, this returns
-  /// MEASUREMENT_NOT_READY and leaves @p out unchanged.
+  /// MEASUREMENT_NOT_READY and leaves @p out unchanged. ENERGY and CHARGE
+  /// register values are accompanied by validity and overflow flags because
+  /// accumulator reads can clear overflow evidence.
   /// @param out RawSample structure
   /// @return Status::Ok() on success
   Status readRawSample(RawSample& out);
@@ -232,14 +250,18 @@ public:
   /// @return Status::Ok() on success
   Status readPower(float& out);
 
-  /// Read accumulated energy in joules (requires calibration, continuous mode)
+  /// Read accumulated energy in joules (requires calibration and valid continuous accumulation)
   /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
+  /// @note Returns ACCUMULATION_INVALID outside valid continuous accumulation
+  /// conditions and ACCUMULATION_OVERFLOW when ENERGYOF is observed.
   /// @param out Energy (J)
   /// @return Status::Ok() on success
   Status readEnergy(double& out);
 
-  /// Read accumulated charge in coulombs (requires calibration, continuous mode)
+  /// Read accumulated charge in coulombs (requires calibration and valid continuous accumulation)
   /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
+  /// @note Returns ACCUMULATION_INVALID outside valid continuous accumulation
+  /// conditions and ACCUMULATION_OVERFLOW when CHARGEOF is observed.
   /// @param out Charge (C)
   /// @return Status::Ok() on success
   Status readCharge(double& out);
@@ -393,7 +415,9 @@ public:
 
   /// Reset energy and charge accumulators.
   ///
-  /// This clears the device's accumulated ENERGY and CHARGE registers.
+  /// This clears the device's accumulated ENERGY and CHARGE registers and
+  /// invalidates driver-side accumulator readiness until a continuous CNVRF is
+  /// observed again.
   Status resetAccumulators();
 
   /// Read manufacturer ID (expect 0x5449)
@@ -506,6 +530,15 @@ private:
   Status _applyCalibration();
   Status _ensureMeasurementReadyForRead();
   uint32_t _nowMs() const;
+  bool _modeSupportsEnergyAccumulation() const;
+  bool _modeSupportsChargeAccumulation() const;
+  bool _modeSupportsAnyAccumulation() const;
+  void _markAccumulationInvalid();
+  Status _ensureEnergyAccumulatorReadable() const;
+  Status _ensureChargeAccumulatorReadable() const;
+  Status _readAccumulatorDiag(uint16_t& raw);
+  Status _validateAccumulatorDiag(uint16_t raw, uint16_t overflowBit,
+                                  const char* overflowMsg) const;
   bool _triggerDeadlineElapsed(uint32_t nowMs) const;
   void _markTriggeredConversionStarted(uint32_t nowMs);
   void _completeTriggeredConversion();
@@ -547,6 +580,9 @@ private:
   // Triggered conversion tracking
   bool _trigPending = false;
   uint32_t _trigStartMs = 0;
+
+  // Accumulator validity tracking
+  bool _accumulationReady = false;
 
   // DIAG_ALRT cache and preserved evidence
   uint16_t _diagAlertConfigBits = 0;

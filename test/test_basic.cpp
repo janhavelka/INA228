@@ -33,6 +33,8 @@ struct FakeBus {
   uint8_t lastWriteReg = 0;
   uint16_t lastWrite16 = 0;
   uint8_t lastReadReg = 0;
+  uint8_t readHistory[256] = {};
+  size_t readHistoryCount = 0;
 
   int readErrorRemaining = 0;
   int writeErrorRemaining = 0;
@@ -57,6 +59,11 @@ Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user)
     bus->lastWrite16 = value;
     if (reg < 64) {
       bus->reg16[reg] = value;
+    }
+    if (reg == cmd::REG_CONFIG && ((value & cmd::CONFIG_RSTACC) != 0)) {
+      bus->reg40[cmd::REG_ENERGY] = 0;
+      bus->reg40[cmd::REG_CHARGE] = 0;
+      bus->diagAlrt &= ~(cmd::DIAG_ENERGYOF | cmd::DIAG_CHARGEOF | cmd::DIAG_MATHOF);
     }
     if (reg == cmd::REG_DIAG_ALRT) {
       bus->diagAlrt = (bus->diagAlrt & ~cmd::DIAG_CONFIG_MASK) |
@@ -89,6 +96,9 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
 
   const uint8_t reg = txData[0];
   bus->lastReadReg = reg;
+  if (bus->readHistoryCount < sizeof(bus->readHistory)) {
+    bus->readHistory[bus->readHistoryCount++] = reg;
+  }
   for (size_t i = 0; i < rxLen; ++i) {
     rxData[i] = 0;
   }
@@ -127,6 +137,11 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
     rxData[2] = static_cast<uint8_t>((value >> 16) & 0xFF);
     rxData[3] = static_cast<uint8_t>((value >> 8) & 0xFF);
     rxData[4] = static_cast<uint8_t>(value & 0xFF);
+    if (reg == cmd::REG_ENERGY) {
+      bus->diagAlrt &= ~cmd::DIAG_ENERGYOF;
+    } else if (reg == cmd::REG_CHARGE) {
+      bus->diagAlrt &= ~cmd::DIAG_CHARGEOF;
+    }
   }
 
   return Status::Ok();
@@ -147,6 +162,29 @@ Config makeConfig(FakeBus& bus) {
   cfg.offlineThreshold = 3;
   cfg.mode = Mode::CONT_ALL;
   return cfg;
+}
+
+bool wasRegisterRead(const FakeBus& bus, uint8_t reg) {
+  for (size_t i = 0; i < bus.readHistoryCount; ++i) {
+    if (bus.readHistory[i] == reg) {
+      return true;
+    }
+  }
+  return false;
+}
+
+size_t firstReadIndex(const FakeBus& bus, uint8_t reg) {
+  for (size_t i = 0; i < bus.readHistoryCount; ++i) {
+    if (bus.readHistory[i] == reg) {
+      return i;
+    }
+  }
+  return bus.readHistoryCount;
+}
+
+void clearReadHistory(FakeBus& bus) {
+  bus.readHistoryCount = 0;
+  bus.lastReadReg = 0;
 }
 
 }  // namespace
@@ -1244,6 +1282,322 @@ void test_read_measurement_all_zero_when_calibrated() {
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, m.powerW);
 }
 
+void test_continuous_mode_allows_energy_and_charge_after_cnvrf_when_calibrated() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.1f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.reg40[cmd::REG_ENERGY] = 10;
+  bus.reg40[cmd::REG_CHARGE] = 20;
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+  dev.tick(bus.nowMs);
+  clearReadHistory(bus);
+
+  const double expectedEnergy =
+      cmd::ENERGY_COEFF * cmd::POWER_COEFF *
+      static_cast<double>(dev.currentLsb()) * 10.0;
+  const double expectedCharge = static_cast<double>(dev.currentLsb()) * 20.0;
+
+  double value = -1.0;
+  Status st = dev.readEnergy(value);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FLOAT_WITHIN(static_cast<float>(expectedEnergy * 0.0001),
+                           static_cast<float>(expectedEnergy),
+                           static_cast<float>(value));
+
+  value = -1.0;
+  st = dev.readCharge(value);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FLOAT_WITHIN(static_cast<float>(expectedCharge * 0.0001),
+                           static_cast<float>(expectedCharge),
+                           static_cast<float>(value));
+
+  DiagAlertSnapshot snap{};
+  st = dev.getDiagAlertSnapshot(snap);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(snap.valid);
+  TEST_ASSERT_FALSE(snap.diag.energyOF);
+  TEST_ASSERT_FALSE(snap.diag.chargeOF);
+  TEST_ASSERT_FALSE(snap.diag.mathOF);
+}
+
+void test_triggered_modes_reject_energy_charge_without_accumulator_i2c() {
+  const Mode modes[] = {
+      Mode::TRIG_BUS,        Mode::TRIG_SHUNT,      Mode::TRIG_SHUNT_BUS,
+      Mode::TRIG_TEMP,       Mode::TRIG_TEMP_BUS,   Mode::TRIG_TEMP_SHUNT,
+      Mode::TRIG_ALL,
+  };
+
+  for (Mode mode : modes) {
+    FakeBus bus;
+    INA228::INA228 dev;
+    Config cfg = makeConfig(bus);
+    cfg.mode = mode;
+    cfg.shuntResistanceOhm = 0.1f;
+    cfg.maxExpectedCurrentA = 10.0f;
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+    bus.nowMs += dev.estimateConversionTimeMs();
+    bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+    dev.tick(bus.nowMs);
+    bus.reg40[cmd::REG_ENERGY] = 10;
+    bus.reg40[cmd::REG_CHARGE] = 20;
+    clearReadHistory(bus);
+
+    double value = 99.0;
+    Status st = dev.readEnergy(value);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::ACCUMULATION_INVALID),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_FLOAT_WITHIN(0.000001f, 99.0f, static_cast<float>(value));
+
+    value = 88.0;
+    st = dev.readCharge(value);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::ACCUMULATION_INVALID),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_FLOAT_WITHIN(0.000001f, 88.0f, static_cast<float>(value));
+    TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_ENERGY));
+    TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_CHARGE));
+  }
+}
+
+void test_shutdown_modes_reject_energy_charge_without_accumulator_i2c() {
+  const Mode modes[] = {Mode::SHUTDOWN, Mode::SHUTDOWN2};
+
+  for (Mode mode : modes) {
+    FakeBus bus;
+    INA228::INA228 dev;
+    Config cfg = makeConfig(bus);
+    cfg.mode = mode;
+    cfg.shuntResistanceOhm = 0.1f;
+    cfg.maxExpectedCurrentA = 10.0f;
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    bus.reg40[cmd::REG_ENERGY] = 10;
+    bus.reg40[cmd::REG_CHARGE] = 20;
+    clearReadHistory(bus);
+
+    double value = 99.0;
+    Status st = dev.readEnergy(value);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::ACCUMULATION_INVALID),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_FLOAT_WITHIN(0.000001f, 99.0f, static_cast<float>(value));
+
+    value = 88.0;
+    st = dev.readCharge(value);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::ACCUMULATION_INVALID),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_FLOAT_WITHIN(0.000001f, 88.0f, static_cast<float>(value));
+    TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_ENERGY));
+    TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_CHARGE));
+  }
+}
+
+void test_read_measurement_marks_invalid_accumulation_without_accumulator_i2c() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUTDOWN;
+  cfg.shuntResistanceOhm = 0.1f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  bus.reg24[cmd::REG_VBUS] = 0x001000;
+  bus.reg40[cmd::REG_ENERGY] = 10;
+  bus.reg40[cmd::REG_CHARGE] = 20;
+  clearReadHistory(bus);
+
+  Measurement m{};
+  m.energyJ = 123.0;
+  m.chargeC = 456.0;
+  Status st = dev.readMeasurement(m);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(m.busVoltageV > 0.0f);
+  TEST_ASSERT_FALSE(m.energyValid);
+  TEST_ASSERT_FALSE(m.chargeValid);
+  TEST_ASSERT_FALSE(m.diagAlertValid);
+  TEST_ASSERT_FLOAT_WITHIN(0.000001f, 0.0f, static_cast<float>(m.energyJ));
+  TEST_ASSERT_FLOAT_WITHIN(0.000001f, 0.0f, static_cast<float>(m.chargeC));
+  TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_ENERGY));
+  TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_CHARGE));
+}
+
+void test_diag_alert_surfaces_and_preserves_accumulator_overflow_flags() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.clearDiagOnRead = true;
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF |
+                 cmd::DIAG_ENERGYOF | cmd::DIAG_CHARGEOF |
+                 cmd::DIAG_MATHOF;
+
+  DiagAlert diag{};
+  Status st = dev.readDiagAlert(diag);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(diag.energyOF);
+  TEST_ASSERT_TRUE(diag.chargeOF);
+  TEST_ASSERT_TRUE(diag.mathOF);
+
+  DiagAlertSnapshot snap{};
+  st = dev.getDiagAlertSnapshot(snap);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(snap.valid);
+  TEST_ASSERT_TRUE(snap.diag.energyOF);
+  TEST_ASSERT_TRUE(snap.diag.chargeOF);
+  TEST_ASSERT_TRUE(snap.diag.mathOF);
+  TEST_ASSERT_TRUE((bus.diagAlrt & cmd::DIAG_ENERGYOF) != 0);
+  TEST_ASSERT_TRUE((bus.diagAlrt & cmd::DIAG_CHARGEOF) != 0);
+  TEST_ASSERT_TRUE((bus.diagAlrt & cmd::DIAG_MATHOF) != 0);
+}
+
+void test_read_energy_preserves_energy_overflow_and_reports_status() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.1f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+  dev.tick(bus.nowMs);
+
+  bus.reg40[cmd::REG_ENERGY] = 10;
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_ENERGYOF;
+  clearReadHistory(bus);
+
+  double value = 99.0;
+  Status st = dev.readEnergy(value);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::ACCUMULATION_OVERFLOW),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE((st.detail & cmd::DIAG_ENERGYOF) != 0);
+  TEST_ASSERT_FLOAT_WITHIN(0.000001f, 99.0f, static_cast<float>(value));
+  TEST_ASSERT_TRUE(wasRegisterRead(bus, cmd::REG_DIAG_ALRT));
+  TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_ENERGY));
+
+  DiagAlertSnapshot snap{};
+  st = dev.getDiagAlertSnapshot(snap);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(snap.diag.energyOF);
+}
+
+void test_read_charge_preserves_charge_overflow_and_reports_status() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.1f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+  dev.tick(bus.nowMs);
+
+  bus.reg40[cmd::REG_CHARGE] = 20;
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CHARGEOF;
+  clearReadHistory(bus);
+
+  double value = 88.0;
+  Status st = dev.readCharge(value);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::ACCUMULATION_OVERFLOW),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE((st.detail & cmd::DIAG_CHARGEOF) != 0);
+  TEST_ASSERT_FLOAT_WITHIN(0.000001f, 88.0f, static_cast<float>(value));
+  TEST_ASSERT_TRUE(wasRegisterRead(bus, cmd::REG_DIAG_ALRT));
+  TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_CHARGE));
+
+  DiagAlertSnapshot snap{};
+  st = dev.getDiagAlertSnapshot(snap);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(snap.diag.chargeOF);
+}
+
+void test_math_overflow_blocks_accumulation_reads_and_is_preserved() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.1f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+  dev.tick(bus.nowMs);
+
+  bus.reg40[cmd::REG_ENERGY] = 10;
+  bus.reg40[cmd::REG_CHARGE] = 20;
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_MATHOF;
+  clearReadHistory(bus);
+
+  double value = 77.0;
+  Status st = dev.readEnergy(value);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MATH_OVERFLOW),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE((st.detail & cmd::DIAG_MATHOF) != 0);
+  TEST_ASSERT_FLOAT_WITHIN(0.000001f, 77.0f, static_cast<float>(value));
+
+  value = 66.0;
+  st = dev.readCharge(value);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MATH_OVERFLOW),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE((st.detail & cmd::DIAG_MATHOF) != 0);
+  TEST_ASSERT_FLOAT_WITHIN(0.000001f, 66.0f, static_cast<float>(value));
+  TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_ENERGY));
+  TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_CHARGE));
+
+  DiagAlertSnapshot snap{};
+  st = dev.getDiagAlertSnapshot(snap);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(snap.diag.mathOF);
+}
+
+void test_reset_accumulators_invalidates_until_next_continuous_cnvrf() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.1f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+  dev.tick(bus.nowMs);
+
+  bus.reg40[cmd::REG_ENERGY] = 10;
+  double value = -1.0;
+  Status st = dev.readEnergy(value);
+  TEST_ASSERT_TRUE(st.ok());
+
+  st = dev.resetAccumulators();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT64(0u, bus.reg40[cmd::REG_ENERGY]);
+  TEST_ASSERT_EQUAL_UINT64(0u, bus.reg40[cmd::REG_CHARGE]);
+  clearReadHistory(bus);
+
+  value = 99.0;
+  st = dev.readEnergy(value);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::ACCUMULATION_INVALID),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FLOAT_WITHIN(0.000001f, 99.0f, static_cast<float>(value));
+  TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_ENERGY));
+
+  bus.reg40[cmd::REG_ENERGY] = 4;
+  bus.reg40[cmd::REG_CHARGE] = 5;
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+  dev.tick(bus.nowMs);
+
+  const double expectedEnergy =
+      cmd::ENERGY_COEFF * cmd::POWER_COEFF *
+      static_cast<double>(dev.currentLsb()) * 4.0;
+  const double expectedCharge = static_cast<double>(dev.currentLsb()) * 5.0;
+
+  st = dev.readEnergy(value);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FLOAT_WITHIN(static_cast<float>(expectedEnergy * 0.0001),
+                           static_cast<float>(expectedEnergy),
+                           static_cast<float>(value));
+
+  value = -1.0;
+  st = dev.readCharge(value);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FLOAT_WITHIN(static_cast<float>(expectedCharge * 0.0001),
+                           static_cast<float>(expectedCharge),
+                           static_cast<float>(value));
+}
+
 void test_read_raw_sample_uses_unsigned_vbus_and_energy() {
   FakeBus bus;
   INA228::INA228 dev;
@@ -1455,6 +1809,15 @@ int main() {
   RUN_TEST(test_read_bus_voltage_zero_on_default);
   RUN_TEST(test_uncalibrated_current_power_energy_charge_fail_without_i2c);
   RUN_TEST(test_read_measurement_all_zero_when_calibrated);
+  RUN_TEST(test_continuous_mode_allows_energy_and_charge_after_cnvrf_when_calibrated);
+  RUN_TEST(test_triggered_modes_reject_energy_charge_without_accumulator_i2c);
+  RUN_TEST(test_shutdown_modes_reject_energy_charge_without_accumulator_i2c);
+  RUN_TEST(test_read_measurement_marks_invalid_accumulation_without_accumulator_i2c);
+  RUN_TEST(test_diag_alert_surfaces_and_preserves_accumulator_overflow_flags);
+  RUN_TEST(test_read_energy_preserves_energy_overflow_and_reports_status);
+  RUN_TEST(test_read_charge_preserves_charge_overflow_and_reports_status);
+  RUN_TEST(test_math_overflow_blocks_accumulation_reads_and_is_preserved);
+  RUN_TEST(test_reset_accumulators_invalidates_until_next_continuous_cnvrf);
   RUN_TEST(test_read_raw_sample_uses_unsigned_vbus_and_energy);
   RUN_TEST(test_calibration_clamp_updates_current_lsb_to_actual_register_value);
   RUN_TEST(test_calibration_does_not_commit_cache_on_write_failure);

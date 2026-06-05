@@ -110,14 +110,14 @@ void loop() {
 
 | Method | Description |
 |--------|-------------|
-| `readMeasurement(m)` | Read all channels (V, I, T, P, E, Q) |
+| `readMeasurement(m)` | Read all channels with energy/charge validity flags |
 | `readBusVoltage(v)` | Bus voltage in volts (0–85 V) |
 | `readShuntVoltage(v)` | Shunt voltage in volts |
 | `readTemperature(t)` | Die temperature in °C |
 | `readCurrent(i)` | Current in amperes (requires calibration) |
 | `readPower(p)` | Power in watts (requires calibration) |
-| `readEnergy(e)` | Accumulated energy in joules |
-| `readCharge(q)` | Accumulated charge in coulombs |
+| `readEnergy(e)` | Accumulated energy in joules; fails when accumulation is invalid or overflowed |
+| `readCharge(q)` | Accumulated charge in coulombs; fails when accumulation is invalid or overflowed |
 | `isConversionReady(r)` | Check CNVRF flag using `Config::nowMs` for pending-trigger deadline gating |
 | `pollConversionReady(nowMs, r)` | Check CNVRF using a caller-supplied timestamp |
 
@@ -168,6 +168,8 @@ explicitly programmed for deterministic readback.
 and latched alert flags, so internal conversion-ready polling preserves the
 full raw value in `getDiagAlertSnapshot()`. Alert configuration setters write
 cached configuration bits without first reading live `DIAG_ALRT` status.
+Accumulator reads first preserve `DIAG_ALRT` when they may touch `ENERGY` or
+`CHARGE`, because reading those registers can clear `ENERGYOF` or `CHARGEOF`.
 
 ### Raw Register Access
 
@@ -209,6 +211,7 @@ end() --------> UNINIT
 6. **Error handling**: All fallible APIs return `Status`. Check with `st.ok()`.
 7. **Recovery model**: `OFFLINE` is latched. Supervisors should call `recover()` after applying any bus-level recovery policy.
 8. **Measurement freshness**: Continuous-mode reads return the latest hardware register contents at read time; they are not guaranteed fresh since the previous API call. Driver-tracked triggered conversions return `MEASUREMENT_NOT_READY` until the software deadline has elapsed and CNVRF is observed. `tick(nowMs)` and `pollConversionReady(nowMs, ready)` use the supplied timestamp, so they can advance pending triggered conversions even when `Config::nowMs` is unset.
+9. **Accumulator validity**: ENERGY requires continuous shunt-and-bus conversion, CHARGE requires continuous shunt conversion, and both require calibration plus a continuous CNVRF observed after begin/reset/accumulator reset. Scalar `readEnergy()` and `readCharge()` return `ACCUMULATION_INVALID`, `ACCUMULATION_OVERFLOW`, or `MATH_OVERFLOW` instead of returning invalid data. `readMeasurement()` and `readRawSample()` keep their aggregate read shape but mark `energyValid` and `chargeValid` false when those fields are not valid.
 
 ## INA228 Address Configuration
 
@@ -279,6 +282,7 @@ idf.py -C examples/esp_idf/basic set-target esp32s2 build
 - If the computed calibration exceeds the 15-bit register range, the driver clamps `SHUNT_CAL` and adjusts `currentLsb()` to the actual programmed value so current, power, energy, and charge scaling stay consistent with hardware.
 - Calibration and config setters update cached values only after required I2C writes succeed.
 - Triggered modes return `IN_PROGRESS`; measurement reads return `MEASUREMENT_NOT_READY` until the conversion time has elapsed and `CNVRF` is observed.
+- ENERGY and CHARGE are not valid in triggered or shutdown modes. After `resetAccumulators()`, they remain invalid until a continuous CNVRF is observed.
 - Bus voltage and raw energy are treated as unsigned values; shunt voltage, current, and charge remain signed.
 
 ## License

@@ -57,6 +57,11 @@ static bool isTriggeredMode(Mode mode) {
   return m >= 1 && m <= 7;
 }
 
+static bool isContinuousMode(Mode mode) {
+  const uint8_t m = static_cast<uint8_t>(mode);
+  return m >= 9 && m <= 15;
+}
+
 static uint16_t convTimeUs(ConvTime ct) {
   const uint8_t idx = static_cast<uint8_t>(ct);
   if (idx > 7) return cmd::CONV_TIME_US[5]; // safe fallback
@@ -177,6 +182,7 @@ Status INA228::begin(const Config& config) {
   _shuntCal = 0;
   _trigPending = false;
   _trigStartMs = 0;
+  _accumulationReady = false;
   _diagAlertConfigBits = 0;
   _diagAlertSnapshot = DiagAlertSnapshot{};
 
@@ -241,6 +247,7 @@ Status INA228::begin(const Config& config) {
     _shuntCal = 0;
     _trigPending = false;
     _trigStartMs = 0;
+    _accumulationReady = false;
     _diagAlertConfigBits = 0;
     return failure;
   };
@@ -327,6 +334,7 @@ void INA228::end() {
   _driverState = DriverState::UNINIT;
   _trigPending = false;
   _trigStartMs = 0;
+  _accumulationReady = false;
   _currentLsb = 0.0f;
   _shuntCal = 0;
   _diagAlertConfigBits = 0;
@@ -373,6 +381,7 @@ Status INA228::recover() {
   const bool startedOffline = _driverState == DriverState::OFFLINE;
   ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
   Status result = [this]() -> Status {
+    _markAccumulationInvalid();
     uint16_t mfgId = 0;
     Status st = readReg16(cmd::REG_MANUFACTURER_ID, mfgId);
     if (!st.ok()) {
@@ -475,6 +484,8 @@ Status INA228::readMeasurement(Measurement& out) {
     return Status::Error(Err::INVALID_CONFIG, "Current calibration required");
   }
 
+  Measurement result{};
+
   // Read shunt voltage (24-bit)
   uint32_t raw24 = 0;
   Status st = readReg24(cmd::REG_VSHUNT, raw24);
@@ -483,44 +494,69 @@ Status INA228::readMeasurement(Measurement& out) {
   const double vshLsb = (_config.adcRange == AdcRange::MV_40_96)
                           ? cmd::VSHUNT_LSB_RANGE1
                           : cmd::VSHUNT_LSB_RANGE0;
-  out.shuntVoltageV = static_cast<float>(vshRaw * vshLsb);
+  result.shuntVoltageV = static_cast<float>(vshRaw * vshLsb);
 
   // Read bus voltage (24-bit)
   st = readReg24(cmd::REG_VBUS, raw24);
   if (!st.ok()) return st;
   uint32_t vbusRaw = raw24 >> 4;
-  out.busVoltageV = static_cast<float>(vbusRaw * cmd::VBUS_LSB);
+  result.busVoltageV = static_cast<float>(vbusRaw * cmd::VBUS_LSB);
 
   // Read temperature (16-bit)
   uint16_t raw16 = 0;
   st = readReg16(cmd::REG_DIETEMP, raw16);
   if (!st.ok()) return st;
-  out.temperatureC = static_cast<float>(static_cast<int16_t>(raw16) * cmd::TEMP_LSB);
+  result.temperatureC = static_cast<float>(static_cast<int16_t>(raw16) * cmd::TEMP_LSB);
 
   // Read current (24-bit, requires calibration)
   st = readReg24(cmd::REG_CURRENT, raw24);
   if (!st.ok()) return st;
   int32_t curRaw = _signExtend20(raw24);
-  out.currentA = _currentLsb * static_cast<float>(curRaw);
+  result.currentA = _currentLsb * static_cast<float>(curRaw);
 
   // Read power (24-bit, unsigned)
   st = readReg24(cmd::REG_POWER, raw24);
   if (!st.ok()) return st;
-  out.powerW = static_cast<float>(cmd::POWER_COEFF * _currentLsb * raw24);
+  result.powerW = static_cast<float>(cmd::POWER_COEFF * _currentLsb * raw24);
 
-  // Read energy (40-bit, unsigned)
-  uint64_t raw40 = 0;
-  st = readReg40(cmd::REG_ENERGY, raw40);
-  if (!st.ok()) return st;
-  out.energyJ = cmd::ENERGY_COEFF * cmd::POWER_COEFF *
-                static_cast<double>(_currentLsb) * static_cast<double>(raw40);
+  const bool energyCandidate = _ensureEnergyAccumulatorReadable().ok();
+  const bool chargeCandidate = _ensureChargeAccumulatorReadable().ok();
+  if (energyCandidate || chargeCandidate) {
+    uint16_t diag = 0;
+    st = _readAccumulatorDiag(diag);
+    if (!st.ok()) return st;
 
-  // Read charge (40-bit, signed)
-  st = readReg40(cmd::REG_CHARGE, raw40);
-  if (!st.ok()) return st;
-  int64_t chargeSigned = _signExtend40(raw40);
-  out.chargeC = static_cast<double>(_currentLsb) * static_cast<double>(chargeSigned);
+    result.diagAlertValid = true;
+    result.diagAlertRaw = diag;
+    result.energyOverflow = (diag & cmd::DIAG_ENERGYOF) != 0;
+    result.chargeOverflow = (diag & cmd::DIAG_CHARGEOF) != 0;
+    result.mathOverflow = (diag & cmd::DIAG_MATHOF) != 0;
 
+    const bool mathOk = !result.mathOverflow;
+
+    if (energyCandidate && mathOk && !result.energyOverflow) {
+      // Read energy (40-bit, unsigned)
+      uint64_t raw40 = 0;
+      st = readReg40(cmd::REG_ENERGY, raw40);
+      if (!st.ok()) return st;
+      result.energyJ = cmd::ENERGY_COEFF * cmd::POWER_COEFF *
+                       static_cast<double>(_currentLsb) * static_cast<double>(raw40);
+      result.energyValid = true;
+    }
+
+    if (chargeCandidate && mathOk && !result.chargeOverflow) {
+      // Read charge (40-bit, signed)
+      uint64_t raw40 = 0;
+      st = readReg40(cmd::REG_CHARGE, raw40);
+      if (!st.ok()) return st;
+      int64_t chargeSigned = _signExtend40(raw40);
+      result.chargeC = static_cast<double>(_currentLsb) *
+                       static_cast<double>(chargeSigned);
+      result.chargeValid = true;
+    }
+  }
+
+  out = result;
   return Status::Ok();
 }
 
@@ -533,37 +569,53 @@ Status INA228::readRawSample(RawSample& out) {
     return readyStatus;
   }
 
+  RawSample result{};
+
   uint32_t raw24 = 0;
   Status st = readReg24(cmd::REG_VSHUNT, raw24);
   if (!st.ok()) return st;
-  out.vshunt = _signExtend20(raw24);
+  result.vshunt = _signExtend20(raw24);
 
   st = readReg24(cmd::REG_VBUS, raw24);
   if (!st.ok()) return st;
-  out.vbus = raw24 >> 4;
+  result.vbus = raw24 >> 4;
 
   uint16_t raw16 = 0;
   st = readReg16(cmd::REG_DIETEMP, raw16);
   if (!st.ok()) return st;
-  out.dietemp = static_cast<int16_t>(raw16);
+  result.dietemp = static_cast<int16_t>(raw16);
 
   st = readReg24(cmd::REG_CURRENT, raw24);
   if (!st.ok()) return st;
-  out.current = _signExtend20(raw24);
+  result.current = _signExtend20(raw24);
 
   st = readReg24(cmd::REG_POWER, raw24);
   if (!st.ok()) return st;
-  out.power = raw24;
+  result.power = raw24;
+
+  uint16_t diag = 0;
+  st = _readAccumulatorDiag(diag);
+  if (!st.ok()) return st;
+  result.diagAlertValid = true;
+  result.diagAlertRaw = diag;
+  result.energyOverflow = (diag & cmd::DIAG_ENERGYOF) != 0;
+  result.chargeOverflow = (diag & cmd::DIAG_CHARGEOF) != 0;
+  result.mathOverflow = (diag & cmd::DIAG_MATHOF) != 0;
 
   uint64_t raw40 = 0;
   st = readReg40(cmd::REG_ENERGY, raw40);
   if (!st.ok()) return st;
-  out.energy = raw40;
+  result.energy = raw40;
+  result.energyValid = _ensureEnergyAccumulatorReadable().ok() &&
+                       !result.mathOverflow && !result.energyOverflow;
 
   st = readReg40(cmd::REG_CHARGE, raw40);
   if (!st.ok()) return st;
-  out.charge = _signExtend40(raw40);
+  result.charge = _signExtend40(raw40);
+  result.chargeValid = _ensureChargeAccumulatorReadable().ok() &&
+                       !result.mathOverflow && !result.chargeOverflow;
 
+  out = result;
   return Status::Ok();
 }
 
@@ -675,9 +727,22 @@ Status INA228::readEnergy(double& out) {
   if (_currentLsb <= 0.0f) {
     return Status::Error(Err::INVALID_CONFIG, "Current calibration required");
   }
+  Status accStatus = _ensureEnergyAccumulatorReadable();
+  if (!accStatus.ok()) {
+    return accStatus;
+  }
+
+  uint16_t diag = 0;
+  Status st = _readAccumulatorDiag(diag);
+  if (!st.ok()) return st;
+
+  st = _validateAccumulatorDiag(diag, cmd::DIAG_ENERGYOF, "Energy accumulator overflow");
+  if (!st.ok()) {
+    return st;
+  }
 
   uint64_t raw40 = 0;
-  Status st = readReg40(cmd::REG_ENERGY, raw40);
+  st = readReg40(cmd::REG_ENERGY, raw40);
   if (!st.ok()) return st;
 
   out = cmd::ENERGY_COEFF * cmd::POWER_COEFF *
@@ -696,9 +761,22 @@ Status INA228::readCharge(double& out) {
   if (_currentLsb <= 0.0f) {
     return Status::Error(Err::INVALID_CONFIG, "Current calibration required");
   }
+  Status accStatus = _ensureChargeAccumulatorReadable();
+  if (!accStatus.ok()) {
+    return accStatus;
+  }
+
+  uint16_t diag = 0;
+  Status st = _readAccumulatorDiag(diag);
+  if (!st.ok()) return st;
+
+  st = _validateAccumulatorDiag(diag, cmd::DIAG_CHARGEOF, "Charge accumulator overflow");
+  if (!st.ok()) {
+    return st;
+  }
 
   uint64_t raw40 = 0;
-  Status st = readReg40(cmd::REG_CHARGE, raw40);
+  st = readReg40(cmd::REG_CHARGE, raw40);
   if (!st.ok()) return st;
 
   int64_t signed40 = _signExtend40(raw40);
@@ -746,6 +824,7 @@ Status INA228::setMode(Mode mode) {
   if (!st.ok()) return st;
 
   _config.mode = mode;
+  _markAccumulationInvalid();
   if (isTriggeredMode(mode)) {
     _markTriggeredConversionStarted(_nowMs());
     return Status{Err::IN_PROGRESS, 0, "Conversion started"};
@@ -777,6 +856,7 @@ Status INA228::triggerConversion(Mode mode) {
   if (!st.ok()) return st;
 
   _config.mode = mode;
+  _markAccumulationInvalid();
   _markTriggeredConversionStarted(_nowMs());
   return Status{Err::IN_PROGRESS, 0, "Conversion started"};
 }
@@ -796,6 +876,8 @@ Status INA228::setVbusConvTime(ConvTime ct) {
     _config.vbusConvTime = old;
   } else if (isTriggeredMode(_config.mode)) {
     _markTriggeredConversionStarted(_nowMs());
+  } else {
+    _markAccumulationInvalid();
   }
   return st;
 }
@@ -815,6 +897,8 @@ Status INA228::setVshuntConvTime(ConvTime ct) {
     _config.vshuntConvTime = old;
   } else if (isTriggeredMode(_config.mode)) {
     _markTriggeredConversionStarted(_nowMs());
+  } else {
+    _markAccumulationInvalid();
   }
   return st;
 }
@@ -834,6 +918,8 @@ Status INA228::setTempConvTime(ConvTime ct) {
     _config.vtempConvTime = old;
   } else if (isTriggeredMode(_config.mode)) {
     _markTriggeredConversionStarted(_nowMs());
+  } else {
+    _markAccumulationInvalid();
   }
   return st;
 }
@@ -853,6 +939,8 @@ Status INA228::setAveraging(Averaging avg) {
     _config.averaging = old;
   } else if (isTriggeredMode(_config.mode)) {
     _markTriggeredConversionStarted(_nowMs());
+  } else {
+    _markAccumulationInvalid();
   }
   return st;
 }
@@ -881,6 +969,8 @@ Status INA228::setAdcRange(AdcRange range) {
     _config.adcRange = oldRange;
     _currentLsb = oldCurrentLsb;
     _shuntCal = oldShuntCal;
+  } else {
+    _markAccumulationInvalid();
   }
   return st;
 }
@@ -910,6 +1000,8 @@ Status INA228::setCalibration(float shuntOhm, float maxCurrentA) {
     _config.maxExpectedCurrentA = oldMaxCurrentA;
     _currentLsb = oldCurrentLsb;
     _shuntCal = oldShuntCal;
+  } else {
+    _markAccumulationInvalid();
   }
   return st;
 }
@@ -956,6 +1048,8 @@ Status INA228::setConversionDelay(uint8_t steps2ms) {
   Status st = writeReg16(cmd::REG_CONFIG, _buildConfig());
   if (!st.ok()) {
     _config.convDelayMs2 = old;
+  } else {
+    _markAccumulationInvalid();
   }
   return st;
 }
@@ -1159,6 +1253,7 @@ Status INA228::softReset() {
   if (!st.ok()) {
     return st;
   }
+  _markAccumulationInvalid();
 
   // After reset, re-apply all configuration
   st = _applyConfig();
@@ -1172,6 +1267,8 @@ Status INA228::softReset() {
   st = _applyCalibration();
   if (st.ok() && isTriggeredMode(_config.mode)) {
     _markTriggeredConversionStarted(_nowMs());
+  } else if (st.ok()) {
+    _markAccumulationInvalid();
   }
   if (startedOffline && !st.ok() && !st.inProgress()) {
     _reassertOfflineLatch();
@@ -1186,7 +1283,11 @@ Status INA228::resetAccumulators() {
 
   uint16_t cfg = _buildConfig();
   cfg |= cmd::CONFIG_RSTACC;
-  return writeReg16(cmd::REG_CONFIG, cfg);
+  Status st = writeReg16(cmd::REG_CONFIG, cfg);
+  if (st.ok()) {
+    _markAccumulationInvalid();
+  }
+  return st;
 }
 
 Status INA228::readManufacturerId(uint16_t& id) {
@@ -1405,6 +1506,9 @@ void INA228::_captureDiagAlert(uint16_t raw) {
   parseDiagAlert(raw, _diagAlertSnapshot.diag);
   _diagAlertSnapshot.capturedMs = _nowMs();
   _diagAlertConfigBits = raw & cmd::DIAG_CONFIG_MASK;
+  if (((raw & cmd::DIAG_CNVRF) != 0) && _modeSupportsAnyAccumulation()) {
+    _accumulationReady = true;
+  }
   if (_trigPending && ((raw & cmd::DIAG_CNVRF) != 0)) {
     _completeTriggeredConversion();
   }
@@ -1540,7 +1644,75 @@ bool INA228::_triggerDeadlineElapsed(uint32_t nowMs) const {
   return (nowMs - _trigStartMs) >= estimateConversionTimeMs();
 }
 
+bool INA228::_modeSupportsEnergyAccumulation() const {
+  return isContinuousMode(_config.mode) && modeHasShunt(_config.mode) &&
+         modeHasBus(_config.mode);
+}
+
+bool INA228::_modeSupportsChargeAccumulation() const {
+  return isContinuousMode(_config.mode) && modeHasShunt(_config.mode);
+}
+
+bool INA228::_modeSupportsAnyAccumulation() const {
+  return _modeSupportsEnergyAccumulation() || _modeSupportsChargeAccumulation();
+}
+
+void INA228::_markAccumulationInvalid() {
+  _accumulationReady = false;
+}
+
+Status INA228::_ensureEnergyAccumulatorReadable() const {
+  if (!_modeSupportsEnergyAccumulation()) {
+    return Status::Error(Err::ACCUMULATION_INVALID,
+                         "Energy requires continuous shunt and bus conversion",
+                         static_cast<int32_t>(_config.mode));
+  }
+  if (!_accumulationReady) {
+    return Status::Error(Err::ACCUMULATION_INVALID,
+                         "Energy accumulation not ready");
+  }
+  return Status::Ok();
+}
+
+Status INA228::_ensureChargeAccumulatorReadable() const {
+  if (!_modeSupportsChargeAccumulation()) {
+    return Status::Error(Err::ACCUMULATION_INVALID,
+                         "Charge requires continuous shunt conversion",
+                         static_cast<int32_t>(_config.mode));
+  }
+  if (!_accumulationReady) {
+    return Status::Error(Err::ACCUMULATION_INVALID,
+                         "Charge accumulation not ready");
+  }
+  return Status::Ok();
+}
+
+Status INA228::_readAccumulatorDiag(uint16_t& raw) {
+  raw = 0;
+  Status st = _readDiagAlertTracked(raw);
+  if (!st.ok()) {
+    return st;
+  }
+  return Status::Ok();
+}
+
+Status INA228::_validateAccumulatorDiag(uint16_t raw, uint16_t overflowBit,
+                                        const char* overflowMsg) const {
+  const uint16_t accumulatorFlags =
+      raw & (cmd::DIAG_ENERGYOF | cmd::DIAG_CHARGEOF | cmd::DIAG_MATHOF);
+  if ((raw & cmd::DIAG_MATHOF) != 0) {
+    return Status::Error(Err::MATH_OVERFLOW, "INA228 math overflow",
+                         static_cast<int32_t>(accumulatorFlags));
+  }
+  if ((raw & overflowBit) != 0) {
+    return Status::Error(Err::ACCUMULATION_OVERFLOW, overflowMsg,
+                         static_cast<int32_t>(accumulatorFlags));
+  }
+  return Status::Ok();
+}
+
 void INA228::_markTriggeredConversionStarted(uint32_t nowMs) {
+  _markAccumulationInvalid();
   _trigPending = true;
   _trigStartMs = nowMs;
   _clearCapturedConversionReadyFlag();
@@ -1550,6 +1722,7 @@ void INA228::_completeTriggeredConversion() {
   const bool wasTriggeredMode = isTriggeredMode(_config.mode);
   _trigPending = false;
   _trigStartMs = 0;
+  _markAccumulationInvalid();
   if (wasTriggeredMode) {
     _config.mode = Mode::SHUTDOWN;
   }
