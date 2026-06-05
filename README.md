@@ -1,6 +1,6 @@
 # INA228 Driver Library
 
-Framework-neutral INA228 85-V, 20-bit I2C power/energy/charge monitor driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use).
+Framework-neutral INA228 85-V, 20-bit I2C power/energy/charge monitor driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use). This is an industry-readiness hardened, pre-production candidate pending checked-in hardware validation.
 
 Library version: `v1.3.0`
 
@@ -46,10 +46,13 @@ and application-specific recovery policy.
 - Adds the native ESP-IDF `examples/esp_idf/basic` CLI using `driver/i2c_master.h`, `app_main`, `esp_timer`, FreeRTOS delays, and fixed command buffers.
 - Preserves Arduino and ESP-IDF user-visible CLI parity for scan/probe, measurements, calibration, alert limits, raw register diagnostics, stress, and self-test workflows.
 - Keeps the driver core framework-neutral; hardware access remains callback-injected and timing comes from application-provided `Config::nowMs`.
-- Arduino example behavior has owner hardware-test coverage and remains the
-  reference behavior. ESP-IDF support is implemented, statically guarded, and
-  configured for CI `idf.py` builds, but local ESP-IDF and hardware validation
-  results must be reported separately.
+- Arduino and ESP-IDF examples provide matching bring-up CLI coverage. Hardware
+  validation artifacts are not included in this repository; board-level
+  validation must be reported separately with date, commit, hardware, equipment,
+  commands, logs, and pass/fail notes.
+- ESP-IDF support is implemented, statically guarded, and configured for CI
+  `idf.py` builds. Do not claim local ESP-IDF or hardware validation unless
+  the exact build logs and hardware logs are captured.
 
 ## High-Voltage Safety
 
@@ -58,6 +61,15 @@ do not make high-voltage systems safe. They do not provide isolation, fusing,
 creepage/clearance, enclosure safety, shunt power/thermal design, mains safety,
 or protection against USB-ground hazards. Use qualified hardware design and
 validation before connecting non-isolated, mains-derived, or high-energy rails.
+
+The 85 V number is an IC input capability, not a system safety rating. Never
+connect unsafe voltages to development boards or USB-connected PCs without
+proper isolation and protection. Account for transients, inductive kickback,
+fault current, creepage/clearance, connector ratings, shunt heating, enclosure
+access, and the grounding relationship between the measured rail, ESP32 board,
+debug probe, USB cable, and host computer. INA228 measurements and ALERT output
+are monitoring signals; they are not a fuse, protective relay, or certified
+safety function.
 
 ## Quick Start
 
@@ -79,8 +91,8 @@ void setup() {
   cfg.nowMs = [](void*) { return millis(); };
   cfg.i2cAddress = 0x40;
   cfg.mode = INA228::Mode::CONT_ALL;
-  cfg.shuntResistanceOhm = 0.015f;  // 15 mΩ shunt
-  cfg.maxExpectedCurrentA = 10.0f;   // 10 A max
+  cfg.shuntResistanceOhm = 0.015f;  // 15 milliohm shunt
+  cfg.maxExpectedCurrentA = 10.0f;   // 10 A calibration design point
   
   auto status = device.begin(cfg);
   if (!status.ok()) {
@@ -105,6 +117,38 @@ void loop() {
 }
 ```
 
+For `0.015 ohm` at `10 A`, the shunt dissipates `I^2 * R = 1.5 W` before
+layout and ambient derating. The code cannot make an undersized shunt,
+development board, wiring, or enclosure safe.
+
+## Shunt, Layout, And Calibration
+
+- Select the shunt so `Imax * Rshunt` stays inside the selected shunt range:
+  `+/-163.84 mV` for `ADCRANGE=0` or `+/-40.96 mV` for `ADCRANGE=1`. The
+  narrower range gives four times finer shunt-voltage resolution but less
+  overcurrent headroom.
+- Check shunt power with `P = I^2 * R`, including pulse rating, thermal
+  derating, PCB copper temperature rise, tolerance, and temperature coefficient.
+  Calibration improves reported units; it does not protect the hardware from
+  overcurrent or overheating.
+- Use Kelvin connections to the shunt sense terminals. Keep IN+ and IN- traces
+  short, balanced, and outside the load-current path; follow the shunt
+  manufacturer's footprint guidance for four-terminal parts.
+- Consider input filtering, TVS/Zener/transient protection, fusing, and
+  current-limited supplies for inductive or high-energy systems. Keep any
+  filter values within datasheet limits so they do not corrupt measurements.
+- `Config::shuntResistanceOhm` and `Config::maxExpectedCurrentA` define the
+  requested calibration. The driver exposes the actual `currentLsb()`,
+  `SHUNT_CAL`, clamp state, dirty state, and threshold-dirty state through
+  `SettingsSnapshot`.
+- If calibration is omitted, `begin()` writes `SHUNT_CAL=0`. Raw
+  voltage/temperature/register reads remain available; converted current,
+  power, energy, charge, and power-limit APIs return calibration errors.
+- Reapply engineering-unit thresholds after changing `ADCRANGE`, calibration,
+  or after `softReset()`. `SettingsSnapshot::thresholdsDirty` is a sticky
+  advisory that tells service code previously programmed thresholds may no
+  longer match the active scale.
+
 ## API Overview
 
 ### Lifecycle
@@ -122,22 +166,24 @@ void loop() {
 
 | Method | Description |
 |--------|-------------|
-| `readMeasurement(m)` | Read all channels with energy/charge validity flags; converted current-derived fields require calibration |
-| `readBusVoltage(v)` | Bus voltage in volts (0–85 V) |
+| `readMeasurement(m)` | Read all converted channels with energy/charge validity flags; requires calibration because current/power fields are included |
+| `readRawSample(raw)` | Diagnostic raw register read; preserves `DIAG_ALRT` first, then reads raw accumulators with validity/overflow flags |
+| `readBusVoltage(v)` | Bus voltage in volts (0-85 V) |
 | `readShuntVoltage(v)` | Shunt voltage in volts |
 | `readTemperature(t)` | Die temperature in °C |
 | `readCurrent(i)` | Current in amperes (requires calibration) |
 | `readPower(p)` | Power in watts (requires calibration) |
 | `readEnergy(e)` | Accumulated energy in joules; fails when accumulation is invalid or overflowed |
 | `readCharge(q)` | Accumulated charge in coulombs; fails when accumulation is invalid or overflowed |
-| `isConversionReady(r)` | Check CNVRF flag using `Config::nowMs` for pending-trigger deadline gating |
-| `pollConversionReady(nowMs, r)` | Check CNVRF using a caller-supplied timestamp |
+| `isConversionReady(r)` | Check CNVRF using `Config::nowMs`; clears `r` before polling |
+| `pollConversionReady(nowMs, r)` | Check CNVRF using a caller-supplied timestamp; clears `r` before polling |
 
 ### Configuration
 
 | Method | Description |
 |--------|-------------|
 | `setMode(mode)` | Set ADC operating mode |
+| `getMode(mode)` | Read the cached operating mode |
 | `triggerConversion(mode)` | Start single-shot conversion |
 | `setVbusConvTime(ct)` | Bus voltage conversion time |
 | `setVshuntConvTime(ct)` | Shunt voltage conversion time |
@@ -146,6 +192,8 @@ void loop() {
 | `setAdcRange(range)` | Shunt full-scale range (±163.84 or ±40.96 mV) |
 | `setCalibration(ohm, A)` | Update shunt calibration for the installed shunt resistor and expected current |
 | `setShuntTempCoeff(ppm)` | Shunt temperature coefficient |
+| `setTempCompensation(enable)` | Enable or disable shunt temperature compensation |
+| `setConversionDelay(steps2ms)` | Set conversion delay in 2 ms steps |
 | `softReset()` | Bounded software reset with identity/MEMSTAT/reset-bit verification and cached replay |
 | `resetAccumulators()` | Clear energy/charge registers, then explicitly clear/verify `RSTACC` |
 
@@ -162,6 +210,8 @@ explicitly programmed for deterministic readback.
 | `isOnline()` | True if READY or DEGRADED |
 | `probe()` | Check device presence (no health tracking; preserves transport error codes except address NACK maps to device-not-found) |
 | `recover()` | Re-validate manufacturer ID, device ID, MEMSTAT, then re-apply config/calibration |
+| `readManufacturerId(id)` | Read manufacturer ID, expected `0x5449` |
+| `readDeviceId(id)` | Read device ID, expected `0x2281` |
 | `readDiagAlert(diag)` | Read and consume current `DIAG_ALRT` flags |
 | `readDiagAlertRaw(raw)` | Read and consume raw `DIAG_ALRT` register value |
 | `getDiagAlertSnapshot(snapshot)` | Return last preserved `DIAG_ALRT` evidence without I2C |
@@ -192,6 +242,14 @@ Accumulator reads first preserve `DIAG_ALRT` when they may touch `ENERGY` or
 | `readRegister40(reg, value)` | Diagnostic tracked 40-bit read; accumulator reads can affect overflow evidence |
 | `writeRegister16(reg, value)` | Diagnostic tracked 16-bit write; can desynchronize typed cache from hardware |
 
+### Timing And Scale Introspection
+
+| Method | Description |
+|--------|-------------|
+| `estimateConversionTimeUs()` | Estimate configured conversion time in microseconds |
+| `estimateConversionTimeMs()` | Estimate configured conversion time in milliseconds, rounded up |
+| `currentLsb()` | Return cached CURRENT_LSB; check `SettingsSnapshot::calibrated` and `hardwareDirty` before treating it as usable |
+
 ## Driver State Machine
 
 ```
@@ -220,10 +278,10 @@ end() --------> UNINIT
 3. **Resource ownership**: I2C bus owned by application; library receives transport callbacks.
 4. **Framework boundary**: Core code does not call `Wire`, `Serial`, `delay()`, `yield()`, `millis()`, or ESP-IDF peripheral APIs directly. Arduino examples and native ESP-IDF examples provide those hooks externally.
 5. **Memory behavior**: No heap allocation after `begin()`.
-6. **Error handling**: All fallible APIs return `Status`. Check with `st.ok()`. `begin()` and `probe()` map only definite address NACK to `DEVICE_NOT_FOUND`; timeout, data NACK, bus, and generic I2C errors remain precise. Unless a method documents otherwise, output parameters are committed only on `Status::Ok()` and remain unchanged on non-OK status.
+6. **Error handling**: All fallible APIs return `Status`. Check with `st.ok()`. `begin()` and `probe()` map only definite address NACK to `DEVICE_NOT_FOUND`; timeout, data NACK, bus, and generic I2C errors remain precise. Unless a method documents otherwise, output parameters are committed only on `Status::Ok()` and remain unchanged on non-OK status. Readiness APIs clear their `ready` output before polling, including on error.
 7. **Recovery model**: `OFFLINE` is latched. Supervisors should call `recover()` after applying any bus-level recovery policy.
-8. **Measurement freshness**: Continuous-mode reads return the latest hardware register contents at read time; they are not guaranteed fresh since the previous API call. Driver-tracked triggered conversions return `MEASUREMENT_NOT_READY` until the software deadline has elapsed and CNVRF is observed. `tick(nowMs)` and `pollConversionReady(nowMs, ready)` use the supplied timestamp, so they can advance pending triggered conversions even when `Config::nowMs` is unset.
-9. **Accumulator validity**: ENERGY requires continuous shunt-and-bus conversion, CHARGE requires continuous shunt conversion, and both require calibration plus a continuous CNVRF observed after begin/reset/accumulator reset. Scalar `readEnergy()` and `readCharge()` return `ACCUMULATION_INVALID`, `ACCUMULATION_OVERFLOW`, or `MATH_OVERFLOW` instead of returning invalid data. `readMeasurement()` and `readRawSample()` keep their aggregate read shape but mark `energyValid` and `chargeValid` false when those fields are not valid.
+8. **Measurement freshness**: Continuous-mode reads return the latest hardware register contents at read time; they are not guaranteed fresh since the previous API call. Driver-tracked triggered conversions return `MEASUREMENT_NOT_READY` until the software deadline has elapsed and CNVRF is observed. `tick(nowMs)` and `pollConversionReady(nowMs, ready)` use the supplied timestamp, so they can advance pending triggered conversions even when `Config::nowMs` is unset. If `Config::nowMs` is unset, call `tick(nowMs)` or `pollConversionReady(nowMs, ready)` before triggered measurement reads.
+9. **Accumulator validity and side effects**: ENERGY requires continuous shunt-and-bus conversion, CHARGE requires continuous shunt conversion, and both require calibration plus a continuous CNVRF observed after begin/reset/accumulator reset. Scalar `readEnergy()` and `readCharge()` return `ACCUMULATION_INVALID`, `ACCUMULATION_OVERFLOW`, or `MATH_OVERFLOW` instead of returning invalid data. `readMeasurement()` requires calibration because it includes current and power. `readRawSample()` is diagnostic/raw: it preserves `DIAG_ALRT` first, then reads raw accumulators; raw energy/charge fields may be invalid and accumulator reads can consume overflow evidence.
 10. **Calibration coherence**: `SHUNT_CAL`, `currentLsb()`, `shuntResistanceOhm`, `maxExpectedCurrentA`, and `adcRange` are treated as one scaling contract. Converted current, power, energy, charge, and power-limit APIs require a valid calibration and a clean hardware/cache state. If a multi-register range/calibration/reset update cannot be rolled back or fully replayed after an I2C failure, those APIs return `HARDWARE_DIRTY` until `recover()` or `softReset()` successfully replays the cached configuration. `SettingsSnapshot::hardwareDirtyCause` preserves the first status that made the state dirty.
 11. **Reset policy**: `softReset()` contains no platform delay or unbounded wait. It writes `CONFIG.RST`, performs a finite reset-bit readback check, verifies manufacturer ID, device ID, and `MEMSTAT`, then replays cached config/calibration with ADC shutdown first and final ADC mode last. If verification or replay fails, reset-domain dirty state remains visible. `resetAccumulators()` treats `RSTACC` self-clear as unproven: it writes `RSTACC`, writes cached `CONFIG` again with reset bits clear, verifies readback, and invalidates accumulation until the next continuous CNVRF.
 12. **Object lifetime**: `INA228::INA228` is default-constructible but not copyable or movable. Keep each instance at a stable address and pass it by pointer or reference.
@@ -283,6 +341,10 @@ Raw register access is intended for diagnostics and bring-up. Reads of status-se
 These are validation targets, not hardware-validation claims. GitHub Actions is
 configured to run the PlatformIO and ESP-IDF build/test commands; local results
 depend on the installed toolchains and must be reported with exact failures.
+Hardware validation is tracked separately in
+[`docs/INA228_HARDWARE_VALIDATION_MATRIX.md`](docs/INA228_HARDWARE_VALIDATION_MATRIX.md).
+All rows in that matrix remain `NOT RUN` until dated logs, equipment, board,
+module, shunt, rail/load, commands, and pass/fail notes are checked in.
 
 ```bash
 python tools/check_cli_contract.py

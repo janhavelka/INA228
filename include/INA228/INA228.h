@@ -3,6 +3,9 @@
 /// @warning The driver and examples do not provide isolation, fusing,
 /// creepage/clearance, or electrical safety protection. High-voltage systems
 /// require qualified hardware design, validation, and operating procedures.
+/// The 85-V input capability is an IC rating, not a system safety rating.
+/// Do not connect non-isolated or high-energy rails to development boards,
+/// debug probes, or USB-connected PCs without appropriate protection.
 #pragma once
 
 #include <cstddef>
@@ -85,7 +88,7 @@ struct SettingsSnapshot {
   bool hardwareDirty = false;          ///< True after unresolved partial config/calibration hardware state
   uint64_t dirtyRegisterMask = 0;      ///< Bit mask of possibly dirty registers, indexed by register address
   Status hardwareDirtyCause{};         ///< First failure/status that made hardwareDirty true
-  bool thresholdsDirty = false;        ///< True when scaling changed after engineering-unit thresholds were set
+  bool thresholdsDirty = false;        ///< Sticky advisory that thresholds may not match active scale
   bool triggeredConversionPending = false;
   uint32_t triggeredConversionStartMs = 0;
 };
@@ -128,9 +131,15 @@ struct DiagAlertSnapshot {
 /// Instances are not thread-safe or ISR-safe. Applications must serialize API
 /// calls, provide any shared-bus locking outside the driver, and ensure
 /// transport/time callbacks do not re-enter the same INA228 instance.
+/// The driver does not own or configure the I2C bus; bus creation, locking,
+/// recovery, pins, pull-ups, and platform handles belong to the application
+/// or an injected transport adapter.
+/// Measurements and ALERT output are monitoring signals only, not certified
+/// safety functions or substitutes for independent hardware protection.
 /// Unless a method explicitly documents different behavior, output parameters
 /// are committed only when Status::Ok() is returned and remain unchanged on
-/// non-OK status.
+/// non-OK status. Readiness APIs are the exception: they clear their @p ready
+/// output before polling, including on error.
 class INA228 {
 public:
   INA228() = default;
@@ -149,6 +158,9 @@ public:
   /// @return Status::Ok() on success, error otherwise. Definite address NACK
   /// during identity/MEMSTAT reads maps to DEVICE_NOT_FOUND; timeout, data
   /// NACK, bus, and generic I2C errors are returned with their transport code.
+  /// @note Startup verifies MEMSTAT by reading DIAG_ALRT. The raw value is
+  /// preserved in getDiagAlertSnapshot(), but the hardware read can still clear
+  /// CNVRF and latched diagnostic evidence.
   Status begin(const Config& config);
 
   /// Process pending operations (call regularly from loop)
@@ -177,6 +189,8 @@ public:
 
   /// Attempt to recover from DEGRADED/OFFLINE state by re-validating IDs, MEMSTAT, and cached config
   /// @return Status::Ok() if device now responsive and configuration is re-applied, error otherwise
+  /// @note Recovery verifies MEMSTAT by reading DIAG_ALRT. The observed raw
+  /// value is preserved, but the hardware read is status-clearing.
   Status recover();
 
   /// Populate a cache-only settings snapshot without touching I2C.
@@ -226,6 +240,10 @@ public:
 
   /// Read all available measurements into a float structure.
   ///
+  /// Requires valid calibration because the aggregate includes current and
+  /// power fields. Use scalar voltage/temperature reads or readRawSample() for
+  /// uncalibrated bring-up.
+  ///
   /// Continuous modes return the latest hardware register contents available at
   /// read time; they do not guarantee freshness since the previous call. While
   /// a driver-tracked triggered conversion is pending, this returns
@@ -246,8 +264,10 @@ public:
   /// a driver-tracked triggered conversion is pending, this returns
   /// MEASUREMENT_NOT_READY and leaves @p out unchanged. ENERGY and CHARGE
   /// register values are accompanied by validity and overflow flags because
-  /// accumulator reads can clear overflow evidence. This call preserves the
-  /// DIAG_ALRT snapshot it consumes for overflow/validity policy.
+  /// accumulator reads can clear overflow evidence. This diagnostic/raw call
+  /// preserves the DIAG_ALRT snapshot it consumes, then reads raw accumulators;
+  /// raw ENERGY/CHARGE fields may be invalid when their validity flags are
+  /// false.
   /// @param out RawSample structure
   /// @return Status::Ok() on success
   Status readRawSample(RawSample& out);
@@ -285,7 +305,8 @@ public:
   /// Read accumulated energy in joules (requires calibration and valid continuous accumulation)
   /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
   /// @note Returns ACCUMULATION_INVALID outside valid continuous accumulation
-  /// conditions and ACCUMULATION_OVERFLOW when ENERGYOF is observed.
+  /// conditions, ACCUMULATION_OVERFLOW when ENERGYOF is observed, and
+  /// MATH_OVERFLOW when MATHOF is observed.
   /// @param out Energy (J)
   /// @return Status::Ok() on success
   Status readEnergy(double& out);
@@ -293,13 +314,14 @@ public:
   /// Read accumulated charge in coulombs (requires calibration and valid continuous accumulation)
   /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
   /// @note Returns ACCUMULATION_INVALID outside valid continuous accumulation
-  /// conditions and ACCUMULATION_OVERFLOW when CHARGEOF is observed.
+  /// conditions, ACCUMULATION_OVERFLOW when CHARGEOF is observed, and
+  /// MATH_OVERFLOW when MATHOF is observed.
   /// @param out Charge (C)
   /// @return Status::Ok() on success
   Status readCharge(double& out);
 
   /// Check if conversion is ready using Config::nowMs when a trigger is pending.
-  /// @param ready Set to true if conversion complete
+  /// @param ready Cleared before polling, then set true if conversion complete
   /// @return Status::Ok() on success
   Status isConversionReady(bool& ready);
 
@@ -309,7 +331,7 @@ public:
   /// conversions to advance deterministically even when Config::nowMs is unset.
   /// CNVRF remains authoritative after the software deadline has elapsed.
   /// @param nowMs Current monotonic timestamp in milliseconds
-  /// @param ready Set to true if CNVRF was observed on this poll
+  /// @param ready Cleared before polling, then set true if CNVRF was observed on this poll
   /// @return Status::Ok() on success
   Status pollConversionReady(uint32_t nowMs, bool& ready);
 
@@ -352,7 +374,8 @@ public:
   ///
   /// @note Existing alert thresholds are not re-encoded. SettingsSnapshot
   /// thresholdsDirty is set after a scale change so applications can reapply
-  /// engineering-unit limits deliberately.
+  /// engineering-unit limits deliberately. It is sticky and is not cleared by
+  /// successful threshold writes.
   Status setAdcRange(AdcRange range);
 
   /// Update shunt calibration for the installed shunt resistor.
@@ -367,7 +390,8 @@ public:
   ///
   /// A successful calibration change invalidates accumulation readiness and
   /// marks SettingsSnapshot::thresholdsDirty so engineering-unit thresholds can
-  /// be reapplied for the new scale.
+  /// be reapplied for the new scale. The flag is sticky until begin()/end()
+  /// state reset or a full reinitialization path clears it.
   /// @param shuntOhm Shunt resistance in ohms
   /// @param maxCurrentA Maximum expected current in amps
   /// @return Status::Ok() on success
@@ -419,6 +443,9 @@ public:
   /// @param activeHigh true = active-high, false = active-low (default)
   Status setAlertPolarity(bool activeHigh);
 
+  /// @warning Alert thresholds and ALERT output are monitoring aids, not a
+  /// safety interlock. Use independent hardware protection for hazardous rails.
+
   /// Set shunt overvoltage threshold
   /// Uses the signed shunt threshold register scale for the active ADC range
   /// (5 uV/LSB at +/-163.84 mV, 1.25 uV/LSB at +/-40.96 mV).
@@ -459,7 +486,9 @@ public:
   ///
   /// This is bounded and contains no platform delay. The driver writes RST,
   /// verifies finite readback of CONFIG.RST/RSTACC clear plus identity and
-  /// MEMSTAT, then replays cached configuration/calibration. If reset or replay
+  /// MEMSTAT, then replays cached configuration/calibration. MEMSTAT
+  /// verification reads DIAG_ALRT and can consume live status even though the
+  /// raw value is preserved. If reset or replay
   /// cannot be verified, SettingsSnapshot::hardwareDirty remains true and typed
   /// converted reads fail until recover() or another successful softReset().
   Status softReset();
@@ -519,8 +548,10 @@ public:
   /// Estimate total conversion time in milliseconds (rounded up)
   uint32_t estimateConversionTimeMs() const;
 
-  /// Get current CURRENT_LSB value (amps per LSB)
-  /// @return CURRENT_LSB, or 0 if not calibrated
+  /// Get cached CURRENT_LSB value (amps per LSB)
+  /// @return CURRENT_LSB, or 0 if calibration was never configured. Check
+  /// SettingsSnapshot::calibrated and SettingsSnapshot::hardwareDirty before
+  /// treating the value as usable for converted readings.
   float currentLsb() const { return _currentLsb; }
 
 private:

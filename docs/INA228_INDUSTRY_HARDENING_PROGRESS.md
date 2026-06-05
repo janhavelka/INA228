@@ -915,3 +915,109 @@ Five read-only agents were used before implementation:
   APIs do not expose address versus data phase.
 - `platform = espressif32` remains unpinned; local S2/S3 builds passed here, but
   future PlatformIO framework changes can affect reproducibility.
+
+## Chunk 10 - Documentation, High-Voltage Safety, and Hardware Validation Matrix
+
+Date: 2026-06-05
+Branch: `hardening/ina228-industry-readiness`
+Starting commit: `1da6bd0a91d85c846703dd7275aea74fd8d71426`
+Commit: pending at report-update time; final response records the committed hash.
+
+### Scope
+
+Chunk 10 aligned user-facing documentation with the hardened driver behavior and
+created the hardware validation matrix required before any field-proven or
+fully production-grade claim. No hardware validation was performed.
+
+### Subagent Findings
+
+Four read-only agents were used before implementation:
+
+| Agent | Finding summary |
+| --- | --- |
+| `safety-doc-agent` | Found that high-voltage safety existed but was too compressed, shunt power/Kelvin/transient guidance was not surfaced, ALERT/measurements needed explicit non-safety-function wording, and "owner hardware-test coverage" was unsupported without checked-in logs. |
+| `api-doc-agent` | Found README/Doxygen gaps around `readMeasurement()` requiring calibration, `readRawSample()` accumulator side effects, DIAG_ALRT reads during begin/recover/reset, `nowMs` versus `tick(nowMs)` triggered timing, readiness output clearing, `MATH_OVERFLOW`, sticky `thresholdsDirty`, cached `currentLsb()`, and omitted public APIs. |
+| `validation-agent` | Designed `docs/INA228_HARDWARE_VALIDATION_MATRIX.md` with required metadata, command/log presets, evidence-path pattern, and initial `NOT RUN` rows for address scan, identity, MEMSTAT, known voltage/current vectors, ADCRANGE, timing, modes, accumulators, alerts, faults, soak, Arduino S2/S3, and pure ESP-IDF S2/S3. |
+| `release-honesty-agent` | Found unsupported "owner hardware-test coverage" claims in README, CHANGELOG, and IDF docs; found no remaining positive claims of "fully industry-grade", "field-proven", "85 V safe", or "validated on ESP-IDF"; recommended qualified wording and changelog updates. |
+
+### Changes
+
+- Expanded README safety guidance to state the 85 V rating is an IC capability,
+  not a system safety rating, and to call out isolation, fusing, transient
+  protection, creepage/clearance, shunt heating, grounding, USB-ground hazards,
+  and qualified handling.
+- Added README shunt/layout/calibration guidance:
+  - shunt range limits for both ADCRANGE settings;
+  - `I^2 * R` dissipation and derating;
+  - Kelvin connections and balanced sense traces;
+  - input filtering/transient protection within datasheet limits;
+  - actual versus requested calibration fields in `SettingsSnapshot`;
+  - uncalibrated behavior and threshold reapply policy.
+- Tightened README API/behavior contracts:
+  - `readMeasurement()` requires calibration;
+  - `readRawSample()` is diagnostic/raw and can consume accumulator overflow
+    evidence;
+  - readiness APIs clear their `ready` output before polling;
+  - triggered reads need `tick(nowMs)` or `pollConversionReady(nowMs, ready)`
+    when `Config::nowMs` is unset;
+  - added omitted public APIs to the overview.
+- Updated public Doxygen in `include/INA228/INA228.h` and `Config.h` for:
+  - high-voltage and bus-ownership warnings;
+  - measurements/ALERT not being safety functions;
+  - DIAG_ALRT verification side effects during begin/recover/soft reset;
+  - raw sample and accumulator side effects;
+  - `MATH_OVERFLOW` on energy/charge reads;
+  - sticky `thresholdsDirty`;
+  - cached `currentLsb()` caveat.
+- Created `docs/INA228_HARDWARE_VALIDATION_MATRIX.md` with required hardware
+  validation rows all marked `NOT RUN`.
+- Removed unsupported "owner hardware-test coverage" wording from README,
+  CHANGELOG, `docs/IDF_PORT.md`, and `docs/IDF_PORT_IMPLEMENTATION.md`.
+- Added a historical-state note to the exploration report so stale pre-hardening
+  findings are not mistaken for current validation status.
+- Updated CHANGELOG Unreleased entries for safety docs, validation matrix, and
+  honesty wording.
+
+### API Changes
+
+- No functional API change.
+- Public Doxygen comments were expanded and corrected.
+
+### Tests Added Or Updated
+
+- No native driver tests were added in this documentation chunk.
+- Added a documentation-only hardware validation matrix with all hardware rows
+  marked `NOT RUN`.
+
+### Commands Run
+
+| Command | Result |
+| --- | --- |
+| `git status --short` | showed only intended documentation/header edits and new `docs/INA228_HARDWARE_VALIDATION_MATRIX.md` before commit |
+| `git diff --check` | PASS; only Git CRLF normalization warnings were printed |
+| `python tools/check_core_timing_guard.py` | PASS: `Core timing guard PASSED` |
+| `python tools/check_cli_contract.py` | PASS: `CLI contract PASSED` |
+| `python tools/check_idf_example_contract.py` | PASS: `IDF example contract PASSED` |
+| `python scripts/generate_version.py check` | PASS: `Up to date: C:\Users\Honza\Documents\Projects\INA228\include\INA228\Version.h` |
+| `python -m platformio test -e native` | PASS: 111/111 native tests succeeded in 1.106 s; PlatformIO warned obsolete Core 6.1.18 is used and 6.1.19 also exists |
+| `python -m platformio run -e esp32s3dev` | PASS: ESP32-S3 Arduino build succeeded with PlatformIO espressif32 54.3.20, Arduino 3.2.0, IDF libs 5.4.0 |
+| `python -m platformio run -e esp32s2dev` | PASS: ESP32-S2 Arduino build succeeded with PlatformIO espressif32 54.3.20, Arduino 3.2.0, IDF libs 5.4.0 |
+| `python -m platformio pkg pack` | PASS: wrote `INA228-1.3.0.tar.gz`; tarball was removed after recording the result |
+| `idf.py --version` | NOT AVAILABLE: PowerShell reported `idf.py : The term 'idf.py' is not recognized as the name of a cmdlet, function, script file, or operable program.` |
+
+### Commands Not Run
+
+| Command | Reason |
+| --- | --- |
+| `idf.py -C examples/esp_idf/basic set-target esp32s3 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. CI is configured to build this target. |
+| `idf.py -C examples/esp_idf/basic set-target esp32s2 build` | Not run because `idf.py --version` failed; ESP-IDF is not available on PATH in this environment. CI is configured to build this target. |
+
+### Remaining Risks
+
+- No hardware validation was performed or claimed; every hardware matrix row is
+  currently `NOT RUN`.
+- Local pure ESP-IDF build proof is still missing because `idf.py` is not
+  available in this shell.
+- GitHub Actions ESP-IDF results must still be reviewed after push.
+- The matrix is a template until dated logs, equipment metadata, board/module
+  details, and pass/fail evidence are checked in.

@@ -5,6 +5,12 @@ Repository: `C:/Users/HonzovoSpectre/Documents/Projects/INA228`
 Branch: `audit/ina228-industry-readiness-exploration`
 Audit mode: exploration only / no implementation
 
+> Historical note: this exploration report records the initial audit state
+> before the hardening chunks. Later chunks added CI ESP-IDF build coverage and
+> changed public wording away from "production-grade"; this file is not a
+> current validation matrix. Use `docs/INA228_INDUSTRY_HARDENING_PROGRESS.md`
+> and `docs/INA228_HARDWARE_VALIDATION_MATRIX.md` for current status.
+
 ## Executive Summary
 
 The INA228 repository is a serious engineering-grade driver, not a toy driver.

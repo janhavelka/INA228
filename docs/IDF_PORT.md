@@ -47,8 +47,8 @@ outstanding.
 - ESP-IDF compilation has not been verified in this shell because `idf.py` was
   unavailable; GitHub Actions now has a dedicated ESP-IDF build matrix.
 - Hardware validation remains outstanding.
-- Arduino example behavior has owner hardware-test coverage and remains the
-  reference behavior for parity checks in this pass.
+- Arduino and ESP-IDF examples provide matching bring-up CLI coverage. No
+  checked-in hardware validation logs are present for either framework.
 - `examples/01_basic_bringup_cli/main.cpp` is Arduino-only. The ESP-IDF example
   has a separate native command implementation with matching command coverage
   and validation.
@@ -210,6 +210,8 @@ declared by the example component.
   - `idf.py set-target esp32s3 build` from `examples/esp_idf/basic`
   - `idf.py set-target esp32s2 build` from `examples/esp_idf/basic`
 - Hardware validation:
+  - Use `docs/INA228_HARDWARE_VALIDATION_MATRIX.md` for dated, commit-linked
+    board/module/shunt/equipment/log evidence.
   - `begin()` verifies manufacturer ID `0x5449`, device ID `0x2281`, and
     MEMSTAT.
   - Read shunt voltage, bus voltage, temperature, current, power, energy, and
@@ -247,7 +249,7 @@ declared by the example component.
 7. Pending local ESP-IDF toolchain: build `examples/esp_idf/basic` for ESP32-S2.
 8. Done: run PlatformIO native and Arduino example builds as regression checks.
 9. Validate identity, MEMSTAT, measurements, calibration, and alert APIs on
-   hardware.
+   hardware and record results in `docs/INA228_HARDWARE_VALIDATION_MATRIX.md`.
 10. Inject I2C failures and verify health/recovery behavior.
 11. Add final `espidf` metadata/build matrix coverage and keep generated
     `Version.h` synchronized with `library.json`.

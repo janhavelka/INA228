@@ -49,13 +49,14 @@ Implemented after the ESP-IDF port branch was merged into `main`.
 - IDF builds were not run in this environment because `idf.py` was not on PATH.
   GitHub Actions has an ESP-IDF build matrix; do not claim local IDF build
   results unless `idf.py` output is captured.
-- Arduino example behavior has owner hardware-test coverage and remains the
-  reference behavior for this pass. ESP-IDF hardware validation has not been
-  performed in this environment.
+- Arduino and ESP-IDF examples provide matching bring-up CLI coverage, but no
+  checked-in dated hardware validation logs are present for either framework.
+  ESP-IDF hardware validation has not been performed in this environment.
 
 ## Remaining Hardware Work
 
 - Review the GitHub Actions ESP-IDF build results for ESP32-S3 and ESP32-S2,
   and rerun locally when `idf.py` is available.
 - Validate manufacturer ID `0x5449`, device ID `0x2281`, MEMSTAT, measurement
-  scaling, alert APIs, and health/recovery behavior on hardware.
+  scaling, alert APIs, and health/recovery behavior on hardware. Record results
+  in `docs/INA228_HARDWARE_VALIDATION_MATRIX.md` with logs.

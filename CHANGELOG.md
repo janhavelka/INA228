@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Hardware validation matrix template documenting required board, shunt,
+  equipment, framework, command, evidence-path, and pass/fail fields. All
+  initial hardware rows are marked `NOT RUN` until dated logs are checked in.
+- Expanded high-voltage safety, shunt dissipation, Kelvin layout, measurement
+  validity, and validation-honesty documentation.
+
 ### Changed
 - `begin()` and `probe()` now preserve timeout, data NACK, bus, and generic I2C
   transport errors instead of collapsing them to `DEVICE_NOT_FOUND`; definite
@@ -14,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Public API documentation now states the non-thread-safe/non-ISR-safe contract,
   callback re-entry restrictions, output-parameter commit rules, raw-register
   diagnostic risks, and calibration requirements for converted channels.
+- Public docs now describe the library as an industry-readiness hardened
+  pre-production candidate pending checked-in hardware validation.
 
 ### Removed
 - Deleted implicit copy and move operations for `INA228::INA228`; keep driver
@@ -46,8 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   metadata now target `v1.3.0`.
 
 ### Fixed
-- Corrected validation notes: Arduino example behavior has owner hardware-test
-  coverage, while ESP-IDF build and hardware validation remain pending.
+- Corrected validation notes: Arduino and ESP-IDF examples provide matching CLI
+  coverage, but no checked-in hardware validation artifacts are present.
 
 ## [1.2.0] - 2026-05-17
 
