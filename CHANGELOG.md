@@ -7,14 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Target version: `2.0.0`.
+
+This is a major-version hardening candidate. The branch deletes copy/move
+operations for `INA228::INA228`, adds public statuses/snapshots, and changes
+several measurement APIs to return explicit semantic errors instead of silently
+returning stale or invalid converted values.
+
 ### Added
 - Hardware validation matrix template documenting required board, shunt,
   equipment, framework, command, evidence-path, and pass/fail fields. All
   initial hardware rows are marked `NOT RUN` until dated logs are checked in.
 - Expanded high-voltage safety, shunt dissipation, Kelvin layout, measurement
   validity, and validation-honesty documentation.
+- `getDiagAlertSnapshot()` and `pollConversionReady(nowMs, ready)` public
+  helpers for explicit diagnostic status and caller-timestamped readiness
+  polling.
+- Explicit status coverage for accumulation invalidity, accumulation overflow,
+  dirty hardware/cache state, and INA228 math overflow.
+- Native fake-bus coverage increased to 114 tests, including datasheet-style
+  calibration/scaling vectors, destructive diagnostic reads, scripted
+  transaction failures, reset/recovery, output atomicity, and copy/move
+  prevention.
+- Pure ESP-IDF build guide and CI matrix documentation for reproducible
+  `idf.py` ESP32-S2/ESP32-S3 checks.
 
 ### Changed
+- `DIAG_ALRT` handling now separates cached alert configuration from
+  destructive live status reads, preserves evidence observed by internal
+  conversion polling, and documents status-clearing public reads.
+- Triggered conversion APIs now distinguish latest register contents from fresh
+  triggered measurements; driver-tracked triggered reads return
+  `MEASUREMENT_NOT_READY` until completion is observed.
+- ENERGY and CHARGE reads are guarded by calibration, mode, accumulation
+  readiness, accumulator reset, and overflow state instead of reporting
+  datasheet-invalid values as valid.
+- `MATHOF` now blocks scalar current/power and aggregate converted measurement
+  reads.
+- Calibration, `ADCRANGE`, `SHUNT_CAL`, current LSB, shunt resistance, maximum
+  expected current, and threshold scaling are treated as one coherent dirty
+  state contract.
+- Reset, `RSTACC`, and `recover()` behavior is bounded and replays cached state
+  with explicit dirty-state reporting after partial failures.
 - `begin()` and `probe()` now preserve timeout, data NACK, bus, and generic I2C
   transport errors instead of collapsing them to `DEVICE_NOT_FOUND`; definite
   address NACK still maps to device-not-found for presence checks.
@@ -23,10 +57,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   diagnostic risks, and calibration requirements for converted channels.
 - Public docs now describe the library as an industry-readiness hardened
   pre-production candidate pending checked-in hardware validation.
+- PlatformIO Arduino ESP32-S2/S3 builds are pinned to
+  `platformio/espressif32@7.0.1` for more reproducible local and CI package
+  resolution.
 
 ### Removed
 - Deleted implicit copy and move operations for `INA228::INA228`; keep driver
   instances stable and pass them by pointer or reference.
+
+### Validation
+- Local native tests pass with 114/114 tests on this hardening checkout.
+- Local PlatformIO Arduino builds pass for `esp32s2dev` and `esp32s3dev`.
+- GitHub Actions is configured for pure ESP-IDF ESP32-S2/S3 builds, but current
+  CI results must be reviewed before claiming ESP-IDF build verification.
+- Hardware validation remains `NOT RUN`; no field, high-voltage, long-soak, or
+  hardware-safety validation is claimed.
 
 ## [1.3.0] - 2026-05-20
 

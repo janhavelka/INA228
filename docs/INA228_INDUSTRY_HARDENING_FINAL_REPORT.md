@@ -6,6 +6,8 @@ Branch base: `27fb6978b8fecca40b267d2236fe87a4651843c0`
 Report starting commit: `f99e2273a3d729e873310aa683622c9eab01992d`
 ESP-IDF build-proof update: 2026-06-07; see
 `docs/INA228_ESPIDF_BUILD_PROOF_REPORT.md`.
+Release-prep update: 2026-06-07; version metadata now targets `2.0.0` as an
+unreleased hardening merge candidate.
 
 ## Executive Summary
 
@@ -108,6 +110,8 @@ hardware validation matrix rows remain `NOT RUN`.
   manual workflow trigger, and guard coverage for the ESP-IDF build contract.
   Local `idf.py` remained unavailable and remote CI status was not checked
   because `gh` is not installed in this shell.
+- Release-prep metadata now targets `2.0.0` and PlatformIO Arduino builds are
+  pinned to `platformio/espressif32@7.0.1` for reproducible package resolution.
 
 ## Commands Run
 
@@ -122,7 +126,7 @@ hardware validation matrix rows remain `NOT RUN`.
 | `python -m platformio test -e native` | PASS: 114/114 native tests |
 | `python -m platformio run -e esp32s3dev` | PASS |
 | `python -m platformio run -e esp32s2dev` | PASS |
-| `python -m platformio pkg pack` | PASS; wrote `INA228-1.3.0.tar.gz`, removed afterward |
+| `python -m platformio pkg pack` | PASS; wrote package tarball for the then-current version, removed afterward |
 | `idf.py --version` | FAIL: `idf.py` is not recognized as a command |
 
 ## Commands Not Run
@@ -142,12 +146,13 @@ No hardware validation was performed or claimed. All rows in
 
 - Current GitHub Actions results for this branch still need review.
 - Local pure ESP-IDF build proof is missing.
-- `library.json` and generated `Version.h` remain `1.3.0` while substantial
-  API/behavior changes are in `Unreleased`; a SemVer decision is required
-  before tagging.
+- `library.json`, generated `Version.h`, and `idf_component.yml` now target
+  `2.0.0`, but this remains an unreleased merge candidate until CI and release
+  checks are reviewed.
 - No real-device timing, alert-pin, reset/brownout, NACK/unplug, bidirectional
   current, high-voltage, or 24-72h soak logs are checked in.
-- PlatformIO `platform = espressif32` remains unpinned.
+- PlatformIO Arduino environments are pinned to `platformio/espressif32@7.0.1`;
+  future maintainers should update the pin deliberately with CI evidence.
 - Native tests are deterministic and broad, but they are not hardware-in-loop,
   sanitizer, or multi-OS coverage.
 
@@ -178,17 +183,15 @@ Avoid wording:
   "hardware validated".
 - "85 V safe" or wording implying system safety certification.
 - "ESP-IDF build verified" without actual local or CI `idf.py` logs.
-- "Ready for release/tag" before SemVer, CI, package, and validation decisions.
+- "Ready for release/tag" before CI, package, and validation decisions.
 
 ## Follow-up Work
 
 - Open or update a PR and confirm green CI, including ESP-IDF jobs.
 - Install ESP-IDF locally or capture CI logs for both pure ESP-IDF targets.
-- Decide SemVer and update `library.json`, generated `Version.h`, and
-  CHANGELOG for release.
+- Review current CI results for the `2.0.0` merge candidate before tagging.
 - Run the hardware validation matrix with dated logs, equipment details, board
   details, shunt metadata, pass/fail results, and commit hash.
-- Consider pinned PlatformIO platform versions and optional sanitizer/coverage
-  jobs.
+- Consider optional sanitizer/coverage jobs.
 - Consider a production ESP-IDF shared-bus adapter example if that becomes a
   supported deliverable.

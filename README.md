@@ -2,7 +2,8 @@
 
 Framework-neutral INA228 85-V, 20-bit I2C power/energy/charge monitor driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use). This is an industry-readiness hardened, pre-production candidate pending checked-in hardware validation.
 
-Library version: `v1.3.0`
+Library version: `v2.0.0` hardening merge candidate. This version is not
+tagged or release-ready until current CI and release checks are reviewed.
 
 ## Features
 
@@ -22,6 +23,15 @@ Add to `platformio.ini`:
 ```ini
 lib_deps = 
   https://github.com/janhavelka/INA228.git#v1.3.0
+```
+
+`v1.3.0` is the latest tagged public release referenced by this README before
+the hardening branch is tagged. To test the hardening candidate before a
+`v2.0.0` tag exists, pin the branch explicitly:
+
+```ini
+lib_deps =
+  https://github.com/janhavelka/INA228.git#hardening/ina228-industry-readiness
 ```
 
 ### Manual
@@ -45,19 +55,22 @@ Reproducible local and CI build commands are documented in
 `tools/check_idf_example_contract.py` guard is a static contract check; it is
 not a substitute for a real `idf.py` build log.
 
-## Release 1.3.0 Highlights
+## Version 2.0.0 Hardening Candidate
 
-- Adds the repository root ESP-IDF component metadata and root `CMakeLists.txt`.
-- Adds the native ESP-IDF `examples/esp_idf/basic` CLI using `driver/i2c_master.h`, `app_main`, `esp_timer`, FreeRTOS delays, and fixed command buffers.
-- Preserves Arduino and ESP-IDF user-visible CLI parity for scan/probe, measurements, calibration, alert limits, raw register diagnostics, stress, and self-test workflows.
-- Keeps the driver core framework-neutral; hardware access remains callback-injected and timing comes from application-provided `Config::nowMs`.
-- Arduino and ESP-IDF examples provide matching bring-up CLI coverage. Hardware
-  validation artifacts are not included in this repository; board-level
-  validation must be reported separately with date, commit, hardware, equipment,
-  commands, logs, and pass/fail notes.
-- ESP-IDF support is implemented, statically guarded, and configured for CI
-  `idf.py` builds. Do not claim local ESP-IDF or hardware validation unless
-  the exact build logs and hardware logs are captured.
+- Uses a major SemVer target because the hardening branch deletes copy/move
+  operations and changes several public failure semantics to fail closed.
+- Hardens destructive `DIAG_ALRT` handling, alert configuration side effects,
+  triggered freshness, ENERGY/CHARGE validity, `MATHOF` handling, calibration,
+  ADCRANGE, reset/RSTACC, recovery, dirty-state, and status precision behavior.
+- Documents that current, power, energy, and charge require valid calibration,
+  clean hardware/cache state, and datasheet-supported accumulation conditions.
+- Includes 114 native fake-bus tests and local PlatformIO Arduino ESP32-S2/S3
+  build coverage on the hardening branch.
+- Configures GitHub Actions pure ESP-IDF `idf.py` builds for ESP32-S2 and
+  ESP32-S3, but current CI logs must be reviewed before claiming ESP-IDF build
+  verification.
+- Hardware validation remains `NOT RUN`; do not describe this branch as
+  production-ready, field-proven, or hardware validated.
 
 ## High-Voltage Safety
 
