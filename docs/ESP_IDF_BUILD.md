@@ -54,7 +54,14 @@ Do not commit generated ESP-IDF build artifacts.
 ## CI Build
 
 GitHub Actions job `esp-idf-basic` builds the same example for both targets
-without hardware:
+without hardware. The workflow sets `path: examples/esp_idf/basic` and runs
+this explicit action command inside that project directory:
+
+```bash
+idf.py set-target ${{ matrix.target }} build
+```
+
+The equivalent repository-root commands are:
 
 ```bash
 idf.py -C examples/esp_idf/basic set-target esp32s3 build
@@ -62,9 +69,9 @@ idf.py -C examples/esp_idf/basic set-target esp32s2 build
 ```
 
 The workflow uses `espressif/esp-idf-ci-action@v1`, ESP-IDF v6.0.1, target
-matrix entries `esp32s3` and `esp32s2`, and `path: examples/esp_idf/basic`.
-The workflow can run on pull requests to `main`, pushes to `main`, or manual
-`workflow_dispatch`.
+matrix entries `esp32s3` and `esp32s2`, `path: examples/esp_idf/basic`, and
+`command: idf.py set-target ${{ matrix.target }} build`. The workflow can run
+on pull requests to `main`, pushes to `main`, or manual `workflow_dispatch`.
 
 ## Claim Policy
 

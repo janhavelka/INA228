@@ -15,10 +15,10 @@ Official ESP-IDF references:
 
 ## Current Framework/Library State
 
-- `library.json` version is `1.3.0`; the package declares `arduino` and
+- `library.json` version is `2.0.0`; the package declares `arduino` and
   `espidf` framework support on `espressif32`.
-- `platformio.ini` builds Arduino examples for ESP32-S3 and ESP32-S2, includes
-  `lib_deps = Wire`, and has a native Unity test environment.
+- `platformio.ini` pins Arduino ESP32 builds to `platformio/espressif32@7.0.1`,
+  includes `lib_deps = Wire`, and has a native Unity test environment.
 - Public API is under `include/INA228/` and is already callback-based at the
   I2C boundary.
 - `include/INA228/Config.h` exposes `I2cWriteFn`, `I2cWriteReadFn`, and
@@ -39,9 +39,10 @@ Official ESP-IDF references:
 
 Readiness verdict: the driver core is framework-neutral and the ESP-IDF example
 uses the new I2C master driver plus the full bring-up CLI. CI is configured to
-build the example with ESP-IDF 6.0.1 for ESP32-S3 and ESP32-S2. Local readiness
-still depends on an installed `idf.py`, current CI logs must be reviewed before
-claiming remote proof, and hardware validation remains outstanding.
+run `idf.py set-target <target> build` with ESP-IDF 6.0.1 for ESP32-S3 and
+ESP32-S2. Local readiness still depends on an installed `idf.py`, current CI
+logs must be reviewed before claiming remote proof, and hardware validation
+remains outstanding.
 
 ## Portability Blockers
 

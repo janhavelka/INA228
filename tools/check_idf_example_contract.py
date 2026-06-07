@@ -100,6 +100,7 @@ CI_REQUIRED_TOKENS = [
     "esp_idf_version: v6.0.1",
     "target: ${{ matrix.target }}",
     "path: examples/esp_idf/basic",
+    "command: idf.py set-target ${{ matrix.target }} build",
     "workflow_dispatch:",
     "Build ESP-IDF basic ${{ matrix.target }} with idf.py",
     "esp32s3",

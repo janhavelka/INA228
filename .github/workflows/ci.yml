@@ -91,6 +91,7 @@ jobs:
           esp_idf_version: v6.0.1
           target: ${{ matrix.target }}
           path: examples/esp_idf/basic
+          command: idf.py set-target ${{ matrix.target }} build
 
   validate-library:
     runs-on: ubuntu-latest
