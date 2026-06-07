@@ -24,6 +24,7 @@ REQUIRED_FILES = [
     "examples/esp_idf/basic/main/main.cpp",
     "examples/esp_idf/basic/main/Ina228IdfI2cTransport.h",
     "examples/esp_idf/basic/main/Ina228IdfI2cTransport.cpp",
+    "docs/ESP_IDF_BUILD.md",
 ]
 MANDATORY_COMMANDS = [
     "help",
@@ -99,8 +100,19 @@ CI_REQUIRED_TOKENS = [
     "esp_idf_version: v6.0.1",
     "target: ${{ matrix.target }}",
     "path: examples/esp_idf/basic",
+    "workflow_dispatch:",
+    "Build ESP-IDF basic ${{ matrix.target }} with idf.py",
     "esp32s3",
     "esp32s2",
+]
+BUILD_DOC_REQUIRED_TOKENS = [
+    "ESP-IDF v6.0.1",
+    "idf.py --version",
+    "idf.py -C examples/esp_idf/basic set-target esp32s3 build",
+    "idf.py -C examples/esp_idf/basic set-target esp32s2 build",
+    "examples/esp_idf/basic/build/",
+    "static contract check",
+    "not hardware validation",
 ]
 CLI_WARNING_TOKENS = [
     "Safety:",
@@ -213,6 +225,12 @@ def main() -> int:
     manifest = (ROOT / "idf_component.yml").read_text(encoding="utf-8", errors="replace")
     for token in ("esp32s2", "esp32s3", "idf:"):
         require_token(manifest, token, "idf_component.yml")
+
+    build_doc = (ROOT / "docs" / "ESP_IDF_BUILD.md").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    for token in BUILD_DOC_REQUIRED_TOKENS:
+        require_token(build_doc, token, "ESP-IDF build guide")
 
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
         encoding="utf-8", errors="replace"

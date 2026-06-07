@@ -34,7 +34,8 @@ Implemented after the ESP-IDF port branch was merged into `main`.
 - Added `tools/check_idf_example_contract.py` to guard native IDF dependencies,
   ban Arduino compatibility facades, and verify Arduino/IDF CLI command parity.
 - CI is configured to build `examples/esp_idf/basic` with ESP-IDF 6.0.1 for
-  ESP32-S3 and ESP32-S2.
+  ESP32-S3 and ESP32-S2. See `docs/ESP_IDF_BUILD.md` for reproducible local and
+  CI commands.
 
 ## Validation
 

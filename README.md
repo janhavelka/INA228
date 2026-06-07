@@ -40,6 +40,11 @@ single-owner diagnostic example glue; production shared-bus or multitask
 systems should provide an external bus manager, locking, stable device handles,
 and application-specific recovery policy.
 
+Reproducible local and CI build commands are documented in
+[`docs/ESP_IDF_BUILD.md`](docs/ESP_IDF_BUILD.md). The
+`tools/check_idf_example_contract.py` guard is a static contract check; it is
+not a substitute for a real `idf.py` build log.
+
 ## Release 1.3.0 Highlights
 
 - Adds the repository root ESP-IDF component metadata and root `CMakeLists.txt`.

@@ -4,6 +4,8 @@ Date: 2026-06-05
 Branch: `hardening/ina228-industry-readiness`
 Branch base: `27fb6978b8fecca40b267d2236fe87a4651843c0`
 Report starting commit: `f99e2273a3d729e873310aa683622c9eab01992d`
+ESP-IDF build-proof update: 2026-06-07; see
+`docs/INA228_ESPIDF_BUILD_PROOF_REPORT.md`.
 
 ## Executive Summary
 
@@ -16,8 +18,8 @@ precision, and API contracts.
 
 The branch is not release-ready. Local native tests and PlatformIO Arduino
 ESP32-S2/S3 builds pass, but local pure ESP-IDF builds were not run because
-`idf.py` is unavailable, current remote CI results were not verified here, and
-all hardware validation matrix rows remain `NOT RUN`.
+`idf.py` is unavailable, current branch CI results still need review, and all
+hardware validation matrix rows remain `NOT RUN`.
 
 ## What Changed
 
@@ -102,6 +104,10 @@ all hardware validation matrix rows remain `NOT RUN`.
   run results were not verified in this shell.
 - Local pure ESP-IDF builds were not run because `idf.py` is not installed or
   not on PATH.
+- The 2026-06-07 ESP-IDF build-proof pass added a reproducible build guide,
+  manual workflow trigger, and guard coverage for the ESP-IDF build contract.
+  Local `idf.py` remained unavailable and remote CI status was not checked
+  because `gh` is not installed in this shell.
 
 ## Commands Run
 

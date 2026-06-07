@@ -7,6 +7,7 @@ implementation on `main`. The driver core is framework-neutral, and the native E
 example exposes the same user-visible CLI as the Arduino example. See
 `docs/IDF_PORT_IMPLEMENTATION.md` for the implemented file-level summary and
 validation notes.
+For exact local and CI build commands, see `docs/ESP_IDF_BUILD.md`.
 
 Official ESP-IDF references:
 - I2C master driver: https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/peripherals/i2c.html
@@ -39,8 +40,8 @@ Official ESP-IDF references:
 Readiness verdict: the driver core is framework-neutral and the ESP-IDF example
 uses the new I2C master driver plus the full bring-up CLI. CI is configured to
 build the example with ESP-IDF 6.0.1 for ESP32-S3 and ESP32-S2. Local readiness
-still depends on an installed `idf.py`, and hardware validation remains
-outstanding.
+still depends on an installed `idf.py`, current CI logs must be reviewed before
+claiming remote proof, and hardware validation remains outstanding.
 
 ## Portability Blockers
 
