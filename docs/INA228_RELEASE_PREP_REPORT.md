@@ -138,3 +138,42 @@ Not ready to release or tag as field-ready or industry-grade.
 tag should wait for current CI review and release-owner approval. Any
 industry-grade or hardware-validated wording requires dated, commit-linked
 hardware validation logs.
+
+## Revalidation Update
+
+Date: 2026-06-07
+Starting commit: `f18e70648df3866971227a6a16f0a74124772dfa`
+
+This follow-up pass found no additional non-hardware release blockers and made
+no code or metadata changes. The existing `2.0.0` version decision,
+`platformio/espressif32@7.0.1` pin, changelog summary, and conservative release
+wording remain appropriate.
+
+Additional commands run:
+
+| Command | Result |
+| --- | --- |
+| `git status --short` | PASS at startup: clean worktree. |
+| `git branch --show-current` | `hardening/ina228-industry-readiness` |
+| `git log --oneline -5` | HEAD `f18e706 chore: prepare INA228 hardening branch for merge`. |
+| `gh --version` | FAIL: `gh` is not recognized as a command. |
+| GitHub Actions API for branch | PASS request; `total_count=0`, no current branch CI run found. |
+| `git ls-remote origin refs/heads/hardening/ina228-industry-readiness refs/heads/main` | PASS; origin hardening branch at `f18e70648df3866971227a6a16f0a74124772dfa`, main at `27fb6978b8fecca40b267d2236fe87a4651843c0`. |
+| `git diff --check` | PASS. |
+| `python tools/check_core_timing_guard.py` | PASS. |
+| `python tools/check_cli_contract.py` | PASS. |
+| `python tools/check_idf_example_contract.py` | PASS. |
+| `python scripts/generate_version.py check` | PASS; `Version.h` up to date. |
+| `python -m platformio test -e native` | PASS: 114/114 tests. PlatformIO warned that obsolete Core `6.1.18` is active. |
+| `python -m platformio run -e esp32s3dev` | PASS with `platformio/espressif32@7.0.1`; existing `CliStyle.h` C++17 inline-variable warning emitted. |
+| `python -m platformio run -e esp32s2dev` | PASS with `platformio/espressif32@7.0.1`; existing `CliStyle.h` C++17 inline-variable warning emitted. |
+| `python -m platformio pkg pack` | PASS; wrote `INA228-2.0.0.tar.gz`, removed afterward. |
+| `idf.py --version` | FAIL: `idf.py` is not recognized as a command. |
+
+Commands still not run:
+
+| Command | Reason |
+| --- | --- |
+| `idf.py -C examples/esp_idf/basic set-target esp32s3 build` | Not run because `idf.py --version` failed locally. |
+| `idf.py -C examples/esp_idf/basic set-target esp32s2 build` | Not run because `idf.py --version` failed locally. |
+| Hardware validation procedures | Not run; no approved hardware setup or log-capture procedure was available. |
