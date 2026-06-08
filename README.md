@@ -356,13 +356,27 @@ Raw register access is intended for diagnostics and bring-up. Reads of status-se
 
 ## Validation
 
-These are validation targets, not hardware-validation claims. GitHub Actions is
-configured to run the PlatformIO and ESP-IDF build/test commands; local results
-depend on the installed toolchains and must be reported with exact failures.
+These are validation targets, not hardware-validation claims. Evidence is
+tracked by level so release wording cannot overstate what was actually run.
+
+| Evidence level | Current status |
+| --- | --- |
+| Implemented | Core hardening, Arduino example, pure ESP-IDF example, CI configuration, and docs are present on this branch. |
+| Tested by native fake-bus | Native Unity tests cover device semantics; latest reported run is 114/114. |
+| Locally built | PlatformIO native and Arduino ESP32-S2/S3 builds have been run locally in the reports. |
+| CI configured | GitHub Actions includes native tests, Arduino S2/S3 builds, package checks, guards, and ESP-IDF S2/S3 builds. |
+| CI verified | Not claimed here; current CI logs must be reviewed before saying CI is green. |
+| ESP-IDF build verified | Not claimed here unless local `idf.py` output or reviewed CI logs are captured. |
+| Hardware validated | `NOT RUN`; no hardware validation logs are checked in. |
+
 Hardware validation is tracked separately in
 [`docs/INA228_HARDWARE_VALIDATION_MATRIX.md`](docs/INA228_HARDWARE_VALIDATION_MATRIX.md).
 All rows in that matrix remain `NOT RUN` until dated logs, equipment, board,
-module, shunt, rail/load, commands, and pass/fail notes are checked in.
+module, shunt, rail/load, commands, and pass/fail notes are checked in. Use
+[`tools/INA228_HIL_COMMAND_SEQUENCE.md`](tools/INA228_HIL_COMMAND_SEQUENCE.md)
+for repeatable CLI transcripts and
+[`docs/INA228_RELEASE_CHECKLIST.md`](docs/INA228_RELEASE_CHECKLIST.md) before
+tagging.
 
 ```bash
 python tools/check_cli_contract.py

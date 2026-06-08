@@ -1,13 +1,13 @@
 # INA228 Hardware Validation Matrix
 
-Status: DRAFT - all required hardware rows are `NOT RUN`.
-Last updated: 2026-06-05
-Reference commit at template creation: `1da6bd0a91d85c846703dd7275aea74fd8d71426`
+Status: DRAFT - all hardware rows are `NOT RUN`.
+Last updated: 2026-06-08
+Reference commit at template update: `dd553f2a30c6c9be55b03690ceaa54a3d1b1134b`
 Branch: `hardening/ina228-industry-readiness`
 
-This file records required hardware validation evidence. It is not a hardware
-validation claim until rows are updated from `NOT RUN` with dated logs,
-equipment, board/module details, operator, and pass/fail notes.
+This document is a validation plan and evidence index. It is not a hardware
+validation claim. A row may move from `NOT RUN` only when dated logs and
+equipment/setup details are checked in under the row's log path.
 
 Allowed row status values: `NOT RUN`, `PASS`, `FAIL`, `BLOCKED`, `N/A`.
 
@@ -20,25 +20,27 @@ docs/validation/hardware/YYYY-MM-DD/<short-commit>-<framework>-<target>-addr-0xN
 Example path:
 
 ```text
-docs/validation/hardware/2026-06-05/1da6bd0-arduino-esp32s3dev-addr-0x40/
+docs/validation/hardware/2026-06-08/dd553f2-arduino-esp32s3dev-addr-0x40/
 ```
 
 ## Safety Gate
 
 Do not run hardware validation on unsafe rails. INA228 supports high
-common-mode/bus voltage, but this library and the example board do not make a
+common-mode/bus voltage, but this library and its examples do not make a
 system safe. Before applying power, document isolation, creepage/clearance,
-fusing/current limiting, shunt dissipation, transient protection, grounding, USB
-ground relationship, enclosure/access control, and qualified operator approval.
+fusing/current limiting, shunt dissipation, transient protection, grounding,
+USB ground relationship, enclosure/access control, and qualified operator
+approval.
 
 Never connect non-isolated, mains-derived, or high-energy rails to a
 development board, debugger, or USB-connected PC without proper isolation and
-protection.
+protection. ALERT output and measurement readings are monitoring aids, not
+certified safety functions.
 
-## Required Metadata For Every PASS/FAIL Row
+## Required Evidence For Every PASS/FAIL Row
 
-- Date and operator.
 - Exact git commit under test.
+- Date/time and operator.
 - Framework/target and build command.
 - ESP32 board and revision.
 - INA228 module/PCB, INA228 package/variant if known, and address straps.
@@ -84,34 +86,45 @@ Use `esp32s2` for pure ESP-IDF ESP32-S2.
 
 ## Matrix
 
-| ID | Status | Date | Commit | Framework / Target | Board | INA228 Module | Address / Straps | Shunt | Supply / Load | Bus Voltage Range | Equipment | Procedure | Evidence Path | Notes |
+| Test ID | Purpose | Required setup | Command/procedure | Expected result | Actual result | Status | Commit | Date/time | Board | INA228 module | Shunt value/tolerance | Equipment | Log path | Operator notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| HW-ADDR-001 | NOT RUN | TBD | TBD | Arduino S2/S3 and IDF S2/S3 | TBD | TBD | 0x40-0x4F / A0-A1 straps TBD | TBD | Safe current-limited I2C setup | 0 V or safe low voltage | Logic analyzer optional | Run `scan`, `scanina`, then for each available strap/address run `addr 0xNN`, `init 0xNN`, `probe`. Verify empty slots NACK cleanly and healthy INA228 devices report valid ID/MEMSTAT. | `$RUN/address-scan-0x40-0x4f.log` | Required for all address strap combinations available to the fixture. |
-| HW-ID-001 | NOT RUN | TBD | TBD | Arduino S2/S3 and IDF S2/S3 | TBD | TBD | Active address TBD | TBD | Powered INA228 | Safe low voltage | Serial log | Run `mfgid`, `devid`, `probe`; expect `MANUFACTURER_ID=0x5449`, `DEVICE_ID=0x2281`. | `$RUN/identity.log` | Include raw status on mismatch. |
-| HW-MEMSTAT-001 | NOT RUN | TBD | TBD | Arduino S2/S3 and IDF S2/S3 | TBD | TBD | Active address TBD | TBD | Powered INA228 | Safe low voltage | Serial log | Run `scanina`, `diag`, `selftest`; expect MEMSTAT healthy. Note that DIAG_ALRT reads are destructive/status-clearing. | `$RUN/memstat.log` | Preserve first diagnostic snapshot in log. |
-| HW-VBUS-001 | NOT RUN | TBD | TBD | Arduino and IDF | TBD | TBD | Active address TBD | TBD | Calibrated voltage source / no unsafe rail | 0 V, mid-range, high-range below fixture safety limit | Calibrated DMM/source | Apply documented safe known source points. Run `vbus`, `read`, `raw`; compare against DMM/source. | `$RUN/vbus-known-source.log` | Do not use mains-derived sources without isolation. |
-| HW-VSHUNT-001 | NOT RUN | TBD | TBD | Arduino and IDF | TBD | TBD | Active address TBD | Known precision shunt or source | Known differential shunt voltage | Common-mode within fixture limit | DMM/source | Apply known differential shunt voltage. Run `vshunt`, `raw`; compare against DMM/source. | `$RUN/vshunt-known-source.log` | Verify polarity. |
-| HW-CURRENT-001 | NOT RUN | TBD | TBD | Arduino and IDF | TBD | TBD | Active address TBD | Value/tolerance/power/TCR TBD | Known load/current-limited supply | Safe range TBD | DMM/e-load/source | Run `cal <shunt_ohm> <max_current_a>`, `timing`, `current`, `power`, `read`; compare with shunt value and load current. | `$RUN/current-power-known-load.log` | Record shunt dissipation and temperature. |
-| HW-BIDIR-001 | NOT RUN | TBD | TBD | Arduino and IDF | TBD | TBD | Active address TBD | Bidirectional-capable fixture TBD | Reversible current path | Safe range TBD | DMM/e-load/source | Reverse current path or use bidirectional supply/load. Run `vshunt`, `current`, `charge`, `read`; verify sign handling. | `$RUN/bidirectional-current.log` | Mark `N/A` only if fixture cannot safely reverse current. |
-| HW-ADCRANGE-001 | NOT RUN | TBD | TBD | Arduino and IDF | TBD | TBD | Active address TBD | Value/tolerance/power/TCR TBD | Known load/current-limited supply | Safe range TBD | DMM/e-load/source | Run `adcrange 0`, `cal ...`, measurements; repeat `adcrange 1`, `cal ...`; verify scaling and no dirty hardware state. | `$RUN/adcrange-0-1.log` | Reapply thresholds after scale changes. |
-| HW-TIMING-001 | NOT RUN | TBD | TBD | Arduino and IDF | TBD | TBD | Active address TBD | TBD | Stable source/load | Safe range TBD | Timestamped serial log, scope or logic analyzer | For indices `0..7`, run `convtime vbus N`, `convtime vsh N`, `convtime temp N`, `averaging N`, `timing`, `trigger`, `ready`; compare CNVRF timing. | `$RUN/conversion-timing-averaging.log` | Include conversion delay if used. |
-| HW-MODE-CONT-001 | NOT RUN | TBD | TBD | Arduino and IDF | TBD | TBD | Active address TBD | Calibrated shunt | Stable source/load | Safe range TBD | Serial log | Run `mode 15`, `read`, repeated `ready`, `read`, `raw`; verify latest-register behavior and valid accumulation after CNVRF. | `$RUN/continuous-mode.log` | Record interval and health counters. |
-| HW-MODE-TRIG-001 | NOT RUN | TBD | TBD | Arduino and IDF | TBD | TBD | Active address TBD | Calibrated shunt | Stable source/load | Safe range TBD | Timestamped serial log | Run `trigger` or `trigger 7`, poll `ready`, then `read`; verify not-ready before CNVRF and fresh data after completion. | `$RUN/triggered-mode.log` | Include behavior when `Config::nowMs` is used. |
-| HW-ACCUM-001 | NOT RUN | TBD | TBD | Arduino and IDF | TBD | TBD | Active address TBD | Calibrated shunt | Known load over measured time | Safe range TBD | DMM/e-load/source/timer | In continuous mode run `rstacc`, wait for CNVRF, then `energy`, `charge`, `read` over known time/load; verify joules/coulombs and overflow flags. | `$RUN/energy-charge.log` | ENERGY/CHARGE invalid in triggered/shutdown modes. |
-| HW-ALERT-001 | NOT RUN | TBD | TBD | Arduino and IDF | TBD | TBD | Active address TBD | Calibrated shunt | Source/load capable of crossing limits safely | Safe range TBD | DMM/source/scope on ALERT | Run `limits`, `alatch`, `cnvralert`, `alslow`, `apol`, `sovl`, `suvl`, `bovl`, `buvl`, `tmplim`, `pwrlim`; verify `diag`/`diagraw` and ALERT pin. | `$RUN/alerts.log` | ALERT is not a safety interlock. |
-| HW-NACK-001 | NOT RUN | TBD | TBD | Arduino and IDF | TBD | TBD | Active address TBD | TBD | Safe switched I2C fixture | Safe low voltage | Serial log, optional logic analyzer | Use a safe switched fixture to disconnect INA228/I2C during `stress 100` or `stress_mix 100`; run `drv`, `probe`, `recover` before/after reconnect. | `$RUN/nack-unplug-replug.log` | Verify precise NACK/timeout/bus status. |
-| HW-RESET-001 | NOT RUN | TBD | TBD | Arduino and IDF | TBD | TBD | Active address TBD | Calibrated shunt | Safe power-cycle/brownout fixture | Safe range TBD | Serial log, power supply log | Brownout/power-cycle INA228 with MCU alive, then MCU with INA228 alive; run `drv`, `probe`, `recover`, `reset`, `read`; verify resync. | `$RUN/brownout-reset.log` | Record dirty state and recovery status. |
-| HW-SOAK-001 | NOT RUN | TBD | TBD | Arduino and IDF | TBD | TBD | Active address TBD | Calibrated shunt | Stable source/load | Safe range TBD | Serial logger, source/load logs | Run enough scripted cycles for 24-72h, for example `stress 1000000`; record wall-clock start/end, health counters, min/avg/max readings, and errors. | `$RUN/soak-24-72h.log` | Stop on unsafe temperature or fault. |
-| HW-FW-ARD-S3-001 | NOT RUN | TBD | TBD | Arduino / `esp32s3dev` | ESP32-S3 board TBD | TBD | Active address TBD | TBD | Safe source/load | Safe range TBD | PlatformIO build/upload/monitor logs | Build/upload/monitor `esp32s3dev`; run `version`, `scanina`, `selftest`, `read`, `stress_mix 100`. | `$RUN/arduino-esp32s3.log` | Framework smoke row. |
-| HW-FW-ARD-S2-001 | NOT RUN | TBD | TBD | Arduino / `esp32s2dev` | ESP32-S2 board TBD | TBD | Active address TBD | TBD | Safe source/load | Safe range TBD | PlatformIO build/upload/monitor logs | Build/upload/monitor `esp32s2dev`; run `version`, `scanina`, `selftest`, `read`, `stress_mix 100`. | `$RUN/arduino-esp32s2.log` | Framework smoke row. |
-| HW-FW-IDF-S3-001 | NOT RUN | TBD | TBD | Pure ESP-IDF / `esp32s3` | ESP32-S3 board TBD | TBD | Active address TBD | TBD | Safe source/load | Safe range TBD | `idf.py` build/flash/monitor logs | Build/flash/monitor `idf.py -C examples/esp_idf/basic set-target esp32s3 build`; run `version`, `scanina`, `selftest`, `read`, `stress_mix 100`. | `$RUN/idf-esp32s3.log` | Requires local or CI IDF logs plus hardware transcript. |
-| HW-FW-IDF-S2-001 | NOT RUN | TBD | TBD | Pure ESP-IDF / `esp32s2` | ESP32-S2 board TBD | TBD | Active address TBD | TBD | Safe source/load | Safe range TBD | `idf.py` build/flash/monitor logs | Build/flash/monitor `idf.py -C examples/esp_idf/basic set-target esp32s2 build`; run `version`, `scanina`, `selftest`, `read`, `stress_mix 100`. | `$RUN/idf-esp32s2.log` | Requires local or CI IDF logs plus hardware transcript. |
+| HW-ADDR-001 | Address scan 0x40-0x4F. | Safe powered I2C bus; address straps available or fixture documents unavailable straps. | Run `scan`, `scanina`; for each available address run `addr 0xNN`, `init 0xNN`, `probe`. | Empty addresses show precise NACK/no device; populated INA228 addresses identify cleanly. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/address-scan-0x40-0x4f.log` | Record A0/A1 strap state for each address. |
+| HW-ID-MFG-001 | MANUFACTURER_ID identity. | Powered INA228 at active address. | Run `mfgid` and capture raw register value. | `MANUFACTURER_ID=0x5449`; errors preserve transport status. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/manufacturer-id.log` | Include first failed raw value on mismatch. |
+| HW-ID-DEV-001 | DEVICE_ID identity. | Powered INA228 at active address. | Run `devid` and capture raw register value. | `DEVICE_ID=0x2281`; errors preserve transport status. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/device-id.log` | Include revision bits if printed. |
+| HW-MEMSTAT-001 | MEMSTAT health from DIAG_ALRT. | Powered INA228 at active address. | Run `diag`, `selftest`; preserve the first diagnostic read. | MEMSTAT healthy; destructive read behavior is visible in transcript. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/memstat.log` | Note that `diag`/`diagraw` can clear status evidence. |
+| HW-VBUS-001 | Bus voltage known-source accuracy. | Calibrated voltage source within fixture safety limit; DMM reference. | Apply documented safe voltage points; run `vbus`, `read`, `raw`. | Reported VBUS agrees with source/DMM within stated tolerance. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/vbus-known-source.log` | Do not use unsafe or non-isolated high-energy rails. |
+| HW-VSHUNT-001 | Shunt voltage known-source accuracy and polarity. | Known differential shunt source or precision shunt/load; DMM reference. | Apply positive and, if safe, negative shunt voltage; run `vshunt`, `raw`. | Reported VSHUNT magnitude and sign match reference. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/vshunt-known-source.log` | Record common-mode voltage and polarity wiring. |
+| HW-CURRENT-CAL-001 | Current calibration with known shunt/load. | Precision shunt with known tolerance/TCR/power rating; current-limited source/load; DMM or e-load. | Run `cal <shunt_ohm> <max_current_a>`, `cfg`, `current`, `power`, `read`. | Current and power agree with shunt/load references; calibration values are logged. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/current-calibration.log` | Record shunt temperature rise and dissipation. |
+| HW-ADCRANGE0-001 | ADCRANGE 0 scaling. | Same calibrated fixture as current test; shunt voltage kept inside +/-163.84 mV range. | Run `adcrange 0`, `cal <shunt_ohm> <max_current_a>`, `cfg`, `vshunt`, `current`, `read`. | Scaling and current LSB are coherent; no hardware-dirty state remains. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/adcrange-0.log` | Reapply thresholds after range changes. |
+| HW-ADCRANGE1-001 | ADCRANGE 1 scaling. | Same calibrated fixture; shunt voltage kept inside +/-40.96 mV range. | Run `adcrange 1`, `cal <shunt_ohm> <max_current_a>`, `cfg`, `vshunt`, `current`, `read`. | Scaling and current LSB are coherent; no hardware-dirty state remains. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/adcrange-1.log` | Verify expected finer shunt-voltage resolution. |
+| HW-BIDIR-001 | Negative/bidirectional current handling if fixture supports it. | Bidirectional supply/load or reversible current fixture with safe isolation. | Reverse current path safely; run `vshunt`, `current`, `charge`, `read`, `raw`. | Signed VSHUNT/CURRENT/CHARGE behavior matches current direction. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/bidirectional-current.log` | Mark `N/A` only with documented fixture limitation. |
+| HW-TIMING-MIN-001 | Minimum conversion-time and averaging timing. | Stable source/load; timestamped log and optional logic analyzer/scope. | Run `convtime vbus 0`, `convtime vsh 0`, `convtime temp 0`, `averaging 0`, `timing`, `trigger`, repeated `ready`. | CNVRF timing is bounded by documented estimate/tolerance. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/timing-min.log` | Include conversion delay if configured. |
+| HW-TIMING-DEFAULT-001 | Default conversion-time and averaging timing. | Stable source/load; timestamped log. | Run `reset` or re-init default config, then `timing`, `trigger`, repeated `ready`. | Default timing matches driver estimate and device behavior. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/timing-default.log` | Preserve config snapshot. |
+| HW-TIMING-MAX-001 | Maximum conversion-time and averaging timing. | Stable source/load; long timeout monitor. | Run `convtime vbus 7`, `convtime vsh 7`, `convtime temp 7`, `averaging 7`, `timing`, `trigger`, repeated `ready`. | Long conversion is bounded; no stale triggered read is reported as fresh. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/timing-max.log` | Ensure monitor timeout exceeds expected conversion time. |
+| HW-MODE-CONT-001 | Continuous mode latest-register behavior. | Calibrated fixture with stable source/load. | Run `mode 15`, `ready`, `read`, `raw`, wait, repeat `ready`, `read`. | Continuous reads return latest registers; accumulation becomes valid after CNVRF. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/continuous-mode.log` | Record interval between reads. |
+| HW-MODE-TRIG-001 | Triggered mode freshness and not-ready behavior. | Calibrated fixture with stable source/load. | Run `trigger 7`, immediately run `ready` and `read`, then poll `ready` until complete and run `read`. | Before completion, fresh read is not-ready; after CNVRF, fresh data is reported. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/triggered-mode.log` | Preserve timestamps for each poll. |
+| HW-ACCUM-CONT-001 | ENERGY/CHARGE accumulation in continuous mode. | Calibrated shunt/load and independent timer/reference. | Run `mode 15`, `rstacc`, wait for CNVRF, then run `energy`, `charge`, `read` over a known load interval. | ENERGY/CHARGE agree with expected joules/coulombs within tolerance and no overflow is hidden. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/energy-charge-continuous.log` | Record load stability and elapsed time. |
+| HW-ACCUM-INVALID-001 | ENERGY/CHARGE invalidity in triggered/shutdown modes. | Calibrated fixture; safe stable source/load. | Run `trigger 7`, then `energy`, `charge`; run `mode 0`, then `energy`, `charge`. | ENERGY/CHARGE return invalid/not-ready status rather than valid values. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/energy-charge-invalid.log` | `mode 0` is shutdown. |
+| HW-ALERT-001 | Thresholds and ALERT pin behavior. | Source/load that can cross limits safely; scope/logic analyzer on ALERT. | Configure `alatch`, `cnvralert`, `alslow`, `apol`, `sovl`, `suvl`, `bovl`, `buvl`, `tmplim`, `pwrlim`; run `limits`, `diag`, `diagraw`. | ALERT polarity/latch and threshold flags match configured crossings. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/alerts.log` | ALERT is not a safety interlock. |
+| HW-DIAG-001 | DIAG_ALRT destructive/status-sensitive behavior. | Fixture that can create or preserve diagnostic flags; serial transcript. | Capture `diag`, `diagraw`, repeated `diag`, and relevant triggering action such as `ready` or alert threshold crossing. | First read preserves/logs evidence; subsequent read shows documented clear-on-read behavior where applicable. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/diag-destructive.log` | Preserve ordering exactly. |
+| HW-RSTACC-001 | Reset and RSTACC behavior. | Calibrated continuous fixture. | Run `rstacc`, `cfg`, `ready`, `energy`, `charge`; run `reset`, `probe`, `cfg`, `read`. | Accumulation invalidates after RSTACC until continuous CNVRF; reset recovers identity/MEMSTAT/config or reports dirty state. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/reset-rstacc.log` | Include settings before/after. |
+| HW-MCU-RESET-001 | MCU reset while INA228 remains powered. | Fixture where MCU can reset without INA228 power loss. | Keep INA228 powered, reset ESP32, run `version`, `probe`, `cfg`, `diag`, `read`, `recover` if needed. | Driver reinitializes deterministically without false hardware validation claims. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/mcu-reset-ina-powered.log` | Record reset method and power rails. |
+| HW-INA-RESET-001 | INA228 reset/brownout while MCU remains powered. | Current-limited switchable INA228 supply or safe brownout fixture. | Keep MCU alive, reset/brownout INA228, run `drv`, `probe`, `recover`, `reset`, `read`. | Precise errors during outage; recovery/resync succeeds or reports clear failure/dirty state. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/ina-reset-mcu-powered.log` | Do not hot-plug unsafe rails. |
+| HW-NACK-001 | Unplug/replug or address NACK behavior. | Safe switched I2C fixture or address mismatch method. | Use safe disconnect or wrong `addr`; run `probe`, `read`, `stress 100`, reconnect and run `recover`, `probe`. | Address NACK and recovery behavior are precise and logged. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/nack-unplug-replug.log` | Optional logic analyzer strongly preferred. |
+| HW-TIMEOUT-001 | Stuck/timeout bus if safely simulatable. | Bus fault injection fixture that cannot damage ESP32/INA228. | Hold SCL/SDA in a safe scripted fault if fixture supports it; run `read`, `drv`, `recover`. | Timeout/bus status remains precise and no unbounded wait occurs. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/stuck-timeout-bus.log` | Mark `N/A` if no safe fault fixture exists. |
+| HW-SOAK-001 | 24-72 h soak. | Stable safe source/load, logging host, thermal monitoring. | Run repeated `read`, `diag`, `drv`, `stress_mix 200` cycles for 24-72 h with timestamps. | No unbounded failures; all errors and recovery attempts are logged; temperatures remain safe. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/soak-24-72h.log` | Stop on unsafe temperature or supply/load fault. |
+| HW-FW-ARD-S2-001 | Arduino ESP32-S2 hardware smoke. | ESP32-S2 board and INA228 fixture. | Build/upload/monitor `esp32s2dev`; run `version`, `scanina`, `selftest`, `read`, `stress_mix 100`. | Arduino S2 example builds, boots, and runs CLI validation transcript. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/arduino-esp32s2.log` | Include build and upload logs. |
+| HW-FW-ARD-S3-001 | Arduino ESP32-S3 hardware smoke. | ESP32-S3 board and INA228 fixture. | Build/upload/monitor `esp32s3dev`; run `version`, `scanina`, `selftest`, `read`, `stress_mix 100`. | Arduino S3 example builds, boots, and runs CLI validation transcript. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/arduino-esp32s3.log` | Include build and upload logs. |
+| HW-FW-IDF-S2-001 | Pure ESP-IDF ESP32-S2 hardware smoke. | ESP32-S2 board, INA228 fixture, ESP-IDF available. | Build/flash/monitor `idf.py -C examples/esp_idf/basic set-target esp32s2 build`; run `version`, `scanina`, `selftest`, `read`, `stress_mix 100`. | Pure ESP-IDF S2 example builds, boots, and runs CLI validation transcript. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/idf-esp32s2.log` | Requires `idf.py` build and hardware transcript. |
+| HW-FW-IDF-S3-001 | Pure ESP-IDF ESP32-S3 hardware smoke. | ESP32-S3 board, INA228 fixture, ESP-IDF available. | Build/flash/monitor `idf.py -C examples/esp_idf/basic set-target esp32s3 build`; run `version`, `scanina`, `selftest`, `read`, `stress_mix 100`. | Pure ESP-IDF S3 example builds, boots, and runs CLI validation transcript. | NOT RUN | NOT RUN | TBD | TBD | TBD | TBD | TBD | TBD | `$RUN/idf-esp32s3.log` | Requires `idf.py` build and hardware transcript. |
 
 ## Current Evidence Summary
 
 - No hardware validation rows are currently marked `PASS`.
 - No dated `docs/validation/hardware/...` logs are checked in.
-- Local `idf.py` was not available during the hardening chunks, so local pure
-  ESP-IDF builds were not run here.
+- Local `idf.py` was not available during the no-hardware checks, so local
+  pure ESP-IDF builds were not run here.
 - GitHub Actions is configured to build the pure ESP-IDF example, but CI build
   configuration is not a hardware validation result.
+- Native fake-bus tests and local no-hardware builds are useful evidence, but
+  they do not replace this matrix.

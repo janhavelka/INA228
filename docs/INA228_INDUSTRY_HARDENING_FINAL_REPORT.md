@@ -8,6 +8,9 @@ ESP-IDF build-proof update: 2026-06-07; see
 `docs/INA228_ESPIDF_BUILD_PROOF_REPORT.md`.
 Release-prep update: 2026-06-07; version metadata now targets `2.0.0` as an
 unreleased hardening merge candidate.
+No-hardware validation-tooling update: 2026-06-08; hardware matrix, HIL
+transcript template, and release checklist were tightened without running
+hardware.
 
 ## Executive Summary
 
@@ -112,6 +115,10 @@ hardware validation matrix rows remain `NOT RUN`.
   because `gh` is not installed in this shell.
 - Release-prep metadata now targets `2.0.0` and PlatformIO Arduino builds are
   pinned to `platformio/espressif32@7.0.1` for reproducible package resolution.
+- The 2026-06-08 no-hardware pass expanded the hardware validation matrix to
+  the required evidence schema, added a CLI transcript template, and added a
+  release checklist. These are process controls only; they are not hardware
+  validation results.
 
 ## Commands Run
 
@@ -140,7 +147,10 @@ hardware validation matrix rows remain `NOT RUN`.
 ## Hardware Validation Status
 
 No hardware validation was performed or claimed. All rows in
-`docs/INA228_HARDWARE_VALIDATION_MATRIX.md` remain `NOT RUN`.
+`docs/INA228_HARDWARE_VALIDATION_MATRIX.md` remain `NOT RUN`. The matrix now
+requires per-row setup, procedure, expected/actual result, commit, date/time,
+board/module/shunt/equipment, log path, and operator notes before any row can
+move out of `NOT RUN`.
 
 ## Remaining Risks
 
@@ -151,6 +161,9 @@ No hardware validation was performed or claimed. All rows in
   checks are reviewed.
 - No real-device timing, alert-pin, reset/brownout, NACK/unplug, bidirectional
   current, high-voltage, or 24-72h soak logs are checked in.
+- `docs/INA228_RELEASE_CHECKLIST.md` blocks release/tag wording until CI,
+  ESP-IDF build proof, package validation, safety review, and dated hardware
+  logs exist.
 - PlatformIO Arduino environments are pinned to `platformio/espressif32@7.0.1`;
   future maintainers should update the pin deliberately with CI evidence.
 - Native tests are deterministic and broad, but they are not hardware-in-loop,

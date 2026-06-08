@@ -20,6 +20,8 @@ returning stale or invalid converted values.
   initial hardware rows are marked `NOT RUN` until dated logs are checked in.
 - Expanded high-voltage safety, shunt dissipation, Kelvin layout, measurement
   validity, and validation-honesty documentation.
+- Release checklist and HIL command-sequence template to keep hardware
+  validation repeatable and release claims blocked until logs exist.
 - `getDiagAlertSnapshot()` and `pollConversionReady(nowMs, ready)` public
   helpers for explicit diagnostic status and caller-timestamped readiness
   polling.
@@ -60,6 +62,9 @@ returning stale or invalid converted values.
 - PlatformIO Arduino ESP32-S2/S3 builds are pinned to
   `platformio/espressif32@7.0.1` for more reproducible local and CI package
   resolution.
+- Hardware validation matrix now uses per-row evidence columns for setup,
+  procedure, expected/actual result, commit, date/time, equipment, log path,
+  and operator notes. All hardware rows remain `NOT RUN`.
 
 ### Removed
 - Deleted implicit copy and move operations for `INA228::INA228`; keep driver
