@@ -19,7 +19,7 @@ enum class Err : uint8_t {
   MEMORY_ERROR,              ///< MEMSTAT bit indicates NV trim checksum error
   MEASUREMENT_NOT_READY,     ///< Conversion not yet complete
   CONVERSION_NOT_READY = MEASUREMENT_NOT_READY, ///< Alias for cross-library uniformity
-  MATH_OVERFLOW,             ///< Internal arithmetic overflow detected
+  MATH_OVERFLOW,             ///< Host arithmetic overflow or INA228 DIAG_ALRT.MATHOF observed
   BUSY,                      ///< Device or driver is busy
   IN_PROGRESS,               ///< Operation scheduled; call tick() to complete
 

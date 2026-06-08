@@ -1,10 +1,12 @@
 # INA228 ESP-IDF v6.0.1 Port Audit
 
-Last audited: 2026-05-19
+Original audit: 2026-05-19
+Last cleanup review: 2026-06-08
 
-This started as a readiness audit and now records the merged ESP-IDF
-implementation on `main`. The driver core is framework-neutral, and the native ESP-IDF
-example exposes the same user-visible CLI as the Arduino example. See
+This started as a readiness audit and now records the ESP-IDF implementation on
+the `hardening/ina228-industry-readiness` branch. The driver core is
+framework-neutral, and the native ESP-IDF example exposes the same user-visible
+CLI as the Arduino example. See
 `docs/IDF_PORT_IMPLEMENTATION.md` for the implemented file-level summary and
 validation notes.
 For exact local and CI build commands, see `docs/ESP_IDF_BUILD.md`.
@@ -53,7 +55,7 @@ remains outstanding.
   checked-in hardware validation logs are present for either framework.
 - `examples/01_basic_bringup_cli/main.cpp` is Arduino-only. The ESP-IDF example
   has a separate native command implementation with matching command coverage
-  and validation.
+  and static CLI-contract validation.
 - `platformio.ini` remains Arduino-focused; `library.json` now declares ESP-IDF
   support.
 - IDF v6.0.1 warning profiles can expose issues around floating-point
@@ -253,5 +255,5 @@ declared by the example component.
 9. Validate identity, MEMSTAT, measurements, calibration, and alert APIs on
    hardware and record results in `docs/INA228_HARDWARE_VALIDATION_MATRIX.md`.
 10. Inject I2C failures and verify health/recovery behavior.
-11. Add final `espidf` metadata/build matrix coverage and keep generated
+11. Done: add final `espidf` metadata/build matrix coverage and keep generated
     `Version.h` synchronized with `library.json`.

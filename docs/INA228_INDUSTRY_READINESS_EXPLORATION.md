@@ -8,8 +8,10 @@ Audit mode: exploration only / no implementation
 > Historical note: this exploration report records the initial audit state
 > before the hardening chunks. Later chunks added CI ESP-IDF build coverage and
 > changed public wording away from "production-grade"; this file is not a
-> current validation matrix. Use `docs/INA228_INDUSTRY_HARDENING_PROGRESS.md`
-> and `docs/INA228_HARDWARE_VALIDATION_MATRIX.md` for current status.
+> current validation matrix. Use `docs/INA228_INDUSTRY_HARDENING_FINAL_REPORT.md`,
+> `docs/INA228_RELEASE_CHECKLIST.md`, `docs/INA228_RELEASE_PREP_REPORT.md`,
+> `docs/INA228_ESPIDF_BUILD_PROOF_REPORT.md`, and
+> `docs/INA228_HARDWARE_VALIDATION_MATRIX.md` for current status.
 
 ## Executive Summary
 

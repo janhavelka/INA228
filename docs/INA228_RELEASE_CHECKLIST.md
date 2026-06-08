@@ -25,6 +25,42 @@ no-hardware release-control document; it does not claim validation was run.
 | High-voltage safety review | README and hardware matrix reviewed for isolation, fusing, grounding, shunt dissipation, and USB-ground hazards | Pending release-owner review |
 | Package artifact decision | Release owner confirms packed artifact and tag contents | Pending |
 
+## Explicit Release Gates
+
+These gates must be checked against the exact release/tag commit. Hardware
+items remain unchecked until real logs exist.
+
+- [ ] CI green on current branch or PR.
+- [ ] Native tests pass.
+- [ ] Arduino ESP32-S2 build pass.
+- [ ] Arduino ESP32-S3 build pass.
+- [ ] ESP-IDF ESP32-S2 `idf.py` build pass.
+- [ ] ESP-IDF ESP32-S3 `idf.py` build pass.
+- [ ] Version metadata consistent.
+- [ ] CHANGELOG updated.
+- [ ] Package validation done.
+- [ ] Hardware validation matrix run and logs checked in.
+- [ ] Safety documentation reviewed.
+- [ ] Release wording reviewed.
+
+## Manual CI Review Steps
+
+GitHub CLI was not available in the local cleanup environment. Before merge or
+release, review the current GitHub Actions run manually. The workflow runs on
+PRs targeting `main`, pushes to `main`, or explicit `workflow_dispatch`; a
+plain push to `hardening/ina228-industry-readiness` does not by itself prove CI
+unless a PR or manual run exists.
+
+1. Open GitHub Actions for branch `hardening/ina228-industry-readiness` or the
+   PR that targets `main`.
+2. Confirm native tests passed.
+3. Confirm Arduino ESP32-S2 build passed.
+4. Confirm Arduino ESP32-S3 build passed.
+5. Confirm package validation and guard checks passed.
+6. Confirm ESP-IDF ESP32-S2 `idf.py` build passed.
+7. Confirm ESP-IDF ESP32-S3 `idf.py` build passed.
+8. Attach or link logs before release/tag wording is approved.
+
 ## Forbidden Release Claims Without Evidence
 
 Do not use these phrases unless corresponding dated logs exist:

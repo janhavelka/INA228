@@ -1045,7 +1045,7 @@ Five read-only agents were used before and during final implementation:
 | `datasheet-review-agent` | Confirmed broad datasheet coverage, but found `MATHOF` was not enforced for scalar current/power reads and some cached config write failures assumed no hardware change. |
 | `test-review-agent` | Counted 111 native tests before final fixes, confirmed broad fake-bus/guard/CI coverage, and identified remaining gaps: no hardware validation, no local `idf.py`, no sanitizer/HIL/multi-OS coverage. |
 | `docs-review-agent` | Found older application notes and the root extraction manual still overclaimed ALERT protection, high-voltage suitability, bus ownership, INA234-to-INA228 performance transfer, and raw ENERGY/CHARGE validity. |
-| `release-verdict-agent` | Recommended `Ready to merge, not ready to release`; blockers are current green CI proof, pure ESP-IDF logs, SemVer decision, package validation for final release commit, and hardware validation for industry-grade wording. |
+| `release-verdict-agent` | Recommended conditional merge readiness and not release-ready; blockers are current green CI proof, pure ESP-IDF logs, SemVer decision, package validation for final release commit, and hardware validation for industry-grade wording. |
 
 ### Changes
 
@@ -1113,8 +1113,9 @@ Five read-only agents were used before and during final implementation:
 - Current GitHub Actions results for this branch must still be reviewed.
 - Local pure ESP-IDF build proof is still missing because `idf.py` is not
   available in this shell.
-- `library.json` / generated `Version.h` remain at `1.3.0` while substantial
-  behavior/API changes are in `Unreleased`; SemVer must be decided before a
+- Superseded by later release-prep commits: `library.json`, generated
+  `Version.h`, and `idf_component.yml` now target `2.0.0` as an unreleased
+  hardening merge candidate; CI and release checks are still required before a
   release tag.
 - No hardware validation rows are marked `PASS`; all hardware validation remains
   pending in `docs/INA228_HARDWARE_VALIDATION_MATRIX.md`.
@@ -1123,7 +1124,7 @@ Five read-only agents were used before and during final implementation:
 
 ### Merge And Release Verdict
 
-Merge readiness: `Ready to merge, not ready to release`.
+Merge readiness: `Conditionally ready to merge after current CI is green; not ready to release`.
 
 Release readiness: not ready for a release tag or production/industry-grade
 claim. The safe wording is "industry-readiness hardened pre-production

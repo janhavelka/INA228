@@ -62,7 +62,9 @@ Level 3: Shunt → INA226 (direct shunt ADC + compute) → Controller
 ## Relevance to INA228 Implementation
 **Directly relevant as architectural guidance.** The INA228 represents the ultimate integration of the signal path described here — "Level 3" taken further with 20-bit resolution, 85V common-mode, and additional energy/charge/temperature registers. Key takeaways for INA228 implementation:
 - Shunt resistor selection trade-offs apply identically to the INA228
-- The INA228's ±82.mV full-scale differential input means very small R_shunt values work well
+- The INA228's shunt full-scale range is +/-163.84 mV at `ADCRANGE=0` or
+  +/-40.96 mV at `ADCRANGE=1`, so small precision shunt values can work when
+  the selected range, dissipation, and resolution are acceptable
 - The 20-bit ADC provides even more headroom to use smaller shunt resistors with lower power dissipation
 - On-chip current and power registers eliminate most host-side math
 - Programmable alert can report threshold events, but it does not replace

@@ -168,6 +168,9 @@ public:
   /// Process pending operations (call regularly from loop)
   /// @param nowMs Current monotonic timestamp in milliseconds. This timestamp
   /// is used directly for triggered-conversion deadline checks.
+  /// @note When driver-owned triggered or accumulator-readiness state can
+  /// advance, this can perform a status-clearing DIAG_ALRT read. Observed
+  /// evidence is preserved in getDiagAlertSnapshot().
   void tick(uint32_t nowMs);
 
   /// Shutdown the driver and release resources
@@ -196,9 +199,13 @@ public:
   Status recover();
 
   /// Populate a cache-only settings snapshot without touching I2C.
+  /// @param out Destination snapshot. Updated only on success.
+  /// @return Status::Ok() when the driver is initialized.
   Status getSettings(SettingsSnapshot& out) const;
 
   /// Populate the last preserved DIAG_ALRT snapshot without touching I2C.
+  /// @param out Destination snapshot. Updated only on success.
+  /// @return Status::Ok() when the driver is initialized.
   Status getDiagAlertSnapshot(DiagAlertSnapshot& out) const;
 
   // =========================================================================
@@ -329,6 +336,9 @@ public:
   Status readCharge(double& out);
 
   /// Check if conversion is ready using Config::nowMs when a trigger is pending.
+  /// @note After the software deadline elapses this performs a destructive
+  /// DIAG_ALRT read to observe CNVRF. Evidence from that read is preserved in
+  /// getDiagAlertSnapshot(), but hardware status bits can still be cleared.
   /// @param ready Cleared before polling, then set true if conversion complete
   /// @return Status::Ok() on success
   Status isConversionReady(bool& ready);
@@ -338,6 +348,9 @@ public:
   /// This is the status-returning variant used by tick(). It allows triggered
   /// conversions to advance deterministically even when Config::nowMs is unset.
   /// CNVRF remains authoritative after the software deadline has elapsed.
+  /// @note After the software deadline elapses this performs a destructive
+  /// DIAG_ALRT read to observe CNVRF. Evidence from that read is preserved in
+  /// getDiagAlertSnapshot(), but hardware status bits can still be cleared.
   /// @param nowMs Current monotonic timestamp in milliseconds
   /// @param ready Cleared before polling, then set true if CNVRF was observed on this poll
   /// @return Status::Ok() on success

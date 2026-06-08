@@ -1,5 +1,11 @@
 # INA228 Industry-Readiness Hardening Prompt Pack
 
+Historical status: completed prompt archive. These prompts were used to drive
+the hardening branch and are kept for auditability; they are not current task
+instructions, public API documentation, or hardware validation evidence. See
+`docs/INA228_INDUSTRY_HARDENING_FINAL_REPORT.md` and
+`docs/INA228_RELEASE_CHECKLIST.md` for current status.
+
 Use these prompts one by one, in order. Paste exactly one chunk into the AI coding agent, let it finish, review the report/commit, then send the next chunk.
 
 The goal is an industry-standard INA228 I2C library. The exploration report found a strong framework-neutral/injected-transport foundation, but several production blockers remain:

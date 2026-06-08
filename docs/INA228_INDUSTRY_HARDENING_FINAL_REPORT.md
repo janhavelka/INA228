@@ -171,7 +171,7 @@ move out of `NOT RUN`.
 
 ## Merge Readiness
 
-Ready to merge, not ready to release.
+Conditionally ready to merge, not ready to release.
 
 This branch is suitable for PR review and merge after current CI is green. It
 should not be tagged or advertised as release-ready until the release blockers

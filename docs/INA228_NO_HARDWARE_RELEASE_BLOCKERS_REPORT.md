@@ -72,8 +72,8 @@ validation result is claimed.
 
 ## Merge Verdict
 
-Ready to merge after current CI is reviewed and green. This no-hardware pass
-adds process controls and does not add device-semantic risk.
+Conditionally ready to merge after current CI is reviewed and green. This
+no-hardware pass adds process controls and does not add device-semantic risk.
 
 ## Release Verdict
 

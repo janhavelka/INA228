@@ -1,4 +1,4 @@
-# INA228 ESP-IDF Build Proof Report
+# INA228 ESP-IDF Build Proof Status Report
 
 Date: 2026-06-07
 Branch: `hardening/ina228-industry-readiness`
