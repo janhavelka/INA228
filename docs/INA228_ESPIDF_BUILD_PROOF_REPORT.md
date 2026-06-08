@@ -177,3 +177,67 @@ Proof status after this update:
 - Remote CI pure ESP-IDF build proof: not proven in this shell; no current
   branch run was returned by the public Actions API.
 - Hardware validation: not run and not claimed.
+
+## Revalidation Update
+
+Date: 2026-06-08
+Starting commit: `3c69b10afc02d4679bff2d4f5edb0835843a84ce`
+
+This follow-up pass rechecked the pure ESP-IDF build-proof path and found no
+additional source or CI changes required. The existing GitHub Actions job
+already checks out the repository, uses `espressif/esp-idf-ci-action@v1`, uses
+ESP-IDF `v6.0.1`, builds matrix targets `esp32s3` and `esp32s2`, runs the
+explicit command `idf.py set-target ${{ matrix.target }} build` under
+`examples/esp_idf/basic`, and does not require hardware.
+
+CI file changes in this pass:
+
+- None. The existing workflow already contains the explicit ESP-IDF build
+  command and target matrix.
+
+Inspection findings:
+
+- Root `CMakeLists.txt` still registers only `src/INA228.cpp` and `include/`
+  as the framework-neutral INA228 component.
+- `examples/esp_idf/basic/main/CMakeLists.txt` builds only `main.cpp` and
+  `Ina228IdfI2cTransport.cpp` and requires `INA228`, `esp_driver_i2c`,
+  `esp_driver_gpio`, `esp_timer`, and `freertos`.
+- The ESP-IDF example path uses native `app_main`, `driver/i2c_master.h`,
+  `esp_timer`, FreeRTOS delay APIs, stdio input, and fixed command buffers.
+- The ESP-IDF example path does not use Arduino headers, `Wire`, `String`,
+  `Serial`, `TwoWire`, or compatibility facades.
+- The ESP-IDF adapter maps timeout, address-probe NACK, invalid parameters,
+  transfer NACK-with-unknown-phase, and bus/generic failures to distinct
+  `INA228::Status` values while preserving `esp_err_t` details.
+- The ESP-IDF transport remains documented as diagnostic single-owner example
+  glue, not production shared-bus management.
+
+Local commands run:
+
+| Command | Result |
+| --- | --- |
+| `git status --short` | PASS at startup: clean worktree. |
+| `git branch --show-current` | `hardening/ina228-industry-readiness` |
+| `python tools/check_idf_example_contract.py` | PASS. |
+| `python tools/check_core_timing_guard.py` | PASS. |
+| `python -m platformio test -e native` | PASS: 114/114 tests. PlatformIO warned that obsolete Core `6.1.18` is active. |
+| `gh --version` | FAIL: `gh` is not recognized as a command. |
+| GitHub Actions API for branch | PASS request; `total_count=0`, no current branch CI run found. |
+| `git ls-remote origin refs/heads/hardening/ina228-industry-readiness refs/heads/main` | PASS; origin hardening branch at `3c69b10afc02d4679bff2d4f5edb0835843a84ce`, main at `27fb6978b8fecca40b267d2236fe87a4651843c0`. |
+| `idf.py --version` | FAIL: `idf.py` is not recognized as a command. |
+
+Commands not run:
+
+| Command | Reason |
+| --- | --- |
+| `idf.py -C examples/esp_idf/basic set-target esp32s3 build` | Not run because `idf.py --version` failed locally. |
+| `idf.py -C examples/esp_idf/basic set-target esp32s2 build` | Not run because `idf.py --version` failed locally. |
+
+Proof status after revalidation:
+
+- Local pure ESP-IDF build proof: not proven.
+- CI pure ESP-IDF proof: configured with an explicit `idf.py set-target ...
+  build` command for ESP32-S3 and ESP32-S2.
+- Remote CI pure ESP-IDF build proof: not proven in this shell; no current
+  branch run was returned by the public Actions API.
+- Hardware validation: not run and not claimed.
