@@ -9,10 +9,10 @@ no-hardware release-control document; it does not claim validation was run.
 | --- | --- | --- |
 | Branch review | PR review and final maintainer approval | Pending |
 | CI green | Current GitHub Actions run for the branch or PR | Pending |
-| Native tests | `python -m platformio test -e native` log | Available locally in reports |
-| Arduino S2/S3 builds | `python -m platformio run -e esp32s2dev` and `esp32s3dev` logs | Available locally in reports |
-| Package validation | `python -m platformio pkg pack` log and generated tarball removed | Available locally in reports |
-| Release wording review | README/final report avoid overclaims | Done, keep reviewing |
+| Native tests | `python -m platformio test -e native` log | Latest local verification pass: 114/114 |
+| Arduino S2/S3 builds | `python -m platformio run -e esp32s2dev` and `esp32s3dev` logs | Latest local verification pass: PASS |
+| Package validation | `python -m platformio pkg pack` log and generated tarball removed | Latest local verification pass: PASS, tarball removed |
+| Release wording review | README/docs avoid overclaims | Done, keep reviewing |
 
 ## Required Before Release Or Tag
 
@@ -45,7 +45,7 @@ items remain unchecked until real logs exist.
 
 ## Manual CI Review Steps
 
-GitHub CLI was not available in the local cleanup environment. Before merge or
+GitHub CLI was not available in the local environment. Before merge or
 release, review the current GitHub Actions run manually. The workflow runs on
 PRs targeting `main`, pushes to `main`, or explicit `workflow_dispatch`; a
 plain push to `hardening/ina228-industry-readiness` does not by itself prove CI

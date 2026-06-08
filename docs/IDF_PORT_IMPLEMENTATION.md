@@ -1,6 +1,7 @@
 # INA228 ESP-IDF Port Implementation
 
-Implemented after the ESP-IDF port branch was merged into `main`.
+This document describes the durable ESP-IDF component/example contract for the
+INA228 library.
 
 ## Core Boundary
 
@@ -36,6 +37,28 @@ Implemented after the ESP-IDF port branch was merged into `main`.
 - CI is configured to build `examples/esp_idf/basic` with ESP-IDF 6.0.1 for
   ESP32-S3 and ESP32-S2. See `docs/ESP_IDF_BUILD.md` for reproducible local and
   CI commands.
+
+## ESP-IDF Transport Contract
+
+- Use the ESP-IDF v6 new I2C master driver: `driver/i2c_master.h`.
+- Keep the adapter outside the core driver. It owns IDF bus/device handles and
+  supplies `Config::i2cWrite`, `Config::i2cWriteRead`, and `Config::nowMs`.
+- Keep callbacks synchronous from the driver point of view. Do not return from
+  a callback until the IDF transaction is complete.
+- Clamp or reject callback `timeoutMs` before passing it to ESP-IDF's signed
+  timeout argument; never let overflow become `-1` because that waits forever.
+- Map `ESP_OK` to `INA228::Status::Ok()`.
+- Map `ESP_ERR_TIMEOUT` to `INA228::Err::I2C_TIMEOUT`.
+- Map probe-time `ESP_ERR_INVALID_RESPONSE` / `ESP_ERR_NOT_FOUND` to
+  `INA228::Err::I2C_NACK_ADDR` when address phase is known.
+- Preserve raw `esp_err_t` values in `Status::detail`.
+- For transfer-time `ESP_ERR_INVALID_RESPONSE`, use a conservative I2C error
+  unless the adapter can prove address versus data NACK.
+- Production shared-bus or multitask applications must add their own bus
+  manager, locking, stable handle lifetime, timeout policy, and recovery policy.
+- Do not use Arduino headers, `Wire`, `String`, `Serial`, compatibility
+  facades, legacy `driver/i2c.h`, or command-link APIs in the pure ESP-IDF
+  example path.
 
 ## Validation
 

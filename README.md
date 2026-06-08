@@ -362,10 +362,10 @@ tracked by level so release wording cannot overstate what was actually run.
 | Evidence level | Current status |
 | --- | --- |
 | Implemented | Core hardening, Arduino example, pure ESP-IDF example, CI configuration, and docs are present on this branch. |
-| Tested by native fake-bus | Native Unity tests cover device semantics; latest reported run is 114/114. |
-| Locally built | PlatformIO native and Arduino ESP32-S2/S3 builds have been run locally in the reports. |
+| Tested by native fake-bus | Native Unity tests cover device semantics; latest local verification pass was 114/114. |
+| Locally built | Latest local verification pass built PlatformIO native plus Arduino ESP32-S2/S3 and packed `INA228-2.0.0.tar.gz`; the generated tarball was removed. |
 | CI configured | GitHub Actions includes native tests, Arduino S2/S3 builds, package checks, guards, and ESP-IDF S2/S3 builds. |
-| CI verified | Not claimed here; current CI logs must be reviewed before saying CI is green. |
+| CI verified | Not claimed here; workflow logs for the current branch or PR must be reviewed before saying CI is green. |
 | ESP-IDF build verified | Not claimed here unless local `idf.py` output or reviewed CI logs are captured. |
 | Hardware validated | `NOT RUN`; no hardware validation logs are checked in. |
 

@@ -165,7 +165,7 @@ a safe fixture.
 
 ## Missing Convenience Aliases
 
-The prompt examples sometimes use these names, but the current CLI does not
+Older internal examples sometimes used these names, but the current CLI does not
 implement them:
 
 - `id`: use `mfgid` and `devid`.

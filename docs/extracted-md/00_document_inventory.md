@@ -1,6 +1,10 @@
 # INA228 compact documentation inventory
 
-This directory summarizes INA228 Rev. A datasheet facts needed by the driver: I2C address straps, SMBus transactions, register widths, reset values, conversion scaling, alert flags, and calibration formulas. The raw extraction archive remains in `docs/pdf-extracted-md/`.
+This directory summarizes INA228 Rev. A datasheet facts needed by the driver:
+I2C address straps, SMBus transactions, register widths, reset values,
+conversion scaling, alert flags, and calibration formulas. It is the curated
+reference set; raw PDF/text extraction archives are not kept in the public docs
+tree.
 
 | File | Purpose |
 | --- | --- |
@@ -16,7 +20,7 @@ This directory summarizes INA228 Rev. A datasheet facts needed by the driver: I2
 
 ## Source documents
 
-| Source PDF | Raw extract | Pages used | Notes |
-| --- | --- | --- | --- |
-| `docs/INA228_datasheet.pdf` | `docs/pdf-extracted-md/INA228_datasheet.md` | 1, 3-7, 12-21, 24-30, 35-37 | Primary source for all compact notes. |
-| Supplemental current-sense application notes | `docs/pdf-extracted-md/*.md` except the datasheet | Not used for register facts | Board-layout and sensing context only; no INA228 register defaults or I2C command facts were taken from these notes. |
+| Source PDF | Pages used | Notes |
+| --- | --- | --- |
+| `docs/INA228_datasheet.pdf` | 1, 3-7, 12-21, 24-30, 35-37 | Primary source for all compact notes. |
+| Supplemental current-sense application notes | Not used for register facts | Board-layout and sensing context only; no INA228 register defaults or I2C command facts were taken from these notes. |
