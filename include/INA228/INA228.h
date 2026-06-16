@@ -61,6 +61,20 @@ struct RawSample {
   uint16_t diagAlertRaw = 0;   ///< DIAG_ALRT captured before accumulator reads
 };
 
+/// @brief Fixed-unit integer measurement sample for bounded poll consumers.
+///
+/// Values are rounded to the nearest integer engineering unit. Current and
+/// power require a valid SHUNT_CAL/current-LSB contract.
+struct IntegerSample {
+  int32_t shuntMicrovolts = 0;     ///< Shunt voltage in microvolts
+  uint32_t busMillivolts = 0;      ///< Bus voltage in millivolts
+  int32_t dieTemperatureMilliC = 0; ///< Die temperature in milli-degrees C
+  int32_t currentMilliamps = 0;    ///< Current in milliamps
+  uint32_t powerMilliwatts = 0;    ///< Power in milliwatts
+  bool diagAlertValid = false;     ///< True when diagAlertRaw came from DIAG_ALRT
+  uint16_t diagAlertRaw = 0;       ///< DIAG_ALRT captured before current-derived reads
+};
+
 /// @brief Snapshot of cached settings and runtime state without I2C access.
 struct SettingsSnapshot {
   bool initialized = false;
@@ -281,6 +295,65 @@ public:
   /// @return Status::Ok() on success
   Status readRawSample(RawSample& out);
 
+  /// Read fixed-unit integer values for voltage, temperature, current, and power.
+  ///
+  /// This convenience call does not read ENERGY or CHARGE, so it does not
+  /// consume accumulator overflow evidence. It still performs multiple backend
+  /// transfers and a destructive DIAG_ALRT read before current-derived fields;
+  /// bounded poll owners that need one register transfer per poll should stage
+  /// raw register reads and use convertRawSample().
+  /// @param out IntegerSample result
+  /// @return Status::Ok() on success
+  Status readIntegerSample(IntegerSample& out);
+
+  /// Convert raw register values to fixed-unit integer values without I2C.
+  ///
+  /// This is intended for callers that stage raw register reads themselves.
+  /// It requires an initialized, calibrated, clean driver because current and
+  /// power scaling depend on the cached SHUNT_CAL/current-LSB contract.
+  /// ENERGY and CHARGE fields in @p raw are ignored.
+  /// @param raw Raw register sample or staged raw values
+  /// @param out IntegerSample result
+  /// @return Status::Ok() on success
+  Status convertRawSample(const RawSample& raw, IntegerSample& out) const;
+
+  /// Start a triggered one-shot measurement.
+  ///
+  /// This is a named wrapper around triggerConversion() for fixed-step users.
+  /// It performs one ADC_CONFIG write and returns Err::IN_PROGRESS when the
+  /// conversion was started.
+  Status startTriggeredMeasurement(Mode mode = Mode::TRIG_ALL);
+
+  /// Poll triggered measurement readiness with an explicit instruction budget.
+  ///
+  /// Delay gates consume zero instructions. Once the software conversion
+  /// deadline has elapsed, this performs at most one DIAG_ALRT read when
+  /// maxInstructions is greater than zero.
+  /// @param nowMs Current monotonic timestamp in milliseconds
+  /// @param maxInstructions Maximum transport callbacks allowed, from 1 upward
+  /// @param ready Cleared before polling, then set true when the sample is ready
+  Status pollMeasurementReady(uint32_t nowMs, uint8_t maxInstructions,
+                              bool& ready);
+
+  /// Read the TunnelMonitor power sample as a fixed-step job.
+  ///
+  /// Each call consumes at most maxInstructions backend transfers. A 16-bit or
+  /// 24-bit register read is one instruction. The steady continuous-mode path
+  /// reads VSHUNT, VBUS, DIETEMP, CURRENT, and POWER only; ENERGY and CHARGE
+  /// are intentionally excluded. Outputs are committed only when OK is
+  /// returned and remain unchanged while IN_PROGRESS is returned.
+  Status readPowerSampleRawStep(RawSample& rawOut, IntegerSample& integerOut,
+                                uint8_t maxInstructions);
+
+  /// Start replaying cached static configuration and calibration as a job.
+  Status startApplyCalibration();
+
+  /// Poll cached configuration/calibration replay.
+  ///
+  /// Each side-effecting register write consumes one instruction and the job
+  /// stops on first failure, leaving dirty-state evidence for recovery.
+  Status pollApplyCalibration(uint32_t nowMs, uint8_t maxInstructions);
+
   /// Read shunt voltage in volts
   /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
   /// @param out Shunt voltage (V)
@@ -390,8 +463,10 @@ public:
   ///
   /// The driver precomputes the matching SHUNT_CAL/currentLsb contract before
   /// changing CONFIG. If the follow-up SHUNT_CAL write fails, CONFIG is rolled
-  /// back. If rollback also fails, converted current/power/energy/charge APIs
-  /// return Err::HARDWARE_DIRTY until recover() successfully replays config.
+  /// back. The failed write still leaves conservative dirty evidence, so
+  /// converted current/power/energy/charge APIs return Err::HARDWARE_DIRTY
+  /// until recover() successfully replays config. If rollback also fails,
+  /// CONFIG is marked dirty too.
   ///
   /// @note Existing alert thresholds are not re-encoded. SettingsSnapshot
   /// thresholdsDirty is set after a scale change so applications can reapply
@@ -449,6 +524,12 @@ public:
   /// This performs a destructive hardware read and preserves the exact raw
   /// value in getDiagAlertSnapshot().
   Status readDiagAlertRaw(uint16_t& raw);
+
+  /// Read and clear status-sensitive DIAG_ALRT evidence explicitly.
+  ///
+  /// This is equivalent to readDiagAlertRaw() and is named for callers that
+  /// want to make the clear-on-read behavior visible in their poll jobs.
+  Status readAndClearDiagAlert(uint16_t& raw);
 
   /// Configure alert latch mode
   /// @param latch true = latched (hold until read), false = transparent
@@ -514,6 +595,19 @@ public:
   /// converted reads fail until recover() or another successful softReset().
   Status softReset();
 
+  /// Start software reset as a fixed-step job.
+  ///
+  /// The job writes reset, waits the datasheet startup time through
+  /// pollResetJob(), verifies CONFIG, IDs, and MEMSTAT one register read at a
+  /// time, then replays cached configuration/calibration.
+  Status startResetJob();
+
+  /// Poll a software reset job.
+  ///
+  /// Delay gates consume zero instructions. Every register read or write
+  /// consumes one instruction, and maxInstructions must be at least one.
+  Status pollResetJob(uint32_t nowMs, uint8_t maxInstructions);
+
   /// Reset energy and charge accumulators.
   ///
   /// This clears the device's accumulated ENERGY and CHARGE registers and
@@ -576,6 +670,51 @@ public:
   float currentLsb() const { return _currentLsb; }
 
 private:
+  enum class AsyncJob : uint8_t {
+    NONE,
+    POWER_SAMPLE,
+    APPLY_CALIBRATION,
+    RESET
+  };
+
+  enum class PowerSampleStep : uint8_t {
+    IDLE,
+    DIAG_READY,
+    VSHUNT,
+    VBUS,
+    DIETEMP,
+    CURRENT,
+    POWER
+  };
+
+  enum class ApplyStep : uint8_t {
+    IDLE,
+    ADC_SHUTDOWN,
+    CONFIG,
+    DIAG_ALRT,
+    TEMPCO,
+    SHUNT_CAL,
+    ADC_CONFIG,
+    DONE
+  };
+
+  enum class ResetStep : uint8_t {
+    IDLE,
+    WRITE_RESET,
+    WAIT_STARTUP,
+    VERIFY_CONFIG,
+    READ_MANUFACTURER,
+    READ_DEVICE,
+    READ_DIAG,
+    APPLY_ADC_SHUTDOWN,
+    APPLY_CONFIG,
+    APPLY_DIAG_ALRT,
+    APPLY_TEMPCO,
+    APPLY_SHUNT_CAL,
+    APPLY_ADC_CONFIG,
+    DONE
+  };
+
   // =========================================================================
   // Transport Wrappers
   // =========================================================================
@@ -675,6 +814,9 @@ private:
   void _clearHardwareDirty();
   void _markThresholdsDirty();
   bool _isThresholdRegister(uint8_t reg) const;
+  Status _writeApplyStep(ApplyStep step);
+  Status _fillPowerSampleUnits(const RawSample& raw, IntegerSample& out) const;
+  void _clearAsyncJob();
 
   /// Build ADC_CONFIG register value from current config
   uint16_t _buildAdcConfig() const;
@@ -725,6 +867,18 @@ private:
   // DIAG_ALRT cache and preserved evidence
   uint16_t _diagAlertConfigBits = 0;
   DiagAlertSnapshot _diagAlertSnapshot{};
+
+  // Fixed-step job state
+  AsyncJob _asyncJob = AsyncJob::NONE;
+  PowerSampleStep _powerSampleStep = PowerSampleStep::IDLE;
+  RawSample _powerSampleRawScratch{};
+  IntegerSample _powerSampleIntegerScratch{};
+  ApplyStep _applyStep = ApplyStep::IDLE;
+  ResetStep _resetStep = ResetStep::IDLE;
+  uint32_t _resetStartMs = 0;
+  uint8_t _resetVerifyAttempts = 0;
+  bool _resetStartedOffline = false;
+  uint16_t _resetDesiredDiagConfig = 0;
 };
 
 } // namespace INA228

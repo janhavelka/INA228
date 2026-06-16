@@ -14,6 +14,8 @@ namespace {
 
 static constexpr size_t MAX_WRITE_LEN = 6;
 static constexpr uint8_t RESET_VERIFY_ATTEMPTS = 3;
+static constexpr uint32_t RESET_STARTUP_MS =
+    (cmd::POR_STARTUP_US + 999U) / 1000U;
 static constexpr uint16_t DIAG_EVIDENCE_MASK =
     cmd::DIAG_ENERGYOF | cmd::DIAG_CHARGEOF | cmd::DIAG_MATHOF |
     cmd::DIAG_TMPOL | cmd::DIAG_SHNTOL | cmd::DIAG_SHNTUL |
@@ -112,6 +114,52 @@ static Status assignFiniteFloat(double value, float& out, const char* message) {
   }
   out = static_cast<float>(value);
   return Status::Ok();
+}
+
+static Status assignRoundedInt32(double value, int32_t& out, const char* message) {
+  const double rounded = std::round(value);
+  if (!std::isfinite(rounded) ||
+      rounded > static_cast<double>(std::numeric_limits<int32_t>::max()) ||
+      rounded < static_cast<double>(std::numeric_limits<int32_t>::min())) {
+    return Status::Error(Err::MATH_OVERFLOW, message);
+  }
+  out = static_cast<int32_t>(rounded);
+  return Status::Ok();
+}
+
+static Status assignRoundedUint32(double value, uint32_t& out, const char* message) {
+  const double rounded = std::round(value);
+  if (!std::isfinite(rounded) || rounded < 0.0 ||
+      rounded > static_cast<double>(std::numeric_limits<uint32_t>::max())) {
+    return Status::Error(Err::MATH_OVERFLOW, message);
+  }
+  out = static_cast<uint32_t>(rounded);
+  return Status::Ok();
+}
+
+static int32_t roundDivNearestSigned(int64_t numerator, int64_t denominator) {
+  if (numerator >= 0) {
+    return static_cast<int32_t>((numerator + (denominator / 2)) / denominator);
+  }
+  return -static_cast<int32_t>((-numerator + (denominator / 2)) / denominator);
+}
+
+static uint32_t roundDivNearestUnsigned(uint64_t numerator, uint64_t denominator) {
+  return static_cast<uint32_t>((numerator + (denominator / 2U)) / denominator);
+}
+
+static int32_t shuntRawToMicrovolts(int32_t raw, AdcRange range) {
+  const int64_t numerator = static_cast<int64_t>(raw) * 5;
+  const int64_t denominator = (range == AdcRange::MV_40_96) ? 64 : 16;
+  return roundDivNearestSigned(numerator, denominator);
+}
+
+static uint32_t busRawToMillivolts(uint32_t raw) {
+  return roundDivNearestUnsigned(static_cast<uint64_t>(raw) * 25U, 128U);
+}
+
+static int32_t tempRawToMilliC(int16_t raw) {
+  return roundDivNearestSigned(static_cast<int64_t>(raw) * 125, 16);
 }
 
 static double shuntFullScaleV(AdcRange range) {
@@ -232,6 +280,7 @@ Status INA228::begin(const Config& config) {
   _accumulationReady = false;
   _diagAlertConfigBits = 0;
   _diagAlertSnapshot = DiagAlertSnapshot{};
+  _clearAsyncJob();
 
   if (config.i2cWrite == nullptr || config.i2cWriteRead == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C callbacks not set");
@@ -306,6 +355,7 @@ Status INA228::begin(const Config& config) {
     _trigStartMs = 0;
     _accumulationReady = false;
     _diagAlertConfigBits = 0;
+    _clearAsyncJob();
     return failure;
   };
 
@@ -408,6 +458,7 @@ void INA228::end() {
   _thresholdsDirty = false;
   _diagAlertConfigBits = 0;
   _diagAlertSnapshot = DiagAlertSnapshot{};
+  _clearAsyncJob();
 }
 
 // ===========================================================================
@@ -669,6 +720,214 @@ Status INA228::readRawSample(RawSample& out) {
   return Status::Ok();
 }
 
+Status INA228::readPowerSampleRawStep(RawSample& rawOut, IntegerSample& integerOut,
+                                      uint8_t maxInstructions) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (maxInstructions == 0) {
+    return Status::Error(Err::INVALID_PARAM, "maxInstructions must be > 0");
+  }
+  if (_asyncJob != AsyncJob::NONE && _asyncJob != AsyncJob::POWER_SAMPLE) {
+    return Status::Error(Err::BUSY, "Another fixed-step job is active");
+  }
+
+  if (_asyncJob == AsyncJob::NONE) {
+    Status clean = _ensureHardwareClean();
+    if (!clean.ok()) return clean;
+    Status calStatus = _ensureCalibrated();
+    if (!calStatus.ok()) return calStatus;
+    if (_trigPending && !_triggerDeadlineElapsed(_nowMs())) {
+      return Status::Error(Err::MEASUREMENT_NOT_READY,
+                           "Triggered conversion not ready");
+    }
+
+    _powerSampleRawScratch = RawSample{};
+    _powerSampleIntegerScratch = IntegerSample{};
+    _powerSampleStep = _trigPending ? PowerSampleStep::DIAG_READY
+                                    : PowerSampleStep::VSHUNT;
+    _asyncJob = AsyncJob::POWER_SAMPLE;
+  }
+
+  uint8_t used = 0;
+  while (used < maxInstructions) {
+    uint32_t raw24 = 0;
+    uint16_t raw16 = 0;
+    Status st = Status::Ok();
+
+    switch (_powerSampleStep) {
+      case PowerSampleStep::DIAG_READY: {
+        uint16_t diag = 0;
+        st = _readDiagAlertTracked(diag);
+        ++used;
+        if (!st.ok()) {
+          _clearAsyncJob();
+          return st;
+        }
+        _powerSampleRawScratch.diagAlertValid = true;
+        _powerSampleRawScratch.diagAlertRaw = diag;
+        _powerSampleRawScratch.mathOverflow = (diag & cmd::DIAG_MATHOF) != 0;
+        if ((diag & cmd::DIAG_CNVRF) == 0) {
+          _clearAsyncJob();
+          return Status::Error(Err::MEASUREMENT_NOT_READY,
+                               "Triggered conversion not ready");
+        }
+        _powerSampleStep = PowerSampleStep::VSHUNT;
+        break;
+      }
+
+      case PowerSampleStep::VSHUNT:
+        st = readReg24(cmd::REG_VSHUNT, raw24);
+        ++used;
+        if (!st.ok()) {
+          _clearAsyncJob();
+          return st;
+        }
+        _powerSampleRawScratch.vshunt = _signExtend20(raw24);
+        _powerSampleStep = PowerSampleStep::VBUS;
+        break;
+
+      case PowerSampleStep::VBUS:
+        st = readReg24(cmd::REG_VBUS, raw24);
+        ++used;
+        if (!st.ok()) {
+          _clearAsyncJob();
+          return st;
+        }
+        _powerSampleRawScratch.vbus = raw24 >> 4;
+        _powerSampleStep = PowerSampleStep::DIETEMP;
+        break;
+
+      case PowerSampleStep::DIETEMP:
+        st = readReg16(cmd::REG_DIETEMP, raw16);
+        ++used;
+        if (!st.ok()) {
+          _clearAsyncJob();
+          return st;
+        }
+        _powerSampleRawScratch.dietemp = static_cast<int16_t>(raw16);
+        _powerSampleStep = PowerSampleStep::CURRENT;
+        break;
+
+      case PowerSampleStep::CURRENT:
+        st = readReg24(cmd::REG_CURRENT, raw24);
+        ++used;
+        if (!st.ok()) {
+          _clearAsyncJob();
+          return st;
+        }
+        _powerSampleRawScratch.current = _signExtend20(raw24);
+        _powerSampleStep = PowerSampleStep::POWER;
+        break;
+
+      case PowerSampleStep::POWER:
+        st = readReg24(cmd::REG_POWER, raw24);
+        ++used;
+        if (!st.ok()) {
+          _clearAsyncJob();
+          return st;
+        }
+        _powerSampleRawScratch.power = raw24;
+        st = _fillPowerSampleUnits(_powerSampleRawScratch,
+                                   _powerSampleIntegerScratch);
+        if (!st.ok()) {
+          _clearAsyncJob();
+          return st;
+        }
+        rawOut = _powerSampleRawScratch;
+        integerOut = _powerSampleIntegerScratch;
+        _clearAsyncJob();
+        return Status::Ok();
+
+      case PowerSampleStep::IDLE:
+      default:
+        _clearAsyncJob();
+        return Status::Error(Err::BUSY, "No power sample job active");
+    }
+  }
+
+  return Status{Err::IN_PROGRESS, 0, "Power sample read in progress"};
+}
+
+Status INA228::readIntegerSample(IntegerSample& out) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  Status readyStatus = _ensureMeasurementReadyForRead();
+  if (!readyStatus.ok()) {
+    return readyStatus;
+  }
+  Status calStatus = _ensureCalibrated();
+  if (!calStatus.ok()) return calStatus;
+
+  uint16_t diag = 0;
+  Status st = _readAndValidateMathDiag(diag);
+  if (!st.ok()) return st;
+
+  RawSample raw{};
+  raw.diagAlertValid = true;
+  raw.diagAlertRaw = diag;
+
+  uint32_t raw24 = 0;
+  st = readReg24(cmd::REG_VSHUNT, raw24);
+  if (!st.ok()) return st;
+  raw.vshunt = _signExtend20(raw24);
+
+  st = readReg24(cmd::REG_VBUS, raw24);
+  if (!st.ok()) return st;
+  raw.vbus = raw24 >> 4;
+
+  uint16_t raw16 = 0;
+  st = readReg16(cmd::REG_DIETEMP, raw16);
+  if (!st.ok()) return st;
+  raw.dietemp = static_cast<int16_t>(raw16);
+
+  st = readReg24(cmd::REG_CURRENT, raw24);
+  if (!st.ok()) return st;
+  raw.current = _signExtend20(raw24);
+
+  st = readReg24(cmd::REG_POWER, raw24);
+  if (!st.ok()) return st;
+  raw.power = raw24;
+
+  return convertRawSample(raw, out);
+}
+
+Status INA228::convertRawSample(const RawSample& raw, IntegerSample& out) const {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  Status calStatus = _ensureCalibrated();
+  if (!calStatus.ok()) return calStatus;
+  if (raw.diagAlertValid &&
+      (raw.mathOverflow || ((raw.diagAlertRaw & cmd::DIAG_MATHOF) != 0))) {
+    return Status::Error(Err::MATH_OVERFLOW, "INA228 math overflow",
+                         static_cast<int32_t>(raw.diagAlertRaw));
+  }
+
+  IntegerSample result{};
+  result.diagAlertValid = raw.diagAlertValid;
+  result.diagAlertRaw = raw.diagAlertRaw;
+  result.shuntMicrovolts = shuntRawToMicrovolts(raw.vshunt, _config.adcRange);
+  result.busMillivolts = busRawToMillivolts(raw.vbus);
+  result.dieTemperatureMilliC = tempRawToMilliC(raw.dietemp);
+
+  Status st = assignRoundedInt32(static_cast<double>(_currentLsb) *
+                                 static_cast<double>(raw.current) * 1000.0,
+                                 result.currentMilliamps,
+                                 "Current integer conversion overflow");
+  if (!st.ok()) return st;
+
+  st = assignRoundedUint32(cmd::POWER_COEFF * static_cast<double>(_currentLsb) *
+                           static_cast<double>(raw.power) * 1000.0,
+                           result.powerMilliwatts,
+                           "Power integer conversion overflow");
+  if (!st.ok()) return st;
+
+  out = result;
+  return Status::Ok();
+}
+
 Status INA228::readShuntVoltage(float& out) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
@@ -863,6 +1122,36 @@ Status INA228::pollConversionReady(uint32_t nowMs, bool& ready) {
   return Status::Ok();
 }
 
+Status INA228::pollMeasurementReady(uint32_t nowMs, uint8_t maxInstructions,
+                                    bool& ready) {
+  ready = false;
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (maxInstructions == 0) {
+    return Status::Error(Err::INVALID_PARAM, "maxInstructions must be > 0");
+  }
+  if (_asyncJob != AsyncJob::NONE) {
+    return Status::Error(Err::BUSY, "Another fixed-step job is active");
+  }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
+  if (!_trigPending) {
+    ready = true;
+    return Status::Ok();
+  }
+  if (!_triggerDeadlineElapsed(nowMs)) {
+    return Status::Ok();
+  }
+
+  uint16_t diag = 0;
+  Status st = _readDiagAlertTracked(diag);
+  if (!st.ok()) return st;
+
+  ready = (diag & cmd::DIAG_CNVRF) != 0;
+  return Status::Ok();
+}
+
 // ===========================================================================
 // Configuration
 // ===========================================================================
@@ -927,6 +1216,13 @@ Status INA228::triggerConversion(Mode mode) {
   _markAccumulationInvalid();
   _markTriggeredConversionStarted(_nowMs());
   return Status{Err::IN_PROGRESS, 0, "Conversion started"};
+}
+
+Status INA228::startTriggeredMeasurement(Mode mode) {
+  if (_asyncJob != AsyncJob::NONE) {
+    return Status::Error(Err::BUSY, "Another fixed-step job is active");
+  }
+  return triggerConversion(mode);
 }
 
 Status INA228::setVbusConvTime(ConvTime ct) {
@@ -1196,6 +1492,80 @@ Status INA228::setConversionDelay(uint8_t steps2ms) {
   return st;
 }
 
+Status INA228::startApplyCalibration() {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (_asyncJob != AsyncJob::NONE) {
+    return Status::Error(Err::BUSY, "Another fixed-step job is active");
+  }
+
+  _asyncJob = AsyncJob::APPLY_CALIBRATION;
+  _applyStep = ApplyStep::ADC_SHUTDOWN;
+  return Status{Err::IN_PROGRESS, 0, "Apply calibration job started"};
+}
+
+Status INA228::pollApplyCalibration(uint32_t nowMs, uint8_t maxInstructions) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (maxInstructions == 0) {
+    return Status::Error(Err::INVALID_PARAM, "maxInstructions must be > 0");
+  }
+  if (_asyncJob != AsyncJob::APPLY_CALIBRATION) {
+    return Status::Error(Err::BUSY, "No apply calibration job active");
+  }
+
+  uint8_t used = 0;
+  while (used < maxInstructions) {
+    const ApplyStep current = _applyStep;
+    Status st = _writeApplyStep(current);
+    ++used;
+    if (!st.ok()) {
+      if (current != ApplyStep::ADC_CONFIG) {
+        _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
+      }
+      _clearAsyncJob();
+      return st;
+    }
+
+    switch (current) {
+      case ApplyStep::ADC_SHUTDOWN:
+        _applyStep = ApplyStep::CONFIG;
+        break;
+      case ApplyStep::CONFIG:
+        _applyStep = ApplyStep::DIAG_ALRT;
+        break;
+      case ApplyStep::DIAG_ALRT:
+        _applyStep = ApplyStep::TEMPCO;
+        break;
+      case ApplyStep::TEMPCO:
+        _applyStep = ApplyStep::SHUNT_CAL;
+        break;
+      case ApplyStep::SHUNT_CAL:
+        _applyStep = ApplyStep::ADC_CONFIG;
+        break;
+      case ApplyStep::ADC_CONFIG:
+        _clearHardwareDirty();
+        if (isTriggeredMode(_config.mode)) {
+          _markTriggeredConversionStarted(nowMs);
+        } else {
+          _completeTriggeredConversion();
+          _markAccumulationInvalid();
+        }
+        _clearAsyncJob();
+        return Status::Ok();
+      case ApplyStep::IDLE:
+      case ApplyStep::DONE:
+      default:
+        _clearAsyncJob();
+        return Status::Error(Err::BUSY, "No apply calibration job active");
+    }
+  }
+
+  return Status{Err::IN_PROGRESS, 0, "Apply calibration job in progress"};
+}
+
 // ===========================================================================
 // Alert Configuration
 // ===========================================================================
@@ -1219,6 +1589,10 @@ Status INA228::readDiagAlertRaw(uint16_t& raw) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
   return _readDiagAlertTracked(raw);
+}
+
+Status INA228::readAndClearDiagAlert(uint16_t& raw) {
+  return readDiagAlertRaw(raw);
 }
 
 Status INA228::setAlertLatch(bool latch) {
@@ -1455,6 +1829,231 @@ Status INA228::softReset() {
     _reassertOfflineLatch();
   }
   return st;
+}
+
+Status INA228::startResetJob() {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (_asyncJob != AsyncJob::NONE) {
+    return Status::Error(Err::BUSY, "Another fixed-step job is active");
+  }
+
+  _asyncJob = AsyncJob::RESET;
+  _resetStep = ResetStep::WRITE_RESET;
+  _resetStartMs = 0;
+  _resetVerifyAttempts = 0;
+  _resetStartedOffline = _driverState == DriverState::OFFLINE;
+  _resetDesiredDiagConfig = _diagAlertConfigBits;
+  return Status{Err::IN_PROGRESS, 0, "Reset job started"};
+}
+
+Status INA228::pollResetJob(uint32_t nowMs, uint8_t maxInstructions) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (maxInstructions == 0) {
+    return Status::Error(Err::INVALID_PARAM, "maxInstructions must be > 0");
+  }
+  if (_asyncJob != AsyncJob::RESET) {
+    return Status::Error(Err::BUSY, "No reset job active");
+  }
+
+  ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
+  auto failResetJob = [this](const Status& failure) {
+    if (_resetStartedOffline && !failure.inProgress()) {
+      _reassertOfflineLatch();
+    }
+    _clearAsyncJob();
+    return failure;
+  };
+
+  uint8_t used = 0;
+  while (used < maxInstructions) {
+    Status st = Status::Ok();
+
+    switch (_resetStep) {
+      case ResetStep::WRITE_RESET:
+        st = writeReg16(cmd::REG_CONFIG, cmd::CONFIG_RST);
+        ++used;
+        if (!st.ok()) {
+          _markConfigReplayDirty(st);
+          _markCalibrationDirty(st);
+          _markThresholdsDirty();
+          return failResetJob(st);
+        }
+        _markAccumulationInvalid();
+        _trigPending = false;
+        _trigStartMs = 0;
+        {
+          const Status resetPending =
+              Status::Error(Err::HARDWARE_DIRTY, "Software reset replay pending");
+          _markConfigReplayDirty(resetPending);
+          _markCalibrationDirty(resetPending);
+        }
+        _markThresholdsDirty();
+        _resetStartMs = nowMs;
+        _resetVerifyAttempts = 0;
+        _resetStep = ResetStep::WAIT_STARTUP;
+        break;
+
+      case ResetStep::WAIT_STARTUP:
+        if ((nowMs - _resetStartMs) < RESET_STARTUP_MS) {
+          return Status{Err::IN_PROGRESS, 0, "Reset startup wait in progress"};
+        }
+        _resetStep = ResetStep::VERIFY_CONFIG;
+        break;
+
+      case ResetStep::VERIFY_CONFIG: {
+        uint16_t cfg = 0;
+        st = readReg16(cmd::REG_CONFIG, cfg);
+        ++used;
+        if (!st.ok()) {
+          return failResetJob(st);
+        }
+        if ((cfg & (cmd::CONFIG_RST | cmd::CONFIG_RSTACC)) == 0) {
+          _resetStep = ResetStep::READ_MANUFACTURER;
+        } else {
+          ++_resetVerifyAttempts;
+          if (_resetVerifyAttempts >= RESET_VERIFY_ATTEMPTS) {
+            st = _recordFailure(
+                Status::Error(Err::TIMEOUT, "CONFIG reset bits did not clear",
+                              static_cast<int32_t>(cfg)));
+            return failResetJob(st);
+          }
+        }
+        break;
+      }
+
+      case ResetStep::READ_MANUFACTURER: {
+        uint16_t mfgId = 0;
+        st = readReg16(cmd::REG_MANUFACTURER_ID, mfgId);
+        ++used;
+        if (!st.ok()) {
+          return failResetJob(st);
+        }
+        if (mfgId != cmd::MANUFACTURER_ID) {
+          st = _recordFailure(
+              Status::Error(Err::DEVICE_ID_MISMATCH,
+                            "Manufacturer ID mismatch",
+                            static_cast<int32_t>(mfgId)));
+          return failResetJob(st);
+        }
+        _resetStep = ResetStep::READ_DEVICE;
+        break;
+      }
+
+      case ResetStep::READ_DEVICE: {
+        uint16_t devId = 0;
+        st = readReg16(cmd::REG_DEVICE_ID, devId);
+        ++used;
+        if (!st.ok()) {
+          return failResetJob(st);
+        }
+        if (devId != cmd::DEVICE_ID) {
+          st = _recordFailure(
+              Status::Error(Err::DEVICE_ID_MISMATCH, "Device ID mismatch",
+                            static_cast<int32_t>(devId)));
+          return failResetJob(st);
+        }
+        _resetStep = ResetStep::READ_DIAG;
+        break;
+      }
+
+      case ResetStep::READ_DIAG: {
+        uint16_t diagAlrt = 0;
+        st = _readDiagAlertTracked(diagAlrt);
+        _diagAlertConfigBits = _resetDesiredDiagConfig;
+        ++used;
+        if (!st.ok()) {
+          return failResetJob(st);
+        }
+        if ((diagAlrt & cmd::DIAG_MEMSTAT) == 0) {
+          st = _recordFailure(
+              Status::Error(Err::MEMORY_ERROR,
+                            "NV trim memory checksum error"));
+          return failResetJob(st);
+        }
+        _resetStep = ResetStep::APPLY_ADC_SHUTDOWN;
+        break;
+      }
+
+      case ResetStep::APPLY_ADC_SHUTDOWN:
+      case ResetStep::APPLY_CONFIG:
+      case ResetStep::APPLY_DIAG_ALRT:
+      case ResetStep::APPLY_TEMPCO:
+      case ResetStep::APPLY_SHUNT_CAL:
+      case ResetStep::APPLY_ADC_CONFIG: {
+        ApplyStep applyStep = ApplyStep::IDLE;
+        switch (_resetStep) {
+          case ResetStep::APPLY_ADC_SHUTDOWN:
+            applyStep = ApplyStep::ADC_SHUTDOWN;
+            break;
+          case ResetStep::APPLY_CONFIG:
+            applyStep = ApplyStep::CONFIG;
+            break;
+          case ResetStep::APPLY_DIAG_ALRT:
+            applyStep = ApplyStep::DIAG_ALRT;
+            break;
+          case ResetStep::APPLY_TEMPCO:
+            applyStep = ApplyStep::TEMPCO;
+            break;
+          case ResetStep::APPLY_SHUNT_CAL:
+            applyStep = ApplyStep::SHUNT_CAL;
+            break;
+          case ResetStep::APPLY_ADC_CONFIG:
+            applyStep = ApplyStep::ADC_CONFIG;
+            break;
+          default:
+            break;
+        }
+
+        st = _writeApplyStep(applyStep);
+        ++used;
+        if (!st.ok()) {
+          return failResetJob(st);
+        }
+
+        switch (_resetStep) {
+          case ResetStep::APPLY_ADC_SHUTDOWN:
+            _resetStep = ResetStep::APPLY_CONFIG;
+            break;
+          case ResetStep::APPLY_CONFIG:
+            _resetStep = ResetStep::APPLY_DIAG_ALRT;
+            break;
+          case ResetStep::APPLY_DIAG_ALRT:
+            _resetStep = ResetStep::APPLY_TEMPCO;
+            break;
+          case ResetStep::APPLY_TEMPCO:
+            _resetStep = ResetStep::APPLY_SHUNT_CAL;
+            break;
+          case ResetStep::APPLY_SHUNT_CAL:
+            _resetStep = ResetStep::APPLY_ADC_CONFIG;
+            break;
+          case ResetStep::APPLY_ADC_CONFIG:
+            _clearHardwareDirty();
+            if (isTriggeredMode(_config.mode)) {
+              _markTriggeredConversionStarted(nowMs);
+            } else {
+              _markAccumulationInvalid();
+            }
+            _clearAsyncJob();
+            return Status::Ok();
+          default:
+            break;
+        }
+        break;
+      }
+
+      case ResetStep::IDLE:
+      case ResetStep::DONE:
+      default:
+        _clearAsyncJob();
+        return Status::Error(Err::BUSY, "No reset job active");
+    }
+  }
+
+  return Status{Err::IN_PROGRESS, 0, "Reset job in progress"};
 }
 
 Status INA228::resetAccumulators() {
@@ -1987,6 +2586,82 @@ Status INA228::_resyncCachedHardware() {
     _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
   }
   return st;
+}
+
+Status INA228::_writeApplyStep(ApplyStep step) {
+  switch (step) {
+    case ApplyStep::ADC_SHUTDOWN: {
+      uint16_t shutdownAdc = _buildAdcConfig();
+      shutdownAdc = static_cast<uint16_t>(
+          (shutdownAdc & ~cmd::MASK_ADC_MODE) |
+          (static_cast<uint16_t>(Mode::SHUTDOWN) << cmd::BIT_ADC_MODE));
+      Status st = writeReg16(cmd::REG_ADC_CONFIG, shutdownAdc);
+      if (!st.ok()) {
+        _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
+      }
+      return st;
+    }
+
+    case ApplyStep::CONFIG: {
+      Status st = writeReg16(cmd::REG_CONFIG, _buildConfig());
+      if (!st.ok()) {
+        _markHardwareDirty(cmd::REG_CONFIG, st);
+      }
+      return st;
+    }
+
+    case ApplyStep::DIAG_ALRT:
+      return _writeDiagAlertConfig(_diagAlertConfigBits);
+
+    case ApplyStep::TEMPCO: {
+      const uint16_t tempco =
+          _config.shuntTempCoeffPpmC & cmd::MASK_SHUNT_TEMPCO;
+      Status st = writeReg16(cmd::REG_SHUNT_TEMPCO, tempco);
+      if (!st.ok()) {
+        _markHardwareDirty(cmd::REG_SHUNT_TEMPCO, st);
+      }
+      return st;
+    }
+
+    case ApplyStep::SHUNT_CAL: {
+      Status st = _applyCalibration();
+      if (!st.ok()) {
+        _markCalibrationDirty(st);
+      }
+      return st;
+    }
+
+    case ApplyStep::ADC_CONFIG: {
+      Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
+      if (!st.ok()) {
+        _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
+      }
+      return st;
+    }
+
+    case ApplyStep::IDLE:
+    case ApplyStep::DONE:
+    default:
+      return Status::Error(Err::BUSY, "No apply step active");
+  }
+}
+
+Status INA228::_fillPowerSampleUnits(const RawSample& raw,
+                                     IntegerSample& out) const {
+  return convertRawSample(raw, out);
+}
+
+void INA228::_clearAsyncJob() {
+  _asyncJob = AsyncJob::NONE;
+  _powerSampleStep = PowerSampleStep::IDLE;
+  _powerSampleRawScratch = RawSample{};
+  _powerSampleIntegerScratch = IntegerSample{};
+  _applyStep = ApplyStep::IDLE;
+  _resetStep = ResetStep::IDLE;
+  _resetStartMs = 0;
+  _resetVerifyAttempts = 0;
+  _resetStartedOffline = false;
+  _resetDesiredDiagConfig = 0;
 }
 
 bool INA228::_triggerDeadlineElapsed(uint32_t nowMs) const {

@@ -71,6 +71,7 @@ struct FakeBus {
   uint8_t readMatchCount[64] = {};
   uint8_t configResetReadsRemaining = 0;
   bool configResetNeverClears = false;
+  bool resetLeavesMemstatLow = false;
   uint8_t configReadOverrideRemaining = 0;
   uint16_t configReadOverrideValue = 0;
 
@@ -146,7 +147,7 @@ Status fakeWrite(uint8_t addr, const uint8_t* data, size_t len, uint32_t, void* 
       bus->reg16[cmd::REG_BUVL] = cmd::BUVL_RESET;
       bus->reg16[cmd::REG_TEMP_LIMIT] = cmd::TEMP_LIMIT_RESET;
       bus->reg16[cmd::REG_PWR_LIMIT] = cmd::PWR_LIMIT_RESET;
-      bus->diagAlrt = cmd::DIAG_ALRT_RESET;
+      bus->diagAlrt = bus->resetLeavesMemstatLow ? 0 : cmd::DIAG_ALRT_RESET;
       bus->reg16[cmd::REG_CONFIG] = cmd::CONFIG_RST;
     }
     if (reg == cmd::REG_CONFIG && ((value & cmd::CONFIG_RSTACC) != 0)) {
@@ -448,6 +449,52 @@ void assertSentinelRawSample(const RawSample& raw) {
   TEST_ASSERT_EQUAL_HEX16(0x5AA5u, raw.diagAlertRaw);
 }
 
+void assertPositiveIntegerSample(const IntegerSample& sample) {
+  TEST_ASSERT_EQUAL_INT32(97200, sample.shuntMicrovolts);
+  TEST_ASSERT_EQUAL_UINT32(48000u, sample.busMillivolts);
+  TEST_ASSERT_EQUAL_INT32(25000, sample.dieTemperatureMilliC);
+  TEST_ASSERT_EQUAL_INT32(6000, sample.currentMilliamps);
+  TEST_ASSERT_EQUAL_UINT32(288001u, sample.powerMilliwatts);
+}
+
+IntegerSample sentinelIntegerSample() {
+  IntegerSample sample{};
+  sample.shuntMicrovolts = -11;
+  sample.busMillivolts = 22;
+  sample.dieTemperatureMilliC = -33;
+  sample.currentMilliamps = -44;
+  sample.powerMilliwatts = 55;
+  sample.diagAlertValid = true;
+  sample.diagAlertRaw = 0x33CC;
+  return sample;
+}
+
+void assertSentinelIntegerSample(const IntegerSample& sample) {
+  TEST_ASSERT_EQUAL_INT32(-11, sample.shuntMicrovolts);
+  TEST_ASSERT_EQUAL_UINT32(22u, sample.busMillivolts);
+  TEST_ASSERT_EQUAL_INT32(-33, sample.dieTemperatureMilliC);
+  TEST_ASSERT_EQUAL_INT32(-44, sample.currentMilliamps);
+  TEST_ASSERT_EQUAL_UINT32(55u, sample.powerMilliwatts);
+  TEST_ASSERT_TRUE(sample.diagAlertValid);
+  TEST_ASSERT_EQUAL_HEX16(0x33CCu, sample.diagAlertRaw);
+}
+
+void assertPositivePowerRawSample(const RawSample& raw) {
+  TEST_ASSERT_EQUAL_INT32(0x4BF00, raw.vshunt);
+  TEST_ASSERT_EQUAL_UINT32(0x3C000u, raw.vbus);
+  TEST_ASSERT_EQUAL_INT16(0x0C80, raw.dietemp);
+  TEST_ASSERT_EQUAL_INT32(0x4CCCC, raw.current);
+  TEST_ASSERT_EQUAL_UINT32(0x48000Cu, raw.power);
+  TEST_ASSERT_EQUAL_UINT64(0u, raw.energy);
+  TEST_ASSERT_EQUAL_INT64(0, raw.charge);
+  TEST_ASSERT_FALSE(raw.energyValid);
+  TEST_ASSERT_FALSE(raw.chargeValid);
+  TEST_ASSERT_FALSE(raw.energyOverflow);
+  TEST_ASSERT_FALSE(raw.chargeOverflow);
+  TEST_ASSERT_FALSE(raw.mathOverflow);
+  TEST_ASSERT_FALSE(raw.diagAlertValid);
+}
+
 // ===========================================================================
 // Status tests
 // ===========================================================================
@@ -470,6 +517,17 @@ void test_status_in_progress() {
   TEST_ASSERT_FALSE(st.ok());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS), static_cast<uint8_t>(st.code));
   TEST_ASSERT_TRUE(st.inProgress());
+}
+
+void test_status_is_and_bool_conversion() {
+  Status ok = Status::Ok();
+  TEST_ASSERT_TRUE(ok.is(Err::OK));
+  TEST_ASSERT_TRUE(static_cast<bool>(ok));
+
+  Status st = Status::Error(Err::I2C_TIMEOUT, "timeout", -7);
+  TEST_ASSERT_TRUE(st.is(Err::I2C_TIMEOUT));
+  TEST_ASSERT_FALSE(st.is(Err::I2C_BUS));
+  TEST_ASSERT_FALSE(static_cast<bool>(st));
 }
 
 // ===========================================================================
@@ -1020,21 +1078,31 @@ void test_recover_preserves_transport_errors_for_identity_memstat_reads() {
       cmd::REG_DEVICE_ID,
       cmd::REG_DIAG_ALRT,
   };
+  const Err codes[] = {
+      Err::I2C_NACK_ADDR,
+      Err::I2C_NACK_DATA,
+      Err::I2C_TIMEOUT,
+      Err::I2C_BUS,
+      Err::I2C_ERROR,
+      Err::TIMEOUT,
+  };
 
   for (uint8_t reg : regs) {
-    FakeBus bus;
-    INA228::INA228 dev;
-    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
-    clearReadHistory(bus);
-    bus.readError = Status::Error(Err::I2C_BUS, "forced recover read error", -62);
-    queueNthReadFailure(bus, reg, 1);
+    for (Err code : codes) {
+      FakeBus bus;
+      INA228::INA228 dev;
+      TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+      clearReadHistory(bus);
+      bus.readError = Status::Error(code, "forced recover read error", -62);
+      queueNthReadFailure(bus, reg, 1);
 
-    Status st = dev.recover();
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
-                            static_cast<uint8_t>(st.code));
-    TEST_ASSERT_EQUAL_INT32(-62, st.detail);
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
-                            static_cast<uint8_t>(dev.lastError().code));
+      Status st = dev.recover();
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(code),
+                              static_cast<uint8_t>(st.code));
+      TEST_ASSERT_EQUAL_INT32(-62, st.detail);
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(code),
+                              static_cast<uint8_t>(dev.lastError().code));
+    }
   }
 }
 
@@ -1294,6 +1362,79 @@ void test_soft_reset_read_failures_mark_dirty_without_replay() {
     TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_ADC_CONFIG)) != 0);
     TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_SHUNT_CAL)) != 0);
   }
+}
+
+void test_soft_reset_identity_mismatch_marks_dirty_without_replay() {
+  {
+    FakeBus bus;
+    INA228::INA228 dev;
+    Config cfg = makeConfig(bus);
+    cfg.shuntResistanceOhm = 0.0162f;
+    cfg.maxExpectedCurrentA = 10.0f;
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    bus.manufacturerId = 0x1234;
+    clearWriteHistory(bus);
+
+    Status st = dev.softReset();
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_ID_MISMATCH),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_INT32(0x1234, st.detail);
+    TEST_ASSERT_EQUAL_UINT32(1u, bus.writeHistoryCount);
+    TEST_ASSERT_EQUAL_UINT32(0u, countRegisterWrites(bus, cmd::REG_SHUNT_CAL));
+
+    SettingsSnapshot snap{};
+    TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+    TEST_ASSERT_TRUE(snap.hardwareDirty);
+    TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_CONFIG)) != 0);
+    TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_SHUNT_CAL)) != 0);
+  }
+
+  {
+    FakeBus bus;
+    INA228::INA228 dev;
+    Config cfg = makeConfig(bus);
+    cfg.shuntResistanceOhm = 0.0162f;
+    cfg.maxExpectedCurrentA = 10.0f;
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    bus.deviceId = 0x4321;
+    clearWriteHistory(bus);
+
+    Status st = dev.softReset();
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_ID_MISMATCH),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_INT32(0x4321, st.detail);
+    TEST_ASSERT_EQUAL_UINT32(1u, bus.writeHistoryCount);
+    TEST_ASSERT_EQUAL_UINT32(0u, countRegisterWrites(bus, cmd::REG_SHUNT_CAL));
+
+    SettingsSnapshot snap{};
+    TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+    TEST_ASSERT_TRUE(snap.hardwareDirty);
+    TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_CONFIG)) != 0);
+    TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_SHUNT_CAL)) != 0);
+  }
+}
+
+void test_soft_reset_memstat_failure_marks_dirty_without_replay() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0162f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  bus.resetLeavesMemstatLow = true;
+  clearWriteHistory(bus);
+
+  Status st = dev.softReset();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MEMORY_ERROR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(1u, bus.writeHistoryCount);
+  TEST_ASSERT_EQUAL_UINT32(0u, countRegisterWrites(bus, cmd::REG_SHUNT_CAL));
+
+  SettingsSnapshot snap{};
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_TRUE(snap.hardwareDirty);
+  TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_CONFIG)) != 0);
+  TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_SHUNT_CAL)) != 0);
 }
 
 void test_reset_accumulators_clears_rstacc_and_invalidates_until_cnvrf() {
@@ -2625,6 +2766,92 @@ void test_read_raw_sample_uses_unsigned_vbus_and_energy() {
   TEST_ASSERT_EQUAL_UINT64(0xFFFFFFFFFFULL, raw.energy);
 }
 
+void test_read_integer_sample_uses_fixed_units_without_accumulators() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0162f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  loadPositiveMeasurementRegisters(bus);
+  bus.diagAlrt = cmd::DIAG_MEMSTAT;
+  clearReadHistory(bus);
+
+  IntegerSample sample{};
+  Status st = dev.readIntegerSample(sample);
+  TEST_ASSERT_TRUE(st.ok());
+  assertPositiveIntegerSample(sample);
+  TEST_ASSERT_TRUE(sample.diagAlertValid);
+  TEST_ASSERT_EQUAL_HEX16(cmd::DIAG_MEMSTAT, sample.diagAlertRaw);
+  TEST_ASSERT_TRUE(wasRegisterRead(bus, cmd::REG_DIAG_ALRT));
+  TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_ENERGY));
+  TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_CHARGE));
+}
+
+void test_convert_raw_sample_uses_fixed_units_without_i2c() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0162f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  RawSample raw{};
+  raw.vshunt = 0x4BF00;
+  raw.vbus = 0x3C000;
+  raw.dietemp = 0x0C80;
+  raw.current = 0x4CCCC;
+  raw.power = 0x48000C;
+  raw.diagAlertValid = true;
+  raw.diagAlertRaw = cmd::DIAG_MEMSTAT;
+
+  const uint32_t readsBefore = bus.readCalls;
+  const uint32_t writesBefore = bus.writeCalls;
+  IntegerSample sample{};
+  Status st = dev.convertRawSample(raw, sample);
+  TEST_ASSERT_TRUE(st.ok());
+  assertPositiveIntegerSample(sample);
+  TEST_ASSERT_TRUE(sample.diagAlertValid);
+  TEST_ASSERT_EQUAL_HEX16(cmd::DIAG_MEMSTAT, sample.diagAlertRaw);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+}
+
+void test_integer_sample_requires_calibration_and_preserves_output() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  const uint32_t readsBefore = bus.readCalls;
+
+  IntegerSample sample{};
+  sample.busMillivolts = 1234;
+  Status st = dev.readIntegerSample(sample);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(1234u, sample.busMillivolts);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+}
+
+void test_convert_raw_sample_reports_math_overflow_evidence() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0162f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  RawSample raw{};
+  raw.diagAlertValid = true;
+  raw.diagAlertRaw = cmd::DIAG_MEMSTAT | cmd::DIAG_MATHOF;
+
+  IntegerSample sample{};
+  sample.currentMilliamps = 77;
+  Status st = dev.convertRawSample(raw, sample);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MATH_OVERFLOW),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(77, sample.currentMilliamps);
+}
+
 void test_20bit_edge_vectors_and_low_nibble_masking() {
   FakeBus bus;
   INA228::INA228 dev;
@@ -2792,6 +3019,224 @@ void test_read_raw_sample_failures_leave_output_unchanged() {
                             static_cast<uint8_t>(st.code));
     assertSentinelRawSample(raw);
   }
+}
+
+void test_power_sample_raw_step_respects_budget_one() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0162f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  loadPositiveMeasurementRegisters(bus);
+  clearReadHistory(bus);
+
+  RawSample raw = sentinelRawSample();
+  IntegerSample integer = sentinelIntegerSample();
+  const uint8_t expected[] = {
+      cmd::REG_VSHUNT,
+      cmd::REG_VBUS,
+      cmd::REG_DIETEMP,
+      cmd::REG_CURRENT,
+      cmd::REG_POWER,
+  };
+
+  for (size_t i = 0; i < sizeof(expected); ++i) {
+    Status st = dev.readPowerSampleRawStep(raw, integer, 1);
+    if (i + 1U < sizeof(expected)) {
+      TEST_ASSERT_TRUE(st.inProgress());
+      assertSentinelRawSample(raw);
+      assertSentinelIntegerSample(integer);
+    } else {
+      TEST_ASSERT_TRUE(st.ok());
+    }
+    TEST_ASSERT_EQUAL_UINT32(i + 1U, bus.readHistoryCount);
+    TEST_ASSERT_EQUAL_HEX8(expected[i], bus.readHistory[i]);
+  }
+
+  assertPositivePowerRawSample(raw);
+  assertPositiveIntegerSample(integer);
+  TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_DIAG_ALRT));
+  TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_ENERGY));
+  TEST_ASSERT_FALSE(wasRegisterRead(bus, cmd::REG_CHARGE));
+}
+
+void test_power_sample_raw_step_respects_budget_two() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0162f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  loadPositiveMeasurementRegisters(bus);
+  clearReadHistory(bus);
+
+  RawSample raw = sentinelRawSample();
+  IntegerSample integer = sentinelIntegerSample();
+
+  Status st = dev.readPowerSampleRawStep(raw, integer, 2);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_EQUAL_UINT32(2u, bus.readHistoryCount);
+  assertSentinelRawSample(raw);
+  assertSentinelIntegerSample(integer);
+
+  st = dev.readPowerSampleRawStep(raw, integer, 2);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_EQUAL_UINT32(4u, bus.readHistoryCount);
+  assertSentinelRawSample(raw);
+  assertSentinelIntegerSample(integer);
+
+  st = dev.readPowerSampleRawStep(raw, integer, 2);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(5u, bus.readHistoryCount);
+  assertPositivePowerRawSample(raw);
+  assertPositiveIntegerSample(integer);
+}
+
+void test_power_sample_raw_step_full_budget_outputs_integer_units() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0162f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  loadPositiveMeasurementRegisters(bus);
+  clearReadHistory(bus);
+
+  RawSample raw = sentinelRawSample();
+  IntegerSample integer = sentinelIntegerSample();
+  Status st = dev.readPowerSampleRawStep(raw, integer, 5);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(5u, bus.readHistoryCount);
+  assertPositivePowerRawSample(raw);
+  assertPositiveIntegerSample(integer);
+}
+
+void test_poll_measurement_ready_delay_gate_and_diag_budget() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  Status st = dev.startTriggeredMeasurement(Mode::TRIG_ALL);
+  TEST_ASSERT_TRUE(st.inProgress());
+  clearReadHistory(bus);
+
+  bool ready = true;
+  st = dev.pollMeasurementReady(bus.nowMs, 1, ready);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(ready);
+  TEST_ASSERT_EQUAL_UINT32(0u, bus.readHistoryCount);
+
+  bus.nowMs += dev.estimateConversionTimeMs();
+  bus.diagAlrt = cmd::DIAG_MEMSTAT;
+  st = dev.pollMeasurementReady(bus.nowMs, 1, ready);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(ready);
+  TEST_ASSERT_EQUAL_UINT32(1u, bus.readHistoryCount);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_DIAG_ALRT, bus.readHistory[0]);
+
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
+  st = dev.pollMeasurementReady(bus.nowMs, 1, ready);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(ready);
+  TEST_ASSERT_EQUAL_UINT32(2u, bus.readHistoryCount);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_DIAG_ALRT, bus.readHistory[1]);
+}
+
+void test_apply_calibration_job_marks_adc_dirty_when_later_write_fails() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0162f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  cfg.shuntTempCoeffPpmC = 3900;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  clearWriteHistory(bus);
+  queueNthWriteFailure(bus, cmd::REG_SHUNT_CAL, 1);
+
+  Status st = dev.startApplyCalibration();
+  TEST_ASSERT_TRUE(st.inProgress());
+  st = dev.pollApplyCalibration(bus.nowMs, 6);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(5u, bus.writeHistoryCount);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_ADC_CONFIG, bus.writeHistory[0].reg);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CONFIG, bus.writeHistory[1].reg);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_DIAG_ALRT, bus.writeHistory[2].reg);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_SHUNT_TEMPCO, bus.writeHistory[3].reg);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_SHUNT_CAL, bus.writeHistory[4].reg);
+  TEST_ASSERT_FALSE(bus.writeHistory[4].success);
+
+  SettingsSnapshot snap{};
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_TRUE(snap.hardwareDirty);
+  TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_SHUNT_CAL)) != 0);
+  TEST_ASSERT_TRUE((snap.dirtyRegisterMask & (uint64_t{1} << cmd::REG_ADC_CONFIG)) != 0);
+}
+
+void test_reset_job_budget_one_delay_and_reidentification() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0162f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  cfg.shuntTempCoeffPpmC = 3900;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  TEST_ASSERT_TRUE(dev.setAlertLatch(true).ok());
+  clearReadHistory(bus);
+  clearWriteHistory(bus);
+  bus.configResetReadsRemaining = 1;
+
+  Status st = dev.startResetJob();
+  TEST_ASSERT_TRUE(st.inProgress());
+
+  uint32_t lastReads = bus.readCalls;
+  uint32_t lastWrites = bus.writeCalls;
+  st = dev.pollResetJob(bus.nowMs, 1);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_EQUAL_UINT32(0u, bus.readCalls - lastReads);
+  TEST_ASSERT_EQUAL_UINT32(1u, bus.writeCalls - lastWrites);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CONFIG, bus.writeHistory[0].reg);
+  TEST_ASSERT_EQUAL_HEX16(cmd::CONFIG_RST, bus.writeHistory[0].value);
+
+  lastReads = bus.readCalls;
+  lastWrites = bus.writeCalls;
+  st = dev.pollResetJob(bus.nowMs, 1);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_EQUAL_UINT32(0u, bus.readCalls - lastReads);
+  TEST_ASSERT_EQUAL_UINT32(0u, bus.writeCalls - lastWrites);
+
+  bus.nowMs += 1;
+  for (uint8_t i = 0; i < 20 && st.inProgress(); ++i) {
+    lastReads = bus.readCalls;
+    lastWrites = bus.writeCalls;
+    st = dev.pollResetJob(bus.nowMs, 1);
+    const uint32_t delta = (bus.readCalls - lastReads) +
+                           (bus.writeCalls - lastWrites);
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32(1u, delta);
+  }
+
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(5u, bus.readHistoryCount);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CONFIG, bus.readHistory[0]);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CONFIG, bus.readHistory[1]);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_MANUFACTURER_ID, bus.readHistory[2]);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_DEVICE_ID, bus.readHistory[3]);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_DIAG_ALRT, bus.readHistory[4]);
+
+  TEST_ASSERT_EQUAL_UINT32(7u, bus.writeHistoryCount);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CONFIG, bus.writeHistory[0].reg);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_ADC_CONFIG, bus.writeHistory[1].reg);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CONFIG, bus.writeHistory[2].reg);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_DIAG_ALRT, bus.writeHistory[3].reg);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_SHUNT_TEMPCO, bus.writeHistory[4].reg);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_SHUNT_CAL, bus.writeHistory[5].reg);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_ADC_CONFIG, bus.writeHistory[6].reg);
+
+  SettingsSnapshot snap{};
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_FALSE(snap.hardwareDirty);
+  TEST_ASSERT_EQUAL_UINT64(0u, snap.dirtyRegisterMask);
+  TEST_ASSERT_TRUE(snap.thresholdsDirty);
 }
 
 void test_calibration_vectors_program_exact_shunt_cal_and_lsb() {
@@ -3687,6 +4132,7 @@ int main() {
   RUN_TEST(test_status_ok);
   RUN_TEST(test_status_error);
   RUN_TEST(test_status_in_progress);
+  RUN_TEST(test_status_is_and_bool_conversion);
   RUN_TEST(test_config_defaults);
   RUN_TEST(test_get_settings_snapshot);
   RUN_TEST(test_begin_rejects_missing_callbacks);
@@ -3722,6 +4168,8 @@ int main() {
   RUN_TEST(test_soft_reset_write_failure_marks_reset_domain_dirty);
   RUN_TEST(test_soft_reset_timeout_marks_dirty_without_replay);
   RUN_TEST(test_soft_reset_read_failures_mark_dirty_without_replay);
+  RUN_TEST(test_soft_reset_identity_mismatch_marks_dirty_without_replay);
+  RUN_TEST(test_soft_reset_memstat_failure_marks_dirty_without_replay);
   RUN_TEST(test_reset_accumulators_clears_rstacc_and_invalidates_until_cnvrf);
   RUN_TEST(test_reset_accumulators_write_failure_marks_dirty_and_invalidates);
   RUN_TEST(test_reset_accumulators_later_failures_mark_dirty_and_invalidate);
@@ -3764,11 +4212,21 @@ int main() {
   RUN_TEST(test_math_overflow_blocks_current_power_and_measurement);
   RUN_TEST(test_reset_accumulators_invalidates_until_next_continuous_cnvrf);
   RUN_TEST(test_read_raw_sample_uses_unsigned_vbus_and_energy);
+  RUN_TEST(test_read_integer_sample_uses_fixed_units_without_accumulators);
+  RUN_TEST(test_convert_raw_sample_uses_fixed_units_without_i2c);
+  RUN_TEST(test_integer_sample_requires_calibration_and_preserves_output);
+  RUN_TEST(test_convert_raw_sample_reports_math_overflow_evidence);
   RUN_TEST(test_20bit_edge_vectors_and_low_nibble_masking);
   RUN_TEST(test_temperature_negative_and_positive_vectors);
   RUN_TEST(test_scalar_power_energy_charge_lsb_vectors);
   RUN_TEST(test_read_measurement_failures_leave_output_unchanged);
   RUN_TEST(test_read_raw_sample_failures_leave_output_unchanged);
+  RUN_TEST(test_power_sample_raw_step_respects_budget_one);
+  RUN_TEST(test_power_sample_raw_step_respects_budget_two);
+  RUN_TEST(test_power_sample_raw_step_full_budget_outputs_integer_units);
+  RUN_TEST(test_poll_measurement_ready_delay_gate_and_diag_budget);
+  RUN_TEST(test_apply_calibration_job_marks_adc_dirty_when_later_write_fails);
+  RUN_TEST(test_reset_job_budget_one_delay_and_reidentification);
   RUN_TEST(test_calibration_vectors_program_exact_shunt_cal_and_lsb);
   RUN_TEST(test_set_adc_range_recomputes_shunt_cal_with_multiplier);
   RUN_TEST(test_set_adc_range_config_write_failure_marks_config_dirty);

@@ -630,7 +630,7 @@ void printRawSample() {
   Serial.printf("  Power:  %lu (0x%06lX)\n",
                 static_cast<unsigned long>(raw.power),
                 static_cast<unsigned long>(raw.power));
-  Serial.printf("  Energy: %lld\n", static_cast<long long>(raw.energy));
+  Serial.printf("  Energy: %llu\n", static_cast<unsigned long long>(raw.energy));
   Serial.printf("  Charge: %lld\n", static_cast<long long>(raw.charge));
   Serial.printf("  Accum valid: energy=%s charge=%s\n",
                 log_bool_str(raw.energyValid),
