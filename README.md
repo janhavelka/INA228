@@ -51,7 +51,7 @@ systems should provide an external bus manager, locking, stable device handles,
 and application-specific recovery policy.
 
 Reproducible local and CI build commands are documented in
-[`docs/ESP_IDF_BUILD.md`](docs/ESP_IDF_BUILD.md). The
+[`docs/integration/esp-idf.md`](docs/integration/esp-idf.md). The
 `tools/check_idf_example_contract.py` guard is a static contract check; it is
 not a substitute for a real `idf.py` build log.
 
@@ -64,7 +64,7 @@ not a substitute for a real `idf.py` build log.
   ADCRANGE, reset/RSTACC, recovery, dirty-state, and status precision behavior.
 - Documents that current, power, energy, and charge require valid calibration,
   clean hardware/cache state, and datasheet-supported accumulation conditions.
-- Includes 114 native fake-bus tests and local PlatformIO Arduino ESP32-S2/S3
+- Includes 127 native fake-bus tests and local PlatformIO Arduino ESP32-S2/S3
   build coverage on the hardening branch.
 - Configures GitHub Actions pure ESP-IDF `idf.py` builds for ESP32-S2 and
   ESP32-S3, but current CI logs must be reviewed before claiming ESP-IDF build
@@ -364,7 +364,7 @@ tracked by level so release wording cannot overstate what was actually run.
 | Evidence level | Current status |
 | --- | --- |
 | Implemented | Core hardening, Arduino example, pure ESP-IDF example, CI configuration, and docs are present on this branch. |
-| Tested by native fake-bus | Native Unity tests cover device semantics; latest local verification pass was 114/114. |
+| Tested by native fake-bus | Native Unity tests cover device semantics; latest local verification pass was 127/127. |
 | Locally built | Latest local verification pass built PlatformIO native plus Arduino ESP32-S2/S3 and packed `INA228-2.0.0.tar.gz`; the generated tarball was removed. |
 | CI configured | GitHub Actions includes native tests, Arduino S2/S3 builds, package checks, guards, and ESP-IDF S2/S3 builds. |
 | CI verified | Not claimed here; workflow logs for the current branch or PR must be reviewed before saying CI is green. |
@@ -372,12 +372,12 @@ tracked by level so release wording cannot overstate what was actually run.
 | Hardware validated | `NOT RUN`; no hardware validation logs are checked in. |
 
 Hardware validation is tracked separately in
-[`docs/INA228_HARDWARE_VALIDATION_MATRIX.md`](docs/INA228_HARDWARE_VALIDATION_MATRIX.md).
-All rows in that matrix remain `NOT RUN` until dated logs, equipment, board,
+[`docs/validation/hardware-validation-procedure.md`](docs/validation/hardware-validation-procedure.md).
+Hardware validation remains unclaimed until dated logs, equipment, board,
 module, shunt, rail/load, commands, and pass/fail notes are checked in. Use
 [`tools/INA228_HIL_COMMAND_SEQUENCE.md`](tools/INA228_HIL_COMMAND_SEQUENCE.md)
 for repeatable CLI transcripts and
-[`docs/INA228_RELEASE_CHECKLIST.md`](docs/INA228_RELEASE_CHECKLIST.md) before
+[`docs/validation/release-checklist.md`](docs/validation/release-checklist.md) before
 tagging.
 
 ```bash

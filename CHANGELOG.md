@@ -68,11 +68,12 @@ returning stale or invalid converted values.
 - Deleted implicit copy and move operations for `INA228::INA228`; keep driver
   instances stable and pass them by pointer or reference.
 - Removed internal process artifacts and generated raw extraction archives from
-  the public docs tree; retained release-relevant status in README, checklist,
-  hardware matrix, ESP-IDF docs, curated notes, and source PDFs.
+  the public docs tree; retained release-relevant status in README,
+  `docs/validation/`, `docs/integration/`, compact reference notes, and source
+  PDFs.
 
 ### Validation
-- Local native tests pass with 114/114 tests on this hardening checkout.
+- Local native tests pass with 127/127 tests on this hardening checkout.
 - Local PlatformIO Arduino builds pass for `esp32s2dev` and `esp32s3dev`.
 - GitHub Actions is configured for pure ESP-IDF ESP32-S2/S3 builds, but current
   CI results must be reviewed before claiming ESP-IDF build verification.
@@ -138,7 +139,7 @@ returning stale or invalid converted values.
 ### Changed
 - Triggered conversions now return `IN_PROGRESS` and block measurement reads with `MEASUREMENT_NOT_READY` until conversion time has elapsed and CNVRF is set.
 - Explicit recovery/reset bypass internals now use the shared `ScopedOfflineI2cAllowance` / `_reassertOfflineLatch()` procedure so failed recovery attempts that begin from `OFFLINE` keep the latch asserted.
-- Reference documentation now uses human-readable vendor PDF names and compact power-monitor notes under `docs/extracted-md/`.
+- Reference documentation now uses human-readable vendor PDF names and compact power-monitor notes under `docs/reference/`.
 - Calibration now adjusts `currentLsb()` to the actual programmed `SHUNT_CAL` value when register clamping occurs.
 - `SHUNT_TEMPCO` is programmed from the configured coefficient even when temperature compensation is disabled; the enable flag controls use of that coefficient.
 - Raw bus voltage and raw energy API types now reflect unsigned device registers.

@@ -24,7 +24,7 @@ REQUIRED_FILES = [
     "examples/esp_idf/basic/main/main.cpp",
     "examples/esp_idf/basic/main/Ina228IdfI2cTransport.h",
     "examples/esp_idf/basic/main/Ina228IdfI2cTransport.cpp",
-    "docs/ESP_IDF_BUILD.md",
+    "docs/integration/esp-idf.md",
 ]
 MANDATORY_COMMANDS = [
     "help",
@@ -227,7 +227,7 @@ def main() -> int:
     for token in ("esp32s2", "esp32s3", "idf:"):
         require_token(manifest, token, "idf_component.yml")
 
-    build_doc = (ROOT / "docs" / "ESP_IDF_BUILD.md").read_text(
+    build_doc = (ROOT / "docs" / "integration" / "esp-idf.md").read_text(
         encoding="utf-8", errors="replace"
     )
     for token in BUILD_DOC_REQUIRED_TOKENS:

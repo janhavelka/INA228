@@ -1,35 +1,30 @@
-# INA228 Documentation Index
+# INA228 Documentation
 
-This directory contains public support documentation, hardware validation
-procedures, ESP-IDF notes, and source-reference extracts. It is not itself a
-hardware-validation claim.
+This directory is intentionally small. The root `README.md` remains the main
+user-facing guide; public API details come from Doxygen comments in
+`include/INA228/`. The files here cover integration, vendor reference material,
+and validation/release evidence.
 
-## Current Documents
+## Integration
 
-| Document | Purpose |
-| --- | --- |
-| `INA228_RELEASE_CHECKLIST.md` | Required gates before merge, release, or tag wording can be used. |
-| `INA228_HARDWARE_VALIDATION_MATRIX.md` | Hardware validation plan and evidence index. All rows remain `NOT RUN` until dated logs are checked in. |
-| `ESP_IDF_BUILD.md` | Reproducible pure ESP-IDF build commands and claim policy. |
-| `IDF_PORT_IMPLEMENTATION.md` | Implemented ESP-IDF example/component structure and validation notes. |
-| `../tools/INA228_HIL_COMMAND_SEQUENCE.md` | CLI transcript template for repeatable hardware-in-loop validation runs. |
+- [ESP-IDF integration](integration/esp-idf.md) - native ESP-IDF component,
+  example, build commands, and adapter boundary.
 
-## Reference Extracts
+## Reference
 
-| Path | Purpose |
-| --- | --- |
-| `extracted-md/` | Curated INA228 datasheet notes used by the driver work. These notes summarize facts from the checked-in datasheet. |
-| `application_notes/` | Curated external TI application-note summaries and PDFs. They are design references, not validation evidence for this repository. |
-| `INA228_datasheet.pdf` | Checked-in INA228 datasheet reference. |
+- [INA228 device reference](reference/ina228-device-reference.md) - compact
+  register, scaling, timing, alert, and reset notes used by the driver.
+- [Application notes](reference/application-notes.md) - concise relevance notes
+  for retained TI application-note PDFs.
+- `reference/vendor/` - vendor PDFs retained as source material.
 
-## Evidence Levels
+## Validation
 
-- Implemented: source, examples, docs, and CI configuration exist in the tree.
-- Native-tested: fake-bus/native tests passed on a dated checkout.
-- Locally built: local PlatformIO or `idf.py` build logs exist.
-- CI-configured: workflow files contain the job.
-- CI-verified: current workflow logs were reviewed and passed.
-- Hardware-validated: dated hardware logs are checked in and matrix rows are
-  moved out of `NOT RUN`.
+- [Validation status](validation/validation-status.md) - current evidence level
+  and claim policy.
+- [Hardware validation procedure](validation/hardware-validation-procedure.md)
+  - repeatable hardware/HIL procedure and required evidence.
+- [Release checklist](validation/release-checklist.md) - version, CI, package,
+  documentation, and tag gates.
 
-Do not infer a stronger evidence level from a weaker one.
+Generated Doxygen output belongs in `docs/doxygen/` and should not be committed.
