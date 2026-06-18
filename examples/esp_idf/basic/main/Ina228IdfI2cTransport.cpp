@@ -15,9 +15,7 @@ int clampTimeoutMs(uint32_t timeoutMs) {
   return static_cast<int>(timeoutMs > maxTimeout ? maxTimeout : timeoutMs);
 }
 
-INA228::Status mapEspTransferErr(esp_err_t err, const char* context,
-                                 Ina228IdfI2c* ctx = nullptr, uint8_t addr = 0,
-                                 uint32_t timeoutMs = 0) {
+INA228::Status mapEspTransferErr(esp_err_t err, const char* context) {
   if (err == ESP_OK) {
     return INA228::Status::Ok();
   }
@@ -26,15 +24,6 @@ INA228::Status mapEspTransferErr(esp_err_t err, const char* context,
                                  static_cast<int32_t>(err));
   }
   if (err == ESP_ERR_INVALID_RESPONSE) {
-    if (ctx != nullptr && ctx->bus != nullptr) {
-      const esp_err_t probeErr =
-          i2c_master_probe(ctx->bus, addr, clampTimeoutMs(timeoutMs));
-      if (probeErr == ESP_ERR_INVALID_RESPONSE || probeErr == ESP_ERR_NOT_FOUND) {
-        return INA228::Status::Error(INA228::Err::I2C_NACK_ADDR,
-                                     "I2C address NACK",
-                                     static_cast<int32_t>(err));
-      }
-    }
     return INA228::Status::Error(INA228::Err::I2C_ERROR,
                                  "I2C NACK, ESP-IDF phase unavailable",
                                  static_cast<int32_t>(err));
@@ -177,7 +166,7 @@ INA228::Status ina228IdfI2cWrite(uint8_t addr, const uint8_t* data, size_t len,
   }
 
   ctx->lastError = i2c_master_transmit(ctx->dev, data, len, clampTimeoutMs(timeoutMs));
-  return mapEspTransferErr(ctx->lastError, "I2C write failed", ctx, addr, timeoutMs);
+  return mapEspTransferErr(ctx->lastError, "I2C write failed");
 }
 
 INA228::Status ina228IdfI2cWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen,
@@ -194,7 +183,7 @@ INA228::Status ina228IdfI2cWriteRead(uint8_t addr, const uint8_t* txData, size_t
 
   ctx->lastError = i2c_master_transmit_receive(
       ctx->dev, txData, txLen, rxData, rxLen, clampTimeoutMs(timeoutMs));
-  return mapEspTransferErr(ctx->lastError, "I2C write-read failed", ctx, addr, timeoutMs);
+  return mapEspTransferErr(ctx->lastError, "I2C write-read failed");
 }
 
 INA228::Status ina228IdfI2cWriteReadAt(uint8_t addr, const uint8_t* txData,
@@ -226,7 +215,7 @@ INA228::Status ina228IdfI2cWriteReadAt(uint8_t addr, const uint8_t* txData,
   if (tempDev != nullptr) {
     (void)i2c_master_bus_rm_device(tempDev);
   }
-  return mapEspTransferErr(ctx->lastError, "I2C write-read failed", ctx, addr, timeoutMs);
+  return mapEspTransferErr(ctx->lastError, "I2C write-read failed");
 }
 
 uint32_t ina228IdfNowMs(void*) {

@@ -187,7 +187,10 @@ public:
   /// evidence is preserved in getDiagAlertSnapshot().
   void tick(uint32_t nowMs);
 
-  /// Shutdown the driver and release resources
+  /// End the driver session and clear local runtime state without I2C.
+  ///
+  /// This is local teardown only. Use setMode(Mode::SHUTDOWN) first when the
+  /// application wants an observable, status-returning hardware shutdown.
   void end();
 
   /// Check if begin() completed successfully and end() has not been called
@@ -213,13 +216,13 @@ public:
   Status recover();
 
   /// Populate a cache-only settings snapshot without touching I2C.
-  /// @param out Destination snapshot. Updated only on success.
-  /// @return Status::Ok() when the driver is initialized.
+  /// @param out Destination snapshot.
+  /// @return Status::Ok(); inspect SettingsSnapshot::initialized for state.
   Status getSettings(SettingsSnapshot& out) const;
 
   /// Populate the last preserved DIAG_ALRT snapshot without touching I2C.
-  /// @param out Destination snapshot. Updated only on success.
-  /// @return Status::Ok() when the driver is initialized.
+  /// @param out Destination snapshot.
+  /// @return Status::Ok(); valid is false until DIAG_ALRT evidence exists.
   Status getDiagAlertSnapshot(DiagAlertSnapshot& out) const;
 
   // =========================================================================
@@ -228,6 +231,9 @@ public:
 
   /// Get current driver state
   DriverState state() const { return _driverState; }
+
+  /// Get current driver state; compatibility alias for shared I2C library APIs
+  DriverState driverState() const { return state(); }
 
   /// Check if driver is ready for operations
   bool isOnline() const {
@@ -642,7 +648,8 @@ public:
   /// Read a 40-bit register using tracked transport.
   ///
   /// Diagnostic/service access only. ENERGY/CHARGE reads can affect overflow
-  /// evidence; typed APIs preserve diagnostic context before accumulator reads.
+  /// evidence. This raw helper does not pre-read or preserve DIAG_ALRT; use
+  /// typed APIs or explicitly read DIAG_ALRT first when evidence matters.
   Status readRegister40(uint8_t reg, uint64_t& value);
 
   /// Write a 16-bit register using tracked transport.
@@ -807,6 +814,7 @@ private:
   void _markTriggeredConversionStarted(uint32_t nowMs);
   void _completeTriggeredConversion();
   void _clearCapturedConversionReadyFlag();
+  void _clearCapturedAccumulatorEvidence();
   void _markHardwareDirty(uint8_t reg);
   void _markHardwareDirty(uint8_t reg, const Status& cause);
   void _markConfigReplayDirty(const Status& cause);

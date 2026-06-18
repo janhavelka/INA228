@@ -1,6 +1,6 @@
 # INA228 Driver Library
 
-Framework-neutral INA228 85-V, 20-bit I2C power/energy/charge monitor driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use). This is an industry-readiness hardened, pre-production candidate pending checked-in hardware validation.
+Framework-neutral INA228 85-V, 20-bit I2C power/energy/charge monitor driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use). This is a pre-production hardening candidate pending checked-in hardware validation.
 
 Library version: `v2.0.0` hardening merge candidate. This version is not
 tagged or release-ready until current CI and release checks are reviewed.
@@ -64,8 +64,8 @@ not a substitute for a real `idf.py` build log.
   ADCRANGE, reset/RSTACC, recovery, dirty-state, and status precision behavior.
 - Documents that current, power, energy, and charge require valid calibration,
   clean hardware/cache state, and datasheet-supported accumulation conditions.
-- Includes 127 native fake-bus tests and local PlatformIO Arduino ESP32-S2/S3
-  build coverage on the hardening branch.
+- Includes native fake-bus tests and local PlatformIO Arduino ESP32-S2/S3 build
+  coverage on the hardening branch.
 - Configures GitHub Actions pure ESP-IDF `idf.py` builds for ESP32-S2 and
   ESP32-S3, but current CI logs must be reviewed before claiming ESP-IDF build
   verification.
@@ -175,7 +175,7 @@ development board, wiring, or enclosure safe.
 |--------|-------------|
 | `begin(config)` | Initialize with configuration (validates, verifies device ID + MEMSTAT; preserves transport error codes except address NACK maps to device-not-found) |
 | `tick(nowMs)` | Process pending operations (call from loop) |
-| `end()` | Shutdown and release resources |
+| `end()` | End the driver session and clear local runtime state without I2C; call `setMode(SHUTDOWN)` first when hardware shutdown must be observed |
 | `isInitialized()` | True after successful `begin()` until `end()` |
 | `getConfig()` | Return the driver's cached configuration snapshot |
 | `getSettings(snap)` | Populate a `SettingsSnapshot` with cached config, calibration, conversion, trigger, and health state without I2C |
@@ -227,6 +227,7 @@ explicitly programmed for deterministic readback.
 | Method | Description |
 |--------|-------------|
 | `state()` | Current driver state (UNINIT/READY/DEGRADED/OFFLINE) |
+| `driverState()` | Compatibility alias for `state()` |
 | `isOnline()` | True if READY or DEGRADED |
 | `probe()` | Check device presence (no health tracking; preserves transport error codes except address NACK maps to device-not-found) |
 | `recover()` | Re-validate manufacturer ID, device ID, MEMSTAT, then re-apply config/calibration |
@@ -259,7 +260,7 @@ Accumulator reads first preserve `DIAG_ALRT` when they may touch `ENERGY` or
 |--------|-------------|
 | `readRegister16(reg, value)` | Diagnostic tracked 16-bit read; status-sensitive registers can have read side effects |
 | `readRegister24(reg, value)` | Diagnostic tracked 24-bit read |
-| `readRegister40(reg, value)` | Diagnostic tracked 40-bit read; accumulator reads can affect overflow evidence |
+| `readRegister40(reg, value)` | Diagnostic tracked 40-bit read; accumulator reads can affect overflow evidence and do not pre-preserve `DIAG_ALRT` |
 | `writeRegister16(reg, value)` | Diagnostic tracked 16-bit write; can desynchronize typed cache from hardware |
 
 ### Timing And Scale Introspection
@@ -364,8 +365,8 @@ tracked by level so release wording cannot overstate what was actually run.
 | Evidence level | Current status |
 | --- | --- |
 | Implemented | Core hardening, Arduino example, pure ESP-IDF example, CI configuration, and docs are present on this branch. |
-| Tested by native fake-bus | Native Unity tests cover device semantics; latest local verification pass was 127/127. |
-| Locally built | Latest local verification pass built PlatformIO native plus Arduino ESP32-S2/S3 and packed `INA228-2.0.0.tar.gz`; the generated tarball was removed. |
+| Tested by native fake-bus | Native Unity tests cover device semantics; run `pio test -e native` for current evidence. |
+| Locally built | PlatformIO native, Arduino ESP32-S2/S3, and package commands are documented below; retain logs before claiming a dated local pass. |
 | CI configured | GitHub Actions includes native tests, Arduino S2/S3 builds, package checks, guards, and ESP-IDF S2/S3 builds. |
 | CI verified | Not claimed here; workflow logs for the current branch or PR must be reviewed before saying CI is green. |
 | ESP-IDF build verified | Not claimed here unless local `idf.py` output or reviewed CI logs are captured. |
@@ -384,6 +385,7 @@ tagging.
 python tools/check_cli_contract.py
 python tools/check_idf_example_contract.py
 python tools/check_core_timing_guard.py
+python tools/run_i2c_hil.py --dry-run
 pio test -e native
 pio run -e esp32s3dev
 pio run -e esp32s2dev

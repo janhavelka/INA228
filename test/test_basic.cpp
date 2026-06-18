@@ -575,9 +575,13 @@ void test_get_settings_snapshot() {
   cfg.convDelayMs2 = 7;
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
+  const uint32_t readsBefore = bus.readCalls;
+  const uint32_t writesBefore = bus.writeCalls;
   SettingsSnapshot snap;
   Status st = dev.getSettings(snap);
   TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
   TEST_ASSERT_TRUE(snap.initialized);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
                           static_cast<uint8_t>(snap.state));
@@ -614,6 +618,76 @@ void test_get_settings_snapshot() {
   TEST_ASSERT_FALSE(snap.thresholdsDirty);
   TEST_ASSERT_FALSE(snap.triggeredConversionPending);
   TEST_ASSERT_EQUAL_UINT32(0u, snap.triggeredConversionStartMs);
+}
+
+void test_get_settings_before_begin_is_cache_only_uninitialized_snapshot() {
+  INA228::INA228 dev;
+  SettingsSnapshot settings{};
+  DiagAlertSnapshot diag{};
+
+  Status st = dev.getSettings(settings);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(settings.initialized);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::UNINIT),
+                          static_cast<uint8_t>(settings.state));
+
+  st = dev.getDiagAlertSnapshot(diag);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(diag.valid);
+}
+
+void test_driver_state_alias_matches_state() {
+  FakeBus bus;
+  INA228::INA228 dev;
+
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(dev.state()),
+                          static_cast<uint8_t>(dev.driverState()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::UNINIT),
+                          static_cast<uint8_t>(dev.driverState()));
+
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(dev.state()),
+                          static_cast<uint8_t>(dev.driverState()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
+                          static_cast<uint8_t>(dev.driverState()));
+
+  bus.readErrorRemaining = 1;
+  bus.readError = Status::Error(Err::I2C_BUS, "forced bus error", -11);
+  float volts = 0.0f;
+  Status st = dev.readBusVoltage(volts);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(dev.state()),
+                          static_cast<uint8_t>(dev.driverState()));
+}
+
+void test_get_settings_is_bus_silent_and_does_not_consume_diag() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  clearReadHistory(bus);
+  clearWriteHistory(bus);
+  const uint32_t readsBefore = bus.readCalls;
+  const uint32_t writesBefore = bus.writeCalls;
+  bus.clearDiagOnRead = true;
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF | cmd::DIAG_SHNTOL;
+
+  SettingsSnapshot settings{};
+  Status st = dev.getSettings(settings);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(0u, bus.readHistoryCount);
+  TEST_ASSERT_EQUAL_HEX16(cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF | cmd::DIAG_SHNTOL,
+                          bus.diagAlrt);
+
+  DiagAlertSnapshot snap{};
+  st = dev.getDiagAlertSnapshot(snap);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(snap.valid);
+  TEST_ASSERT_FALSE(snap.diag.cnvrf);
+  TEST_ASSERT_FALSE(snap.diag.shntOL);
 }
 
 // ===========================================================================
@@ -864,6 +938,21 @@ void test_begin_apply_write_failures_reset_cache_without_health_counts() {
     TEST_ASSERT_EQUAL_UINT32(0u, dev.totalSuccess());
     TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, dev.currentLsb());
+
+    SettingsSnapshot settings{};
+    TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+    TEST_ASSERT_FALSE(settings.initialized);
+    TEST_ASSERT_TRUE(settings.hardwareDirty);
+    TEST_ASSERT_TRUE((settings.dirtyRegisterMask & (uint64_t{1} << cmd::REG_CONFIG)) != 0);
+    TEST_ASSERT_TRUE((settings.dirtyRegisterMask & (uint64_t{1} << cmd::REG_ADC_CONFIG)) != 0);
+    TEST_ASSERT_TRUE((settings.dirtyRegisterMask & (uint64_t{1} << cmd::REG_SHUNT_CAL)) != 0);
+    TEST_ASSERT_TRUE(settings.thresholdsDirty);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+                            static_cast<uint8_t>(settings.hardwareDirtyCause.code));
+
+    DiagAlertSnapshot diag{};
+    TEST_ASSERT_TRUE(dev.getDiagAlertSnapshot(diag).ok());
+    TEST_ASSERT_FALSE(diag.valid);
   }
 }
 
@@ -1041,6 +1130,16 @@ void test_recover_success_returns_ready() {
   INA228::INA228 dev;
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_ALATCH |
+                 cmd::DIAG_MATHOF | cmd::DIAG_BUSOL;
+  uint16_t raw = 0;
+  TEST_ASSERT_TRUE(dev.readDiagAlertRaw(raw).ok());
+  DiagAlertSnapshot diag{};
+  TEST_ASSERT_TRUE(dev.getDiagAlertSnapshot(diag).ok());
+  TEST_ASSERT_TRUE(diag.diag.mathOF);
+  TEST_ASSERT_TRUE(diag.diag.busOL);
+  bus.diagAlrt = cmd::DIAG_MEMSTAT;
+
   bus.readErrorRemaining = 1;
   bus.readError = Status::Error(Err::I2C_ERROR, "forced recover error", -9);
   (void)dev.recover();
@@ -1054,6 +1153,11 @@ void test_recover_success_returns_ready() {
                           static_cast<uint8_t>(dev.state()));
   TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
   TEST_ASSERT_EQUAL_UINT32(4321u, dev.lastOkMs());
+
+  TEST_ASSERT_TRUE(dev.getDiagAlertSnapshot(diag).ok());
+  TEST_ASSERT_TRUE(diag.valid);
+  TEST_ASSERT_FALSE(diag.diag.mathOF);
+  TEST_ASSERT_FALSE(diag.diag.busOL);
 }
 
 void test_recover_preserves_transport_error_code() {
@@ -1225,6 +1329,31 @@ void test_offline_reset_accumulators_returns_busy_without_i2c() {
   TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
 }
 
+void test_offline_poll_measurement_ready_returns_busy_without_i2c() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.offlineThreshold = 1;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.readErrorRemaining = 1;
+  bus.readError = Status::Error(Err::I2C_ERROR, "forced timeout", -10);
+  (void)dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+                          static_cast<uint8_t>(dev.state()));
+
+  const uint32_t readsBefore = bus.readCalls;
+  const uint32_t writesBefore = bus.writeCalls;
+  bool ready = true;
+  Status st = dev.pollMeasurementReady(bus.nowMs, 1, ready);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FALSE(ready);
+  TEST_ASSERT_EQUAL_STRING("Driver is offline; call recover()", st.msg);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+}
+
 void test_soft_reset_verifies_identity_memstat_and_replays_cache() {
   FakeBus bus;
   INA228::INA228 dev;
@@ -1234,6 +1363,15 @@ void test_soft_reset_verifies_identity_memstat_and_replays_cache() {
   cfg.shuntTempCoeffPpmC = 3900;
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
   TEST_ASSERT_TRUE(dev.setAlertLatch(true).ok());
+
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_ALATCH |
+                 cmd::DIAG_MATHOF | cmd::DIAG_BUSOL;
+  uint16_t raw = 0;
+  TEST_ASSERT_TRUE(dev.readDiagAlertRaw(raw).ok());
+  DiagAlertSnapshot diag{};
+  TEST_ASSERT_TRUE(dev.getDiagAlertSnapshot(diag).ok());
+  TEST_ASSERT_TRUE(diag.diag.mathOF);
+  TEST_ASSERT_TRUE(diag.diag.busOL);
 
   clearReadHistory(bus);
   clearWriteHistory(bus);
@@ -1270,6 +1408,11 @@ void test_soft_reset_verifies_identity_memstat_and_replays_cache() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::OK),
                           static_cast<uint8_t>(snap.hardwareDirtyCause.code));
   TEST_ASSERT_TRUE(snap.thresholdsDirty);
+
+  TEST_ASSERT_TRUE(dev.getDiagAlertSnapshot(diag).ok());
+  TEST_ASSERT_TRUE(diag.valid);
+  TEST_ASSERT_FALSE(diag.diag.mathOF);
+  TEST_ASSERT_FALSE(diag.diag.busOL);
 }
 
 void test_soft_reset_write_failure_marks_reset_domain_dirty() {
@@ -1449,6 +1592,13 @@ void test_reset_accumulators_clears_rstacc_and_invalidates_until_cnvrf() {
   bus.reg40[cmd::REG_ENERGY] = 123;
   bus.reg40[cmd::REG_CHARGE] = 456;
   bus.diagAlrt |= cmd::DIAG_ENERGYOF | cmd::DIAG_CHARGEOF | cmd::DIAG_MATHOF;
+  uint16_t raw = 0;
+  TEST_ASSERT_TRUE(dev.readDiagAlertRaw(raw).ok());
+  DiagAlertSnapshot diag{};
+  TEST_ASSERT_TRUE(dev.getDiagAlertSnapshot(diag).ok());
+  TEST_ASSERT_TRUE(diag.diag.energyOF);
+  TEST_ASSERT_TRUE(diag.diag.chargeOF);
+  TEST_ASSERT_TRUE(diag.diag.mathOF);
 
   Status st = dev.resetAccumulators();
   TEST_ASSERT_TRUE(st.ok());
@@ -1457,6 +1607,12 @@ void test_reset_accumulators_clears_rstacc_and_invalidates_until_cnvrf() {
   TEST_ASSERT_EQUAL_HEX16(0u, bus.reg16[cmd::REG_CONFIG] & cmd::CONFIG_RSTACC);
   TEST_ASSERT_EQUAL_HEX16(0u, bus.diagAlrt &
                               (cmd::DIAG_ENERGYOF | cmd::DIAG_CHARGEOF | cmd::DIAG_MATHOF));
+  TEST_ASSERT_TRUE(dev.getDiagAlertSnapshot(diag).ok());
+  TEST_ASSERT_TRUE(diag.valid);
+  TEST_ASSERT_FALSE(diag.diag.cnvrf);
+  TEST_ASSERT_FALSE(diag.diag.energyOF);
+  TEST_ASSERT_FALSE(diag.diag.chargeOF);
+  TEST_ASSERT_FALSE(diag.diag.mathOF);
 
   double energy = 1.0;
   st = dev.readEnergy(energy);
@@ -3989,6 +4145,37 @@ void test_public_register_access_helpers() {
   TEST_ASSERT_EQUAL_HEX16(0xBEEFu, bus.reg16[cmd::REG_SHUNT_TEMPCO]);
 }
 
+void test_raw_accumulator_register_read_does_not_pre_preserve_diag_alert() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.clearDiagOnRead = true;
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_ENERGYOF | cmd::DIAG_CHARGEOF;
+  bus.reg40[cmd::REG_ENERGY] = 0x0102030405ULL;
+
+  DiagAlertSnapshot before{};
+  Status st = dev.getDiagAlertSnapshot(before);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(before.valid);
+  TEST_ASSERT_FALSE(before.diag.energyOF);
+  TEST_ASSERT_FALSE(before.diag.chargeOF);
+
+  uint64_t energy = 0;
+  st = dev.readRegister40(cmd::REG_ENERGY, energy);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT64(0x0102030405ULL, energy);
+  TEST_ASSERT_FALSE((bus.diagAlrt & cmd::DIAG_ENERGYOF) != 0);
+  TEST_ASSERT_TRUE((bus.diagAlrt & cmd::DIAG_CHARGEOF) != 0);
+
+  DiagAlertSnapshot after{};
+  st = dev.getDiagAlertSnapshot(after);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_HEX16(before.raw, after.raw);
+  TEST_ASSERT_FALSE(after.diag.energyOF);
+  TEST_ASSERT_FALSE(after.diag.chargeOF);
+}
+
 void test_public_register_access_preserves_transport_errors() {
   const Err transportCodes[] = {
       Err::I2C_NACK_ADDR,
@@ -4102,7 +4289,7 @@ void test_register_access_after_end_does_not_touch_bus() {
   const uint32_t readsAfterBegin = bus.readCalls;
 
   dev.end();
-  TEST_ASSERT_EQUAL_UINT32(writesAfterBegin + 1u, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(writesAfterBegin, bus.writeCalls);
   TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
 
   uint16_t mfgId = 0;
@@ -4120,7 +4307,7 @@ void test_register_access_after_end_does_not_touch_bus() {
   st = dev.writeRegister16(cmd::REG_CONFIG, 0);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::NOT_INITIALIZED),
                           static_cast<uint8_t>(st.code));
-  TEST_ASSERT_EQUAL_UINT32(writesAfterBegin + 1u, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(writesAfterBegin, bus.writeCalls);
 }
 
 // ===========================================================================
@@ -4135,6 +4322,9 @@ int main() {
   RUN_TEST(test_status_is_and_bool_conversion);
   RUN_TEST(test_config_defaults);
   RUN_TEST(test_get_settings_snapshot);
+  RUN_TEST(test_get_settings_before_begin_is_cache_only_uninitialized_snapshot);
+  RUN_TEST(test_driver_state_alias_matches_state);
+  RUN_TEST(test_get_settings_is_bus_silent_and_does_not_consume_diag);
   RUN_TEST(test_begin_rejects_missing_callbacks);
   RUN_TEST(test_begin_success_sets_ready_without_health_counts);
   RUN_TEST(test_configured_i2c_address_reaches_transport_callbacks);
@@ -4164,6 +4354,7 @@ int main() {
   RUN_TEST(test_offline_read_bus_voltage_returns_busy_without_i2c);
   RUN_TEST(test_failed_recover_from_offline_keeps_latch_after_intermediate_success);
   RUN_TEST(test_offline_reset_accumulators_returns_busy_without_i2c);
+  RUN_TEST(test_offline_poll_measurement_ready_returns_busy_without_i2c);
   RUN_TEST(test_soft_reset_verifies_identity_memstat_and_replays_cache);
   RUN_TEST(test_soft_reset_write_failure_marks_reset_domain_dirty);
   RUN_TEST(test_soft_reset_timeout_marks_dirty_without_replay);
@@ -4253,6 +4444,7 @@ int main() {
   RUN_TEST(test_read_manufacturer_id);
   RUN_TEST(test_read_device_id);
   RUN_TEST(test_public_register_access_helpers);
+  RUN_TEST(test_raw_accumulator_register_read_does_not_pre_preserve_diag_alert);
   RUN_TEST(test_public_register_access_preserves_transport_errors);
   RUN_TEST(test_status_contracts_for_calibration_accumulation_and_dirty_state);
   RUN_TEST(test_register_access_after_end_does_not_touch_bus);

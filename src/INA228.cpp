@@ -340,7 +340,8 @@ Status INA228::begin(const Config& config) {
     _config.offlineThreshold = 1;
   }
 
-  auto failBeginAfterConfig = [this](const Status& failure) {
+  auto failBeginAfterConfig = [this](const Status& failure,
+                                     bool hardwareMayDiffer = false) {
     _config = Config{};
     _allowOfflineI2c = false;
     _currentLsb = 0.0f;
@@ -355,7 +356,13 @@ Status INA228::begin(const Config& config) {
     _trigStartMs = 0;
     _accumulationReady = false;
     _diagAlertConfigBits = 0;
+    _diagAlertSnapshot = DiagAlertSnapshot{};
     _clearAsyncJob();
+    if (hardwareMayDiffer) {
+      _markConfigReplayDirty(failure);
+      _markCalibrationDirty(failure);
+      _markThresholdsDirty();
+    }
     return failure;
   };
 
@@ -399,13 +406,13 @@ Status INA228::begin(const Config& config) {
   // Apply configuration
   st = _applyConfig();
   if (!st.ok()) {
-    return failBeginAfterConfig(st);
+    return failBeginAfterConfig(st, true);
   }
 
   // Apply calibration if provided
   st = _applyCalibration();
   if (!st.ok()) {
-    return failBeginAfterConfig(st);
+    return failBeginAfterConfig(st, true);
   }
 
   _initialized = true;
@@ -429,20 +436,6 @@ void INA228::tick(uint32_t nowMs) {
 }
 
 void INA228::end() {
-  if (_initialized) {
-    // Best-effort: put device into shutdown mode.
-    // Uses raw I2C to avoid health tracking during shutdown.
-    uint16_t adcCfg = _buildAdcConfig();
-    adcCfg = (adcCfg & ~cmd::MASK_ADC_MODE) |
-             (static_cast<uint16_t>(Mode::SHUTDOWN) << cmd::BIT_ADC_MODE);
-    const uint8_t payload[3] = {
-      cmd::REG_ADC_CONFIG,
-      static_cast<uint8_t>(adcCfg >> 8),
-      static_cast<uint8_t>(adcCfg & 0xFF)
-    };
-    (void)_i2cWriteRaw(payload, sizeof(payload));
-  }
-
   _initialized = false;
   _driverState = DriverState::UNINIT;
   _trigPending = false;
@@ -499,9 +492,11 @@ Status INA228::recover() {
   }
 
   const bool startedOffline = _driverState == DriverState::OFFLINE;
+  const DiagAlertSnapshot previousDiagSnapshot = _diagAlertSnapshot;
   ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
   Status result = [this]() -> Status {
     _markAccumulationInvalid();
+    _diagAlertSnapshot = DiagAlertSnapshot{};
     Status st = _verifyIdentityAndMemstat(true);
     if (!st.ok()) return st;
 
@@ -519,6 +514,9 @@ Status INA228::recover() {
 
     return Status::Ok();
   }();
+  if (!result.ok() && !_diagAlertSnapshot.valid) {
+    _diagAlertSnapshot = previousDiagSnapshot;
+  }
   if (startedOffline && !result.ok() && !result.inProgress()) {
     _reassertOfflineLatch();
   }
@@ -1134,6 +1132,8 @@ Status INA228::pollMeasurementReady(uint32_t nowMs, uint8_t maxInstructions,
   if (_asyncJob != AsyncJob::NONE) {
     return Status::Error(Err::BUSY, "Another fixed-step job is active");
   }
+  Status allowed = _ensureNormalI2cAllowed();
+  if (!allowed.ok()) return allowed;
   Status clean = _ensureHardwareClean();
   if (!clean.ok()) return clean;
   if (!_trigPending) {
@@ -1793,6 +1793,7 @@ Status INA228::softReset() {
     return st;
   }
   _markAccumulationInvalid();
+  _diagAlertSnapshot = DiagAlertSnapshot{};
   _trigPending = false;
   _trigStartMs = 0;
   const Status resetPending =
@@ -1883,6 +1884,7 @@ Status INA228::pollResetJob(uint32_t nowMs, uint8_t maxInstructions) {
           return failResetJob(st);
         }
         _markAccumulationInvalid();
+        _diagAlertSnapshot = DiagAlertSnapshot{};
         _trigPending = false;
         _trigStartMs = 0;
         {
@@ -2094,6 +2096,8 @@ Status INA228::resetAccumulators() {
         Status::Error(Err::TIMEOUT, "CONFIG reset bits did not clear",
                       static_cast<int32_t>(readback)));
     _markHardwareDirty(cmd::REG_CONFIG, st);
+  } else {
+    _clearCapturedAccumulatorEvidence();
   }
   return st;
 }
@@ -2770,6 +2774,16 @@ void INA228::_clearCapturedConversionReadyFlag() {
     return;
   }
   _diagAlertSnapshot.raw &= ~cmd::DIAG_CNVRF;
+  parseDiagAlert(_diagAlertSnapshot.raw, _diagAlertSnapshot.diag);
+}
+
+void INA228::_clearCapturedAccumulatorEvidence() {
+  if (!_diagAlertSnapshot.valid) {
+    return;
+  }
+  _diagAlertSnapshot.raw &=
+      static_cast<uint16_t>(~(cmd::DIAG_CNVRF | cmd::DIAG_ENERGYOF |
+                             cmd::DIAG_CHARGEOF | cmd::DIAG_MATHOF));
   parseDiagAlert(_diagAlertSnapshot.raw, _diagAlertSnapshot.diag);
 }
 

@@ -158,12 +158,15 @@ def main() -> int:
         '#include "driver/i2c_master.h"',
         "esp_timer_get_time",
         "vTaskDelay",
-        "std::fgets",
+        "select(",
+        "read(STDIN_FILENO",
         "char line[MAX_LINE_LEN]",
         "ina228IdfProbeAddress",
         "ina228IdfI2cWriteReadAt",
     ):
         require_token(idf_main, token, "ESP-IDF main")
+    if "std::fgets" in idf_main:
+        fail("ESP-IDF main must not block driver tick progress in std::fgets")
     if IDF_EXAMPLE_MACRO in idf_main:
         fail("ESP-IDF main must not enable the old shared Arduino CLI path")
     for token in FORBIDDEN_IDF_TOKENS:

@@ -64,6 +64,11 @@ def main() -> int:
 
     if re.search(r"\bcfg\b", text) is None and re.search(r"\bsettings\b", text) is None:
         fail("either 'cfg' or 'settings' command must be present")
+    if "static String inputBuffer" in text:
+        fail("bringup CLI must not use an unbounded String input buffer")
+    for token in ("CLI_MAX_LINE_LEN", "CLI_MAX_BYTES_PER_LOOP", "MAX_STRESS_COUNT"):
+        if token not in text:
+            fail(f"bringup CLI missing bounded console/stress token '{token}'")
 
     print("CLI contract PASSED")
     return 0

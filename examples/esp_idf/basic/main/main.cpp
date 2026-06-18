@@ -15,6 +15,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sys/select.h>
+#include <unistd.h>
 
 #include "INA228/INA228.h"
 #include "Ina228IdfI2cTransport.h"
@@ -35,6 +37,8 @@ static constexpr uint8_t INA228_ADDR_MIN = 0x40U;
 static constexpr uint8_t INA228_ADDR_MAX = 0x4FU;
 static constexpr size_t MAX_LINE_LEN = 128U;
 static constexpr uint32_t STRESS_PROGRESS_UPDATES = 10U;
+static constexpr uint32_t MAX_STRESS_COUNT = 100000U;
+static constexpr uint32_t CLI_POLL_TIMEOUT_MS = 10U;
 
 static constexpr const char* COLOR_RESET = "\033[0m";
 static constexpr const char* COLOR_RED = "\033[31m";
@@ -914,6 +918,7 @@ void runStress(uint32_t count) {
   INA228::Status firstFailure = INA228::Status::Ok();
   INA228::Status lastFailure = INA228::Status::Ok();
   for (uint32_t i = 0; i < count; ++i) {
+    device.tick(nowMs());
     INA228::Measurement m;
     INA228::Status st = device.readMeasurement(m);
     if (st.ok()) {
@@ -930,6 +935,7 @@ void runStress(uint32_t count) {
       lastFailure = st;
     }
     printStressProgress(i + 1U, count, ok, fail);
+    taskYIELD();
   }
   const uint32_t elapsed = nowMs() - start;
   HealthSnapshot after;
@@ -962,6 +968,7 @@ void runStressMix(uint32_t count) {
   INA228::Status firstFailure = INA228::Status::Ok();
   INA228::Status lastFailure = INA228::Status::Ok();
   for (uint32_t i = 0; i < count; ++i) {
+    device.tick(nowMs());
     INA228::Status st = INA228::Status::Ok();
     switch (i % 8U) {
       case 0: {
@@ -1010,8 +1017,8 @@ void runStressMix(uint32_t count) {
       }
       lastFailure = st;
     }
-    device.tick(nowMs());
     printStressProgress(i + 1U, count, ok, fail);
+    taskYIELD();
   }
   const uint32_t elapsed = nowMs() - start;
   HealthSnapshot after;
@@ -1536,7 +1543,8 @@ void processCommand(char* cmd) {
     runStressMix(50U);
   } else if ((arg = argAfter(cmd, "stress_mix ")) != nullptr) {
     int32_t count = 0;
-    if (!parseI32(arg, count) || count <= 0 || count > 100000) {
+    if (!parseI32(arg, count) || count <= 0 ||
+        static_cast<uint32_t>(count) > MAX_STRESS_COUNT) {
       std::printf("Invalid stress_mix count\n");
       return;
     }
@@ -1545,7 +1553,8 @@ void processCommand(char* cmd) {
     runStress(10U);
   } else if ((arg = argAfter(cmd, "stress ")) != nullptr) {
     int32_t count = 0;
-    if (!parseI32(arg, count) || count <= 0) {
+    if (!parseI32(arg, count) || count <= 0 ||
+        static_cast<uint32_t>(count) > MAX_STRESS_COUNT) {
       std::printf("Invalid stress count\n");
       return;
     }
@@ -1588,15 +1597,49 @@ extern "C" void app_main(void) {
   std::fflush(stdout);
 
   char line[MAX_LINE_LEN] = {};
+  size_t lineLen = 0;
+  bool lineOverflow = false;
   while (true) {
     device.tick(nowMs());
-    if (std::fgets(line, sizeof(line), stdin) != nullptr) {
-      line[sizeof(line) - 1U] = '\0';
-      processCommand(line);
-      std::printf("> ");
-      std::fflush(stdout);
+
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(STDIN_FILENO, &readfds);
+    timeval timeout{};
+    timeout.tv_sec = 0;
+    timeout.tv_usec = static_cast<long>(CLI_POLL_TIMEOUT_MS * 1000U);
+
+    const int ready = select(STDIN_FILENO + 1, &readfds, nullptr, nullptr, &timeout);
+    if (ready <= 0 || !FD_ISSET(STDIN_FILENO, &readfds)) {
+      continue;
+    }
+
+    char ch = '\0';
+    const ssize_t n = read(STDIN_FILENO, &ch, 1U);
+    if (n <= 0) {
+      sleepMs(CLI_POLL_TIMEOUT_MS);
+      continue;
+    }
+
+    if (ch == '\n' || ch == '\r') {
+      if (lineOverflow) {
+        std::printf("Input line too long\n");
+      } else if (lineLen > 0U) {
+        line[lineLen] = '\0';
+        processCommand(line);
+      }
+      if (lineOverflow || lineLen > 0U) {
+        std::printf("> ");
+        std::fflush(stdout);
+      }
+      lineLen = 0;
+      line[0] = '\0';
+      lineOverflow = false;
+    } else if (lineLen + 1U < sizeof(line)) {
+      line[lineLen++] = ch;
+      line[lineLen] = '\0';
     } else {
-      sleepMs(10U);
+      lineOverflow = true;
     }
   }
 }

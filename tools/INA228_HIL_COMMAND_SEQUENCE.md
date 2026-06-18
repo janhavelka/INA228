@@ -6,6 +6,21 @@ documents the command sequence to paste into either bring-up CLI:
 - Arduino: `examples/01_basic_bringup_cli`
 - Pure ESP-IDF: `examples/esp_idf/basic`
 
+For an automated bounded smoke pass, run:
+
+```bash
+python tools/run_i2c_hil.py --dry-run
+python tools/run_i2c_hil.py --parser-self-test
+python tools/run_i2c_hil.py --port <serial-port>
+```
+
+The runner sends `version`, `scan`, `probe`, `settings`, `drv`, `diagraw`, and
+`raw`, with a finite timeout for each command. It classifies visible failure
+tokens such as timeout, NACK, device-not-found, device-ID mismatch, memory
+error, invalid argument, busy, and hardware-dirty status lines. A runner pass is
+only HIL evidence when the serial command was run against hardware and the full
+transcript is retained.
+
 Do not mark any hardware validation row `PASS` unless the full transcript,
 setup metadata, commit hash, and equipment details are checked in under
 `docs/validation/hardware/...`.

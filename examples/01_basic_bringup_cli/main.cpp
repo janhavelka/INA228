@@ -47,6 +47,9 @@ StressStats stressStats;
 static constexpr uint8_t DEFAULT_I2C_ADDRESS = board::INA228_I2C_ADDR;
 static constexpr uint8_t INA228_ADDR_MIN = 0x40;
 static constexpr uint8_t INA228_ADDR_MAX = 0x4F;
+static constexpr size_t CLI_MAX_LINE_LEN = 128;
+static constexpr uint8_t CLI_MAX_BYTES_PER_LOOP = 32;
+static constexpr int MAX_STRESS_COUNT = 100000;
 uint8_t selectedAddress = DEFAULT_I2C_ADDRESS;
 
 struct ProbeSnapshot {
@@ -937,6 +940,7 @@ void runStress(int count) {
   resetStressStats(count);
 
   for (int i = 0; i < count; ++i) {
+    device.tick(millis());
     INA228::Measurement m{};
     INA228::Status st = device.readMeasurement(m);
     stressStats.attempts++;
@@ -949,6 +953,7 @@ void runStress(int count) {
         Serial.printf("  [%d] failed: %s\n", i, errToStr(st.code));
       }
     }
+    yield();
   }
 
   finishStressStats();
@@ -976,6 +981,7 @@ void runStressMix(int count) {
   const uint32_t startMs = millis();
 
   for (int i = 0; i < count; ++i) {
+    device.tick(millis());
     const int op = i % opCount;
     INA228::Status st = INA228::Status::Ok();
 
@@ -1027,6 +1033,7 @@ void runStressMix(int count) {
         Serial.printf("  [%d] %s failed: %s\n", i, stats[op].name, errToStr(st.code));
       }
     }
+    yield();
   }
 
   const uint32_t elapsed = millis() - startMs;
@@ -2054,7 +2061,7 @@ void processCommand(const String& cmdLine) {
 
   if (cmd.startsWith("stress_mix ")) {
     int count = cmd.substring(11).toInt();
-    if (count <= 0 || count > 100000) {
+    if (count <= 0 || count > MAX_STRESS_COUNT) {
       LOGW("Invalid stress_mix count");
       return;
     }
@@ -2068,6 +2075,10 @@ void processCommand(const String& cmdLine) {
       count = cmd.substring(6).toInt();
     }
     if (count <= 0) {
+      LOGW("Invalid stress count");
+      return;
+    }
+    if (count > MAX_STRESS_COUNT) {
       LOGW("Invalid stress count");
       return;
     }
@@ -2116,17 +2127,34 @@ void setup() {
 void loop() {
   device.tick(millis());
 
-  static String inputBuffer;
-  while (Serial.available()) {
+  static char inputBuffer[CLI_MAX_LINE_LEN] = {};
+  static size_t inputLen = 0;
+  static bool inputOverflow = false;
+
+  uint8_t processed = 0;
+  while (Serial.available() && processed < CLI_MAX_BYTES_PER_LOOP) {
+    ++processed;
     const char c = static_cast<char>(Serial.read());
     if (c == '\n' || c == '\r') {
-      if (inputBuffer.length() > 0) {
-        processCommand(inputBuffer);
-        inputBuffer = "";
+      if (inputOverflow) {
+        LOGW("Input line too long");
+      } else if (inputLen > 0) {
+        inputBuffer[inputLen] = '\0';
+        processCommand(String(inputBuffer));
+      }
+      if (inputOverflow || inputLen > 0) {
         cli::printPrompt();
       }
+      inputLen = 0;
+      inputBuffer[0] = '\0';
+      inputOverflow = false;
     } else {
-      inputBuffer += c;
+      if (inputLen + 1U < CLI_MAX_LINE_LEN) {
+        inputBuffer[inputLen++] = c;
+        inputBuffer[inputLen] = '\0';
+      } else {
+        inputOverflow = true;
+      }
     }
   }
 }
