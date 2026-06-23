@@ -17,6 +17,10 @@ generated from it and committed.
 Run and record:
 
 ```bash
+python -m py_compile tools/run_i2c_hil.py
+python tools/run_i2c_hil.py --parser-self-test
+python tools/run_i2c_hil.py --dry-run --suite targeted
+python tools/run_i2c_hil.py --dry-run --suite transfer
 python tools/check_core_timing_guard.py
 python tools/check_cli_contract.py
 python tools/check_idf_example_contract.py
@@ -42,16 +46,21 @@ Before merging or tagging, verify a completed CI run for the final branch or PR:
 
 - Native tests pass.
 - Guard scripts pass.
+- HIL runner `py_compile` and parser self-test pass.
 - PlatformIO ESP32-S3 build passes.
 - PlatformIO ESP32-S2 build passes.
 - Package validation passes.
 - Pure ESP-IDF `esp32s3` build passes.
 - Pure ESP-IDF `esp32s2` build passes.
+- Artifacts are present for native test results, static contract logs,
+  PlatformIO package archive, and ESP-IDF build logs.
 
 ## Documentation And Claims
 
 - README install and integration instructions are current.
 - `docs/validation/validation-status.md` reflects current evidence.
+- `docs/validation/hardware-evidence.md` lists checked-in HIL reports and
+  marks partial evidence separately from release-grade validation.
 - `docs/validation/hardware-validation-procedure.md` matches the CLI examples.
 - Wording separates implemented behavior, native tests, CI configuration,
   ESP-IDF build proof, and hardware validation.

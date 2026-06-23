@@ -18,6 +18,24 @@
 
 namespace transport {
 
+struct TransferStats {
+  uint32_t read = 0;
+  uint32_t write = 0;
+};
+
+inline TransferStats& transferStatsStorage() {
+  static TransferStats stats{};
+  return stats;
+}
+
+inline void resetTransferStats() {
+  transferStatsStorage() = {};
+}
+
+inline TransferStats transferStats() {
+  return transferStatsStorage();
+}
+
 inline INA228::Status mapWireResult(uint8_t result, const char* context) {
   switch (result) {
     case 0:
@@ -68,6 +86,7 @@ inline INA228::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
                                  static_cast<int32_t>(len));
   }
 
+  transferStatsStorage().write++;
   wire->beginTransmission(addr);
   size_t written = wire->write(data, len);
   if (written != len) {
@@ -114,6 +133,7 @@ inline INA228::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLe
     return INA228::Status::Error(INA228::Err::INVALID_PARAM, "I2C read exceeds buffer");
   }
 
+  transferStatsStorage().read++;
   wire->beginTransmission(addr);
   size_t written = wire->write(tx, txLen);
   if (written != txLen) {

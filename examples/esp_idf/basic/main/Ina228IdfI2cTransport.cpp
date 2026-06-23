@@ -9,6 +9,7 @@
 namespace {
 
 Ina228IdfI2c gTransport;
+Ina228IdfTransferStats gTransferStats;
 
 int clampTimeoutMs(uint32_t timeoutMs) {
   const uint32_t maxTimeout = static_cast<uint32_t>(std::numeric_limits<int>::max());
@@ -24,7 +25,7 @@ INA228::Status mapEspTransferErr(esp_err_t err, const char* context) {
                                  static_cast<int32_t>(err));
   }
   if (err == ESP_ERR_INVALID_RESPONSE) {
-    return INA228::Status::Error(INA228::Err::I2C_ERROR,
+    return INA228::Status::Error(INA228::Err::I2C_NACK_UNKNOWN_PHASE,
                                  "I2C NACK, ESP-IDF phase unavailable",
                                  static_cast<int32_t>(err));
   }
@@ -79,6 +80,14 @@ INA228::Status validateContext(uint8_t addr, void* user, Ina228IdfI2c*& ctx) {
 
 Ina228IdfI2c& ina228IdfTransportContext() {
   return gTransport;
+}
+
+void ina228IdfResetTransferStats() {
+  gTransferStats = {};
+}
+
+Ina228IdfTransferStats ina228IdfTransferStats() {
+  return gTransferStats;
 }
 
 bool ina228IdfInitI2c(int sda, int scl, uint32_t freqHz, uint16_t timeoutMs,
@@ -165,6 +174,7 @@ INA228::Status ina228IdfI2cWrite(uint8_t addr, const uint8_t* data, size_t len,
     return INA228::Status::Error(INA228::Err::INVALID_PARAM, "Invalid I2C write buffer");
   }
 
+  gTransferStats.write++;
   ctx->lastError = i2c_master_transmit(ctx->dev, data, len, clampTimeoutMs(timeoutMs));
   return mapEspTransferErr(ctx->lastError, "I2C write failed");
 }
@@ -181,6 +191,7 @@ INA228::Status ina228IdfI2cWriteRead(uint8_t addr, const uint8_t* txData, size_t
     return INA228::Status::Error(INA228::Err::INVALID_PARAM, "Invalid I2C read buffer");
   }
 
+  gTransferStats.read++;
   ctx->lastError = i2c_master_transmit_receive(
       ctx->dev, txData, txLen, rxData, rxLen, clampTimeoutMs(timeoutMs));
   return mapEspTransferErr(ctx->lastError, "I2C write-read failed");

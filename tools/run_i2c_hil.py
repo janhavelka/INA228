@@ -158,13 +158,13 @@ EXHAUSTIVE_STEPS: tuple[Step, ...] = (
          "power sample budget two", "exhaustive"),
     Step("sample_step 5", ("Power Sample Step Result",),
          "power sample full budget", "exhaustive"),
-    Step("apply_start", ("startApplyCalibration", "IN_PROGRESS"),
+    Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
          "calibration job start", "exhaustive"),
     Step("apply_step 0", ("INVALID_PARAM",),
          "calibration job zero-budget rejection", "exhaustive", expect_failure=True),
-    Step("apply_step 1", ("pollApplyCalibration", "IN_PROGRESS"),
+    Step("apply_step 1", ("pollConfigReplayJob", "IN_PROGRESS"),
          "calibration job budget one", "exhaustive"),
-    Step("apply_step 6", ("pollApplyCalibration", "OK"),
+    Step("apply_step 6", ("pollConfigReplayJob", "OK"),
          "calibration job full budget", "exhaustive"),
     Step("reset_start", ("startResetJob", "IN_PROGRESS"),
          "reset job start", "exhaustive"),
@@ -310,22 +310,22 @@ def targeted_steps() -> tuple[Step, ...]:
              "sample full budget", "targeted"),
         Step("sample_step 255", ("Power Sample Step Result",),
              "sample max budget", "targeted"),
-        Step("apply_start", ("startApplyCalibration", "IN_PROGRESS"),
+        Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
              "calibration job start", "targeted"),
         Step("apply_step 0", ("INVALID_PARAM",),
              "calibration zero-budget rejection", "targeted", expect_failure=True),
-        Step("apply_step 1", ("pollApplyCalibration",),
+        Step("apply_step 1", ("pollConfigReplayJob",),
              "calibration budget one", "targeted"),
-        Step("apply_step 2", ("pollApplyCalibration",),
+        Step("apply_step 2", ("pollConfigReplayJob",),
              "calibration budget two", "targeted"),
-        Step("apply_step 3", ("pollApplyCalibration",),
+        Step("apply_step 3", ("pollConfigReplayJob",),
              "calibration budget three", "targeted"),
         Step("apply_step 6", ("BUSY",),
              "post-completion calibration poll reports BUSY", "targeted",
              expect_failure=True),
-        Step("apply_start", ("startApplyCalibration", "IN_PROGRESS"),
+        Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
              "calibration full-budget restart", "targeted"),
-        Step("apply_step 6", ("pollApplyCalibration", "OK"),
+        Step("apply_step 6", ("pollConfigReplayJob", "OK"),
              "calibration full-budget completion", "targeted"),
         Step("reset_start", ("startResetJob", "IN_PROGRESS"),
              "reset job start", "targeted"),
@@ -389,6 +389,8 @@ def targeted_steps() -> tuple[Step, ...]:
         Step("reg16 0x100", ("Usage: reg16",), "reject invalid raw16 register", "targeted"),
         Step("reg24 0x100", ("Usage: reg24",), "reject invalid raw24 register", "targeted"),
         Step("reg40 0x100", ("Usage: reg40",), "reject invalid raw40 register", "targeted"),
+        Step("unknown_hil_command", ("Unknown command", "INVALID_PARAM"),
+             "reject unknown command with framed status", "targeted", expect_failure=True),
         Step("init 0x50", ("Invalid address",), "reject invalid init address", "targeted"),
         Step("end", ("Device shut down",), "end driver", "targeted"),
         Step("vbus", ("NOT_INITIALIZED",),
@@ -405,6 +407,85 @@ def targeted_steps() -> tuple[Step, ...]:
 
 
 TARGETED_STEPS: tuple[Step, ...] = targeted_steps()
+
+TRANSFER_STEPS: tuple[Step, ...] = (
+    Step("verbose 0", ("Verbose mode",), "reduce CLI chatter", "transfer"),
+    Step("mode 15", ("setMode", "OK"), "continuous-all mode for stable reads", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
+    Step("ready_step 0", ("INVALID_PARAM",),
+         "zero-budget readiness is bus-silent", "transfer", expect_failure=True),
+    Step("xfer_assert 0 0 0", ("XFER_ASSERT PASS",),
+         "ready_step 0 transfer count", "transfer"),
+    Step("trigger 7", ("triggerConversion",), "start triggered conversion for readiness poll",
+         "transfer", pause_after_s=0.05),
+    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
+    Step("ready_step 1", ("pollMeasurementReady",),
+         "single-instruction readiness poll", "transfer"),
+    Step("xfer_stats", ("XFER_STATS",),
+         "ready_step 1 transfer count snapshot", "transfer"),
+    Step("mode 15", ("setMode", "OK"), "restore continuous mode", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
+    Step("sample_step 0", ("INVALID_PARAM",),
+         "zero-budget sample is bus-silent", "transfer", expect_failure=True),
+    Step("xfer_assert 0 0 0", ("XFER_ASSERT PASS",),
+         "sample_step 0 transfer count", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
+    Step("sample_step 1", ("readPowerSampleRawStep", "IN_PROGRESS"),
+         "fresh sample job budget one", "transfer"),
+    Step("xfer_assert 1 0 1", ("XFER_ASSERT PASS",),
+         "sample_step 1 transfer count", "transfer"),
+    Step("sample_step 255", ("Power Sample Step Result",),
+         "finish partial sample job", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
+    Step("sample_step 2", ("readPowerSampleRawStep",),
+         "fresh sample job budget two", "transfer"),
+    Step("xfer_assert 2 0 2", ("XFER_ASSERT PASS",),
+         "sample_step 2 transfer count", "transfer"),
+    Step("sample_step 255", ("Power Sample Step Result",),
+         "finish partial sample job", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
+    Step("sample_step 5", ("Power Sample Step Result",),
+         "fresh sample job full budget", "transfer"),
+    Step("xfer_assert 5 0 5", ("XFER_ASSERT PASS",),
+         "sample_step 5 transfer count", "transfer"),
+    Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
+         "config replay job start", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
+    Step("apply_step 0", ("INVALID_PARAM",),
+         "zero-budget config replay is bus-silent", "transfer", expect_failure=True),
+    Step("xfer_assert 0 0 0", ("XFER_ASSERT PASS",),
+         "apply_step 0 transfer count", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
+    Step("apply_step 1", ("pollConfigReplayJob", "IN_PROGRESS"),
+         "config replay budget one", "transfer"),
+    Step("xfer_assert 0 1 1", ("XFER_ASSERT PASS",),
+         "apply_step 1 transfer count", "transfer"),
+    Step("apply_step 6", ("pollConfigReplayJob", "OK"),
+         "finish partial config replay", "transfer"),
+    Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
+         "config replay full-budget restart", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
+    Step("apply_step 6", ("pollConfigReplayJob", "OK"),
+         "config replay full budget", "transfer"),
+    Step("xfer_stats", ("XFER_STATS",),
+         "apply_step 6 transfer count snapshot", "transfer"),
+    Step("reset_start", ("startResetJob", "IN_PROGRESS"),
+         "reset job start", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
+    Step("reset_step 0", ("INVALID_PARAM",),
+         "zero-budget reset is bus-silent", "transfer", expect_failure=True),
+    Step("xfer_assert 0 0 0", ("XFER_ASSERT PASS",),
+         "reset_step 0 transfer count", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
+    Step("reset_step 1", ("pollResetJob", "IN_PROGRESS"),
+         "reset job budget one", "transfer", pause_after_s=0.05),
+    Step("xfer_stats", ("XFER_STATS",),
+         "reset_step 1 transfer count snapshot", "transfer"),
+    Step("reset_step 16", ("pollResetJob", "OK"),
+         "finish reset job", "transfer"),
+    Step("mode 15", ("setMode", "OK"), "restore continuous mode after reset", "transfer"),
+    Step("drv", ("Driver Health", "State: READY"), "final health", "transfer"),
+)
 
 
 TARGETED_SOAK_STEPS: tuple[Step, ...] = (
@@ -430,15 +511,15 @@ TARGETED_SOAK_STEPS: tuple[Step, ...] = (
          "targeted soak sample full budget", "soak"),
     Step("sample_step 255", ("Power Sample Step Result",),
          "targeted soak sample max budget", "soak"),
-    Step("apply_start", ("startApplyCalibration", "IN_PROGRESS"),
+    Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
          "targeted soak apply start", "soak"),
     Step("apply_step 0", ("INVALID_PARAM",),
          "targeted soak apply zero-budget rejection", "soak", expect_failure=True),
-    Step("apply_step 1", ("pollApplyCalibration",),
+    Step("apply_step 1", ("pollConfigReplayJob",),
          "targeted soak apply budget one", "soak"),
-    Step("apply_step 2", ("pollApplyCalibration",),
+    Step("apply_step 2", ("pollConfigReplayJob",),
          "targeted soak apply budget two", "soak"),
-    Step("apply_step 6", ("pollApplyCalibration", "OK"),
+    Step("apply_step 6", ("pollConfigReplayJob", "OK"),
          "targeted soak apply completion", "soak"),
     Step("reset_start", ("startResetJob", "IN_PROGRESS"),
          "targeted soak reset start", "soak"),
@@ -539,6 +620,7 @@ STATIC_NOT_RUN_STEPS: tuple[Step, ...] = (
 FAILURE_TOKENS: tuple[str, ...] = (
     "I2C_NACK_ADDR",
     "I2C_NACK_DATA",
+    "I2C_NACK_UNKNOWN_PHASE",
     "I2C_TIMEOUT",
     "I2C_BUS",
     "DEVICE_NOT_FOUND",
@@ -617,6 +699,8 @@ def selected_steps(suite: str) -> tuple[Step, ...]:
         return SMOKE_STEPS + FUNCTIONAL_STEPS + EXHAUSTIVE_STEPS
     if suite == "targeted":
         return SMOKE_STEPS + TARGETED_STEPS
+    if suite == "transfer":
+        return SMOKE_STEPS + TRANSFER_STEPS
     raise ValueError(f"unsupported suite: {suite}")
 
 
@@ -642,6 +726,45 @@ def parser_self_test() -> int:
         if got != want:
             print(f"parser self-test FAILED: expected {want}, got {got}")
             return 1
+    payload, ok = strip_hilrun_frame(
+        "noise\nHIL_BEGIN token=T1 seq=7\nStatus: OK\nold HILMARK text\n"
+        "HIL_END token=T1 seq=7 status=OK elapsed_ms=3\n",
+        "T1",
+        "7",
+    )
+    if not ok or "old HILMARK text" not in payload:
+        print("parser self-test FAILED: complete frame")
+        return 1
+    _, ok = strip_hilrun_frame("HIL_BEGIN token=T1 seq=7\n", "T1", "7")
+    if ok:
+        print("parser self-test FAILED: truncated frame accepted")
+        return 1
+    _, ok = strip_hilrun_frame(
+        "HIL_BEGIN token=T1 seq=7\nHIL_END token=T2 seq=7 status=OK elapsed_ms=3\n",
+        "T1",
+        "7",
+    )
+    if ok:
+        print("parser self-test FAILED: wrong token accepted")
+        return 1
+    _, ok = strip_hilrun_frame(
+        "HIL_BEGIN token=T1 seq=7\nHIL_END token=T1 seq=8 status=OK elapsed_ms=3\n",
+        "T1",
+        "7",
+    )
+    if ok:
+        print("parser self-test FAILED: wrong sequence accepted")
+        return 1
+    payload, ok = strip_hilrun_frame(
+        "HIL_BEGIN token=T1 seq=7\nHIL_END token=T1 seq=7 status=INVALID_PARAM elapsed_ms=0\n",
+        "T1",
+        "7",
+    )
+    invalid_step = Step("hilrun T1 7 hilrun nested", ("INVALID_PARAM",),
+                        "nested hilrun rejection", expect_failure=True)
+    if not ok or classify_step(payload, invalid_step) != "PASS":
+        print("parser self-test FAILED: nested/invalid frame status")
+        return 1
     print("parser self-test PASSED")
     return 0
 
@@ -692,7 +815,7 @@ def read_response(serial_port, timeout_s: float, idle_s: float,
     return b"".join(chunks).decode("utf-8", errors="replace")
 
 
-def read_until_text(serial_port, timeout_s: float, token: str) -> str:
+def read_until_text(serial_port, timeout_s: float, token: str, max_bytes: int | None = None) -> str:
     deadline = time.monotonic() + timeout_s
     chunks: list[bytes] = []
     token_bytes = token.encode("utf-8")
@@ -702,7 +825,37 @@ def read_until_text(serial_port, timeout_s: float, token: str) -> str:
         if not data:
             continue
         chunks.append(data)
-        if token_bytes in b"".join(chunks):
+        joined = b"".join(chunks)
+        if token_bytes in joined:
+            break
+        if max_bytes is not None and len(joined) >= max_bytes:
+            break
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def hilrun_end_re(token: str, seq: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"(?m)^HIL_END token={re.escape(token)} seq={re.escape(seq)} "
+        r"status=([A-Z0-9_]+) elapsed_ms=([0-9]+)\s*$"
+    )
+
+
+def read_until_hilrun_end(serial_port, timeout_s: float, token: str, seq: str,
+                          max_bytes: int | None = None) -> str:
+    deadline = time.monotonic() + timeout_s
+    chunks: list[bytes] = []
+    end_re = hilrun_end_re(token, seq)
+    while time.monotonic() < deadline:
+        waiting = getattr(serial_port, "in_waiting", 0)
+        data = serial_port.read(waiting or 1)
+        if not data:
+            continue
+        chunks.append(data)
+        joined = b"".join(chunks)
+        text = joined.decode("utf-8", errors="replace")
+        if end_re.search(clean_output(text)):
+            break
+        if max_bytes is not None and len(joined) >= max_bytes:
             break
     return b"".join(chunks).decode("utf-8", errors="replace")
 
@@ -713,6 +866,24 @@ def strip_hil_marker(text: str, token: str) -> str:
     if index < 0:
         return text
     return text[:index]
+
+
+def strip_hilrun_frame(text: str, token: str, seq: str) -> tuple[str, bool]:
+    clean = clean_output(text)
+    begin_line = f"HIL_BEGIN token={token} seq={seq}"
+    end_re = hilrun_end_re(token, seq)
+    begin_index = clean.find(begin_line)
+    end_match = end_re.search(clean)
+    if begin_index < 0 or end_match is None:
+        return clean + f"\n[runner] missing HIL frame token={token} seq={seq}", False
+    payload_start = begin_index + len(begin_line)
+    payload = clean[payload_start:end_match.start()].strip("\n")
+    status = end_match.group(1)
+    elapsed_ms = end_match.group(2)
+    payload += f"\n[runner] frame_status={status} frame_elapsed_ms={elapsed_ms}"
+    if status not in ("OK", "IN_PROGRESS"):
+        payload += f"\nStatus: {status}"
+    return payload, True
 
 
 def drain_input(serial_port, drain_s: float) -> str:
@@ -737,15 +908,17 @@ def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
     for attempt in range(attempts):
         stale = drain_input(serial_port, args.drain_before_command_s)
         token = f"{args.frame_prefix}{time.monotonic_ns()}{attempt}"
+        seq = str(attempt)
         if args.no_command_framing:
             serial_port.write((step.command + "\n").encode("ascii"))
             serial_port.flush()
             output = read_response(serial_port, args.timeout_s, args.idle_s, args.prompt_token)
-        else:
+        elif args.legacy_marker:
             marker = f"HILMARK {token}"
             serial_port.write((f"{step.command}\nhilmark {token}\n").encode("ascii"))
             serial_port.flush()
-            marker_output = read_until_text(serial_port, args.timeout_s, marker)
+            marker_output = read_until_text(serial_port, args.timeout_s, marker,
+                                            args.max_frame_bytes)
             marker_missing = marker not in marker_output
             output = strip_hil_marker(marker_output, token)
             if marker_missing:
@@ -755,7 +928,8 @@ def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
                     retry_marker = f"HILMARK {retry_token}"
                     serial_port.write((f"hilmark {retry_token}\n").encode("ascii"))
                     serial_port.flush()
-                    retry_output = read_until_text(serial_port, args.timeout_s, retry_marker)
+                    retry_output = read_until_text(serial_port, args.timeout_s, retry_marker,
+                                                  args.max_frame_bytes)
                     if retry_marker in retry_output:
                         output += (
                             f"\n[runner] recovered missing HILMARK {token} "
@@ -767,6 +941,13 @@ def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
                     output += f"\n[runner] marker retry {retry + 1} failed:\n{retry_output}"
                 if not recovered:
                     output += f"\n[runner] missing HILMARK {token}"
+        else:
+            serial_port.write((f"hilrun {token} {seq} {step.command}\n").encode("ascii"))
+            serial_port.flush()
+            frame_output = read_until_hilrun_end(serial_port, args.timeout_s, token, seq,
+                                                 args.max_frame_bytes)
+            output, frame_ok = strip_hilrun_frame(frame_output, token, seq)
+            marker_missing = not frame_ok
         if stale.strip():
             output = "[runner] drained stale serial input before command:\n" + stale + "\n" + output
         if output.strip() or attempt == attempts - 1:
@@ -958,8 +1139,10 @@ def write_report(path: pathlib.Path, args: argparse.Namespace, results: Sequence
         f.write("\n## Limitations\n\n")
         f.write("- Hardware safety and fixture details must be filled in by the operator.\n")
         f.write("- This runner records serial CLI evidence only; external instruments must be logged separately.\n")
-        f.write("- Staged `maxInstructions` coverage is limited to the example CLI commands; "
-                "backend transfer counts need external instrumentation.\n")
+        f.write("- Staged `maxInstructions` coverage is limited to the example CLI commands. "
+                "The `transfer` suite records example callback counts, not logic-analyzer bus bytes. "
+                "Example `tick()` calls between serial commands can add readiness reads; exact assertions "
+                "are kept to deterministic paths and other paths record snapshots.\n")
         if soak_seconds <= 0.0:
             f.write("- Soak test was not requested in this run.\n")
 
@@ -1091,7 +1274,8 @@ def main(argv: Sequence[str]) -> int:
     )
     parser.add_argument("--port", help="Serial port for hardware run")
     parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--suite", choices=("smoke", "functional", "exhaustive", "targeted"),
+    parser.add_argument("--suite", choices=("smoke", "functional", "exhaustive", "targeted",
+                                            "transfer"),
                         default="smoke")
     parser.add_argument("--timeout-s", type=float, default=5.0,
                         help="Maximum seconds to wait per command")
@@ -1106,7 +1290,13 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--drain-before-command-s", type=float, default=0.0,
                         help="Bounded stale-input drain before each command")
     parser.add_argument("--no-command-framing", action="store_true",
-                        help="Do not append hilmark commands after each test command")
+                        help="Send raw commands without hilrun or legacy hilmark framing")
+    parser.add_argument("--legacy-marker", action="store_true",
+                        help="Use the older command + hilmark framing instead of hilrun")
+    parser.add_argument("--require-framed", action="store_true",
+                        help="Require the hilrun framed CLI path")
+    parser.add_argument("--max-frame-bytes", type=int, default=8192,
+                        help="Maximum bytes to read for one framed command response")
     parser.add_argument("--frame-prefix", default="HIL",
                         help="Prefix for generated HIL framing tokens")
     parser.add_argument("--marker-retries", type=int, default=1,
@@ -1160,6 +1350,10 @@ def main(argv: Sequence[str]) -> int:
         parser.error("pauses and soak durations must be nonnegative")
     if not args.frame_prefix or any(ch.isspace() for ch in args.frame_prefix):
         parser.error("frame prefix must be nonempty and contain no whitespace")
+    if args.max_frame_bytes <= 0:
+        parser.error("max frame bytes must be positive")
+    if args.require_framed and (args.no_command_framing or args.legacy_marker):
+        parser.error("--require-framed cannot be combined with raw or legacy framing")
 
     soak_seconds = args.soak_seconds
     if args.soak_hours > 0.0:

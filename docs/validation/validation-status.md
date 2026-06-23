@@ -10,7 +10,8 @@ claim from a weaker one.
 | PlatformIO built | Arduino ESP32-S2/S3 build and package checks require current local logs or CI logs. |
 | ESP-IDF configured | CI is configured to build the native ESP-IDF example for ESP32-S2/S3. |
 | ESP-IDF verified | Not claimed unless local `idf.py` output or reviewed CI logs are captured. |
-| Hardware validated | Not claimed; no dated hardware logs are checked in under `docs/validation/hardware/`. |
+| Partial low-voltage HIL evidence | Checked-in reports under `docs/reports/` cover Arduino ESP32-S3 CLI-visible behavior and fixed-step transfer budgets on dirty worktrees; see `hardware-evidence.md`. |
+| Release-grade hardware validated | Not claimed; clean-commit framed HIL, 8-hour clean framed soak, fault-injection fixture coverage, alert-pin capture, controlled reset/power-cycle evidence, and reviewed CI logs are still required. |
 
 ## Claim Rules
 
@@ -18,6 +19,9 @@ claim from a weaker one.
 - "Native-tested" requires a current native test log.
 - "CI verified" requires reviewed logs for the exact branch, PR, or release
   commit.
+- "Partial low-voltage HIL evidence" means useful test evidence exists, but
+  fixture gaps, dirty worktrees, or framing anomalies block release-grade
+  claims.
 - "Hardware validated" requires dated logs with setup details under
   `docs/validation/hardware/...`.
 
@@ -26,12 +30,14 @@ Do not use these phrases without matching evidence:
 - `production-ready`
 - `field-proven`
 - `hardware validated`
+- `release-grade hardware validated`
 - `85 V safe`
 - `ESP-IDF build verified`
 
 Acceptable wording before hardware logs exist:
 
 - `pre-production hardening candidate`
+- `pre-production hardening candidate with partial low-voltage Arduino ESP32-S3 HIL evidence`
 - `CI configured for ESP-IDF builds, pending reviewed logs`
-- `hardware validation procedure exists; hardware validation is not yet claimed`
+- `hardware validation procedure exists; release-grade hardware validation is not yet claimed`
 - `native fake-bus tests pass locally on the reported checkout`

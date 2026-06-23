@@ -32,8 +32,35 @@ enum class Err : uint8_t {
   // Accumulator validity details (append-only to preserve existing values)
   ACCUMULATION_INVALID,      ///< ENERGY/CHARGE is not valid in the current state
   ACCUMULATION_OVERFLOW,     ///< ENERGY/CHARGE overflow evidence was observed
-  HARDWARE_DIRTY             ///< Cached config may not match device registers
+  HARDWARE_DIRTY,            ///< Cached config may not match device registers
+  I2C_NACK_UNKNOWN_PHASE     ///< I2C NACK with platform-unreported phase
 };
+
+/// @brief Static string name for an error code.
+constexpr const char* errName(Err err) {
+  return err == Err::OK ? "OK" :
+         err == Err::NOT_INITIALIZED ? "NOT_INITIALIZED" :
+         err == Err::INVALID_CONFIG ? "INVALID_CONFIG" :
+         err == Err::I2C_ERROR ? "I2C_ERROR" :
+         err == Err::TIMEOUT ? "TIMEOUT" :
+         err == Err::INVALID_PARAM ? "INVALID_PARAM" :
+         err == Err::DEVICE_NOT_FOUND ? "DEVICE_NOT_FOUND" :
+         err == Err::DEVICE_ID_MISMATCH ? "DEVICE_ID_MISMATCH" :
+         err == Err::MEMORY_ERROR ? "MEMORY_ERROR" :
+         err == Err::MEASUREMENT_NOT_READY ? "MEASUREMENT_NOT_READY" :
+         err == Err::MATH_OVERFLOW ? "MATH_OVERFLOW" :
+         err == Err::BUSY ? "BUSY" :
+         err == Err::IN_PROGRESS ? "IN_PROGRESS" :
+         err == Err::I2C_NACK_ADDR ? "I2C_NACK_ADDR" :
+         err == Err::I2C_NACK_DATA ? "I2C_NACK_DATA" :
+         err == Err::I2C_TIMEOUT ? "I2C_TIMEOUT" :
+         err == Err::I2C_BUS ? "I2C_BUS" :
+         err == Err::ACCUMULATION_INVALID ? "ACCUMULATION_INVALID" :
+         err == Err::ACCUMULATION_OVERFLOW ? "ACCUMULATION_OVERFLOW" :
+         err == Err::HARDWARE_DIRTY ? "HARDWARE_DIRTY" :
+         err == Err::I2C_NACK_UNKNOWN_PHASE ? "I2C_NACK_UNKNOWN_PHASE" :
+         "UNKNOWN";
+}
 
 /// @brief Status structure returned by all fallible operations.
 struct Status {

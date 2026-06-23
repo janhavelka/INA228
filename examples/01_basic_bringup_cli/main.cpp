@@ -44,6 +44,7 @@ struct StressStats {
 INA228::INA228 device;
 bool verboseMode = false;
 StressStats stressStats;
+INA228::Err hilCommandStatus = INA228::Err::OK;
 static constexpr uint8_t DEFAULT_I2C_ADDRESS = board::INA228_I2C_ADDR;
 static constexpr uint8_t INA228_ADDR_MIN = 0x40;
 static constexpr uint8_t INA228_ADDR_MAX = 0x4F;
@@ -310,30 +311,7 @@ INA228::Status initializeDevice(uint8_t address, bool allowAutoDetectFallback) {
 }
 
 const char* errToStr(INA228::Err err) {
-  using namespace INA228;
-  switch (err) {
-    case Err::OK:                    return "OK";
-    case Err::NOT_INITIALIZED:       return "NOT_INITIALIZED";
-    case Err::INVALID_CONFIG:        return "INVALID_CONFIG";
-    case Err::I2C_ERROR:             return "I2C_ERROR";
-    case Err::TIMEOUT:               return "TIMEOUT";
-    case Err::INVALID_PARAM:         return "INVALID_PARAM";
-    case Err::DEVICE_NOT_FOUND:      return "DEVICE_NOT_FOUND";
-    case Err::DEVICE_ID_MISMATCH:    return "DEVICE_ID_MISMATCH";
-    case Err::MEMORY_ERROR:          return "MEMORY_ERROR";
-    case Err::MEASUREMENT_NOT_READY: return "MEASUREMENT_NOT_READY";
-    case Err::MATH_OVERFLOW:         return "MATH_OVERFLOW";
-    case Err::BUSY:                  return "BUSY";
-    case Err::IN_PROGRESS:           return "IN_PROGRESS";
-    case Err::I2C_NACK_ADDR:         return "I2C_NACK_ADDR";
-    case Err::I2C_NACK_DATA:         return "I2C_NACK_DATA";
-    case Err::I2C_TIMEOUT:           return "I2C_TIMEOUT";
-    case Err::I2C_BUS:               return "I2C_BUS";
-    case Err::ACCUMULATION_INVALID:  return "ACCUMULATION_INVALID";
-    case Err::ACCUMULATION_OVERFLOW: return "ACCUMULATION_OVERFLOW";
-    case Err::HARDWARE_DIRTY:        return "HARDWARE_DIRTY";
-    default:                         return "UNKNOWN";
-  }
+  return INA228::errName(err);
 }
 
 const char* stateToStr(INA228::DriverState st) {
@@ -447,6 +425,9 @@ const char* adcRangeToStr(INA228::AdcRange range) {
 // ============================================================================
 
 void printStatus(const INA228::Status& st) {
+  if (!st.ok() && hilCommandStatus == INA228::Err::OK) {
+    hilCommandStatus = st.code;
+  }
   Serial.printf("  Status: %s%s%s (code=%u, detail=%ld)\n",
                 LOG_COLOR_RESULT(st.ok()),
                 errToStr(st.code),
@@ -544,6 +525,26 @@ bool parseU32(const String& token, uint32_t& out) {
   }
   out = static_cast<uint32_t>(value);
   return true;
+}
+
+bool parseThreeU32(String args, uint32_t& first, uint32_t& second, uint32_t& third) {
+  args.trim();
+  const int firstSplit = args.indexOf(' ');
+  if (firstSplit < 0) {
+    return false;
+  }
+  String firstText = args.substring(0, firstSplit);
+  String tail = args.substring(firstSplit + 1);
+  tail.trim();
+  const int secondSplit = tail.indexOf(' ');
+  if (secondSplit < 0) {
+    return false;
+  }
+  String secondText = tail.substring(0, secondSplit);
+  String thirdText = tail.substring(secondSplit + 1);
+  thirdText.trim();
+  return parseU32(firstText, first) && parseU32(secondText, second) &&
+         parseU32(thirdText, third);
 }
 
 bool parseFloat(const String& token, float& out) {
@@ -1337,6 +1338,7 @@ void printHelp() {
   cli::printHelpItem("reset_start / reset_step <budget>", "Run fixed-step reset job");
   cli::printHelpItem("rstacc", "Reset energy/charge accumulators");
   cli::printHelpItem("apply_start / apply_step <budget>", "Replay config/calibration as fixed-step job");
+  cli::printHelpItem("replay_start / replay_step <budget>", "Alias for config replay fixed-step job");
 
   cli::printHelpSection("Alert & Diagnostics");
   cli::printHelpItem("diag", "Read DIAG_ALRT flags (destructive/status-clearing)");
@@ -1366,7 +1368,11 @@ void printHelp() {
   cli::printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   cli::printHelpItem("stress [N]", "Run N measurement cycles (default 10)");
   cli::printHelpItem("stress_mix [N]", "Run N mixed-operation cycles (default 50)");
+  cli::printHelpItem("hilrun <token> <seq> <cmd>", "Run one framed HIL command");
   cli::printHelpItem("hilmark <token>", "Print token for automated HIL command framing");
+  cli::printHelpItem("xfer_reset", "Reset example transport counters");
+  cli::printHelpItem("xfer_stats", "Show example transport counters");
+  cli::printHelpItem("xfer_assert <r> <w> <t>", "Assert example transport counter totals");
   cli::printHelpItem("selftest", "Run diagnostic self-test; reads DIAG_ALRT");
 }
 
@@ -1394,8 +1400,91 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd.startsWith("hilrun ")) {
+    String args = cmd.substring(7);
+    args.trim();
+    const int tokenSplit = args.indexOf(' ');
+    if (tokenSplit < 0) {
+      LOGW("Usage: hilrun <token> <seq> <inner command>");
+      return;
+    }
+    String token = args.substring(0, tokenSplit);
+    String tail = args.substring(tokenSplit + 1);
+    tail.trim();
+    const int seqSplit = tail.indexOf(' ');
+    if (seqSplit < 0) {
+      LOGW("Usage: hilrun <token> <seq> <inner command>");
+      return;
+    }
+    String seq = tail.substring(0, seqSplit);
+    String inner = tail.substring(seqSplit + 1);
+    inner.trim();
+
+    Serial.printf("HIL_BEGIN token=%s seq=%s\n", token.c_str(), seq.c_str());
+    const uint32_t startMs = millis();
+    INA228::Err frameStatus = INA228::Err::OK;
+    if (inner.length() == 0 || inner.startsWith("hilrun ")) {
+      frameStatus = INA228::Err::INVALID_PARAM;
+    } else {
+      hilCommandStatus = INA228::Err::OK;
+      processCommand(inner);
+      frameStatus = hilCommandStatus;
+    }
+    Serial.printf("HIL_END token=%s seq=%s status=%s elapsed_ms=%lu\n",
+                  token.c_str(),
+                  seq.c_str(),
+                  errToStr(frameStatus),
+                  static_cast<unsigned long>(millis() - startMs));
+    Serial.flush();
+    return;
+  }
+
   if (cmd.startsWith("hilmark ")) {
     LOGI("HILMARK %s", cmd.substring(8).c_str());
+    return;
+  }
+
+  if (cmd == "xfer_reset") {
+    transport::resetTransferStats();
+    Serial.println("XFER_RESET read=0 write=0 total=0");
+    return;
+  }
+
+  if (cmd == "xfer_stats") {
+    const auto stats = transport::transferStats();
+    Serial.printf("XFER_STATS read=%lu write=%lu total=%lu\n",
+                  static_cast<unsigned long>(stats.read),
+                  static_cast<unsigned long>(stats.write),
+                  static_cast<unsigned long>(stats.read + stats.write));
+    return;
+  }
+
+  if (cmd.startsWith("xfer_assert ")) {
+    uint32_t expectedRead = 0;
+    uint32_t expectedWrite = 0;
+    uint32_t expectedTotal = 0;
+    if (!parseThreeU32(cmd.substring(12), expectedRead, expectedWrite, expectedTotal)) {
+      LOGW("Usage: xfer_assert <read> <write> <total>");
+      return;
+    }
+    const auto stats = transport::transferStats();
+    const uint32_t total = stats.read + stats.write;
+    if (stats.read == expectedRead && stats.write == expectedWrite && total == expectedTotal) {
+      Serial.printf("XFER_ASSERT PASS read=%lu write=%lu total=%lu\n",
+                    static_cast<unsigned long>(stats.read),
+                    static_cast<unsigned long>(stats.write),
+                    static_cast<unsigned long>(total));
+    } else {
+      hilCommandStatus = INA228::Err::INVALID_PARAM;
+      Serial.printf("XFER_ASSERT FAIL expected_read=%lu expected_write=%lu "
+                    "expected_total=%lu read=%lu write=%lu total=%lu\n",
+                    static_cast<unsigned long>(expectedRead),
+                    static_cast<unsigned long>(expectedWrite),
+                    static_cast<unsigned long>(expectedTotal),
+                    static_cast<unsigned long>(stats.read),
+                    static_cast<unsigned long>(stats.write),
+                    static_cast<unsigned long>(total));
+    }
     return;
   }
 
@@ -1852,24 +1941,25 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
-  if (cmd == "apply_start") {
-    auto st = device.startApplyCalibration();
+  if (cmd == "apply_start" || cmd == "replay_start") {
+    auto st = device.startConfigReplayJob();
     const bool accepted = st.ok() || st.inProgress();
-    LOGI("startApplyCalibration(): %s%s%s",
+    LOGI("startConfigReplayJob(): %s%s%s",
          LOG_COLOR_RESULT(accepted), errToStr(st.code), LOG_COLOR_RESET);
     if (!accepted) printStatus(st);
     return;
   }
 
-  if (cmd.startsWith("apply_step ")) {
+  if (cmd.startsWith("apply_step ") || cmd.startsWith("replay_step ")) {
+    const int prefixLen = cmd.startsWith("apply_step ") ? 11 : 12;
     uint32_t budget = 0;
-    if (!parseU32(cmd.substring(11), budget) || budget > 255u) {
-      LOGW("Usage: apply_step <0..255>");
+    if (!parseU32(cmd.substring(prefixLen), budget) || budget > 255u) {
+      LOGW("Usage: apply_step|replay_step <0..255>");
       return;
     }
-    auto st = device.pollApplyCalibration(millis(), static_cast<uint8_t>(budget));
+    auto st = device.pollConfigReplayJob(millis(), static_cast<uint8_t>(budget));
     const bool accepted = st.ok() || st.inProgress();
-    LOGI("pollApplyCalibration(%lu): %s%s%s",
+    LOGI("pollConfigReplayJob(%lu): %s%s%s",
          static_cast<unsigned long>(budget),
          LOG_COLOR_RESULT(accepted),
          errToStr(st.code),
@@ -2263,6 +2353,7 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  hilCommandStatus = INA228::Err::INVALID_PARAM;
   LOGW("Unknown command: %s", cmd.c_str());
 }
 

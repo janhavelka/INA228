@@ -20,7 +20,20 @@ REQUIRED_COMMON = [
     "HealthView.h",
 ]
 
-MANDATORY_COMMANDS = ["help", "scan", "probe", "recover", "drv", "read", "verbose", "stress"]
+MANDATORY_COMMANDS = [
+    "help",
+    "scan",
+    "probe",
+    "recover",
+    "drv",
+    "read",
+    "verbose",
+    "stress",
+    "hilrun",
+    "xfer_reset",
+    "xfer_stats",
+    "xfer_assert",
+]
 
 
 def fail(msg: str) -> None:

@@ -82,6 +82,10 @@ MANDATORY_COMMANDS = [
     "verbose",
     "stress",
     "stress_mix",
+    "hilrun",
+    "xfer_reset",
+    "xfer_stats",
+    "xfer_assert",
     "selftest",
 ]
 FORBIDDEN_IDF_TOKENS = [
@@ -200,6 +204,7 @@ def main() -> int:
         "mapEspProbeErr",
         "ESP_ERR_NOT_FOUND",
         "I2C_NACK_ADDR",
+        "I2C_NACK_UNKNOWN_PHASE",
         "I2C NACK, ESP-IDF phase unavailable",
         "single-owner",
     ):

@@ -49,6 +49,7 @@ static constexpr const char* COLOR_CYAN = "\033[36m";
 INA228::INA228 device;
 bool verboseMode = false;
 uint8_t selectedAddress = DEFAULT_I2C_ADDRESS;
+INA228::Err hilCommandStatus = INA228::Err::OK;
 
 struct ProbeSnapshot {
   uint8_t address = DEFAULT_I2C_ADDRESS;
@@ -151,6 +152,19 @@ bool parseU32(const char* token, uint32_t& out) {
   return true;
 }
 
+bool parseThreeU32(const char* input, uint32_t& first, uint32_t& second, uint32_t& third) {
+  char firstText[16] = {};
+  char rest[MAX_LINE_LEN] = {};
+  if (!splitTwoArgs(input, firstText, sizeof(firstText), rest, sizeof(rest))) {
+    return false;
+  }
+  char secondText[16] = {};
+  char thirdText[16] = {};
+  return splitTwoArgs(rest, secondText, sizeof(secondText), thirdText, sizeof(thirdText)) &&
+         parseU32(firstText, first) && parseU32(secondText, second) &&
+         parseU32(thirdText, third);
+}
+
 bool parseI32(const char* token, int32_t& out) {
   if (token == nullptr || token[0] == '\0') {
     return false;
@@ -204,30 +218,7 @@ bool parseAddressArg(const char* text, uint8_t& outAddress) {
 }
 
 const char* errToStr(INA228::Err err) {
-  using INA228::Err;
-  switch (err) {
-    case Err::OK: return "OK";
-    case Err::NOT_INITIALIZED: return "NOT_INITIALIZED";
-    case Err::INVALID_CONFIG: return "INVALID_CONFIG";
-    case Err::I2C_ERROR: return "I2C_ERROR";
-    case Err::TIMEOUT: return "TIMEOUT";
-    case Err::INVALID_PARAM: return "INVALID_PARAM";
-    case Err::DEVICE_NOT_FOUND: return "DEVICE_NOT_FOUND";
-    case Err::DEVICE_ID_MISMATCH: return "DEVICE_ID_MISMATCH";
-    case Err::MEMORY_ERROR: return "MEMORY_ERROR";
-    case Err::MEASUREMENT_NOT_READY: return "MEASUREMENT_NOT_READY";
-    case Err::MATH_OVERFLOW: return "MATH_OVERFLOW";
-    case Err::BUSY: return "BUSY";
-    case Err::IN_PROGRESS: return "IN_PROGRESS";
-    case Err::I2C_NACK_ADDR: return "I2C_NACK_ADDR";
-    case Err::I2C_NACK_DATA: return "I2C_NACK_DATA";
-    case Err::I2C_TIMEOUT: return "I2C_TIMEOUT";
-    case Err::I2C_BUS: return "I2C_BUS";
-    case Err::ACCUMULATION_INVALID: return "ACCUMULATION_INVALID";
-    case Err::ACCUMULATION_OVERFLOW: return "ACCUMULATION_OVERFLOW";
-    case Err::HARDWARE_DIRTY: return "HARDWARE_DIRTY";
-    default: return "UNKNOWN";
-  }
+  return INA228::errName(err);
 }
 
 const char* stateToStr(INA228::DriverState state) {
@@ -307,6 +298,9 @@ uint8_t configuredAddress() {
 }
 
 void printStatus(const INA228::Status& st) {
+  if (!st.ok() && hilCommandStatus == INA228::Err::OK) {
+    hilCommandStatus = st.code;
+  }
   std::printf("  Status: %s%s%s (code=%u, detail=%ld)\n",
               st.ok() ? COLOR_GREEN : COLOR_RED,
               errToStr(st.code),
@@ -918,6 +912,7 @@ void printHelp() {
   printHelpItem("reset_start / reset_step <budget>", "Run fixed-step reset job");
   printHelpItem("rstacc", "Reset energy/charge accumulators");
   printHelpItem("apply_start / apply_step <budget>", "Replay config/calibration as fixed-step job");
+  printHelpItem("replay_start / replay_step <budget>", "Alias for config replay fixed-step job");
 
   std::printf("\n%s[Alert & Diagnostics]%s\n", COLOR_GREEN, COLOR_RESET);
   printHelpItem("diag", "Read DIAG_ALRT flags (destructive/status-clearing)");
@@ -947,7 +942,11 @@ void printHelp() {
   printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   printHelpItem("stress [N]", "Run N measurement cycles (default 10)");
   printHelpItem("stress_mix [N]", "Run N mixed-operation cycles (default 50)");
+  printHelpItem("hilrun <token> <seq> <cmd>", "Run one framed HIL command");
   printHelpItem("hilmark <token>", "Print token for automated HIL command framing");
+  printHelpItem("xfer_reset", "Reset example transport counters");
+  printHelpItem("xfer_stats", "Show example transport counters");
+  printHelpItem("xfer_assert <r> <w> <t>", "Assert example transport counter totals");
   printHelpItem("selftest", "Run diagnostic self-test; reads DIAG_ALRT");
 }
 
@@ -1241,8 +1240,77 @@ void processCommand(char* cmd) {
     printHelp();
   } else if (std::strcmp(cmd, "version") == 0 || std::strcmp(cmd, "ver") == 0) {
     printVersionInfo();
+  } else if ((arg = argAfter(cmd, "hilrun ")) != nullptr) {
+    trimInPlace(const_cast<char*>(arg));
+    char* token = const_cast<char*>(arg);
+    char* seq = std::strchr(token, ' ');
+    if (seq == nullptr) {
+      std::printf("Usage: hilrun <token> <seq> <inner command>\n");
+      return;
+    }
+    *seq++ = '\0';
+    trimInPlace(seq);
+    char* inner = std::strchr(seq, ' ');
+    if (inner == nullptr) {
+      std::printf("Usage: hilrun <token> <seq> <inner command>\n");
+      return;
+    }
+    *inner++ = '\0';
+    trimInPlace(inner);
+
+    std::printf("HIL_BEGIN token=%s seq=%s\n", token, seq);
+    const uint32_t startMs = nowMs();
+    INA228::Err frameStatus = INA228::Err::OK;
+    if (inner[0] == '\0' || startsWith(inner, "hilrun ")) {
+      frameStatus = INA228::Err::INVALID_PARAM;
+    } else {
+      hilCommandStatus = INA228::Err::OK;
+      processCommand(inner);
+      frameStatus = hilCommandStatus;
+    }
+    std::printf("HIL_END token=%s seq=%s status=%s elapsed_ms=%lu\n",
+                token,
+                seq,
+                errToStr(frameStatus),
+                static_cast<unsigned long>(nowMs() - startMs));
+    std::fflush(stdout);
   } else if ((arg = argAfter(cmd, "hilmark ")) != nullptr) {
     std::printf("HILMARK %s\n", arg);
+  } else if (std::strcmp(cmd, "xfer_reset") == 0) {
+    ina228IdfResetTransferStats();
+    std::printf("XFER_RESET read=0 write=0 total=0\n");
+  } else if (std::strcmp(cmd, "xfer_stats") == 0) {
+    const Ina228IdfTransferStats stats = ina228IdfTransferStats();
+    std::printf("XFER_STATS read=%lu write=%lu total=%lu\n",
+                static_cast<unsigned long>(stats.read),
+                static_cast<unsigned long>(stats.write),
+                static_cast<unsigned long>(stats.read + stats.write));
+  } else if ((arg = argAfter(cmd, "xfer_assert ")) != nullptr) {
+    uint32_t expectedRead = 0;
+    uint32_t expectedWrite = 0;
+    uint32_t expectedTotal = 0;
+    if (!parseThreeU32(arg, expectedRead, expectedWrite, expectedTotal)) {
+      std::printf("Usage: xfer_assert <read> <write> <total>\n");
+      return;
+    }
+    const Ina228IdfTransferStats stats = ina228IdfTransferStats();
+    const uint32_t total = stats.read + stats.write;
+    if (stats.read == expectedRead && stats.write == expectedWrite && total == expectedTotal) {
+      std::printf("XFER_ASSERT PASS read=%lu write=%lu total=%lu\n",
+                  static_cast<unsigned long>(stats.read),
+                  static_cast<unsigned long>(stats.write),
+                  static_cast<unsigned long>(total));
+    } else {
+      hilCommandStatus = INA228::Err::INVALID_PARAM;
+      std::printf("XFER_ASSERT FAIL expected_read=%lu expected_write=%lu "
+                  "expected_total=%lu read=%lu write=%lu total=%lu\n",
+                  static_cast<unsigned long>(expectedRead),
+                  static_cast<unsigned long>(expectedWrite),
+                  static_cast<unsigned long>(expectedTotal),
+                  static_cast<unsigned long>(stats.read),
+                  static_cast<unsigned long>(stats.write),
+                  static_cast<unsigned long>(total));
+    }
   } else if (std::strcmp(cmd, "scan") == 0) {
     scanBus();
     scanIna228Addresses();
@@ -1479,20 +1547,21 @@ void processCommand(char* cmd) {
     INA228::Status st = device.resetAccumulators();
     std::printf("resetAccumulators(): %s\n", errToStr(st.code));
     if (!st.ok()) printStatus(st);
-  } else if (std::strcmp(cmd, "apply_start") == 0) {
-    INA228::Status st = device.startApplyCalibration();
+  } else if (std::strcmp(cmd, "apply_start") == 0 || std::strcmp(cmd, "replay_start") == 0) {
+    INA228::Status st = device.startConfigReplayJob();
     const bool accepted = st.ok() || st.inProgress();
-    std::printf("startApplyCalibration(): %s\n", errToStr(st.code));
+    std::printf("startConfigReplayJob(): %s\n", errToStr(st.code));
     if (!accepted) printStatus(st);
-  } else if ((arg = argAfter(cmd, "apply_step ")) != nullptr) {
+  } else if ((arg = argAfter(cmd, "apply_step ")) != nullptr ||
+             (arg = argAfter(cmd, "replay_step ")) != nullptr) {
     uint32_t budget = 0;
     if (!parseU32(arg, budget) || budget > 255U) {
-      std::printf("Usage: apply_step <0..255>\n");
+      std::printf("Usage: apply_step|replay_step <0..255>\n");
       return;
     }
-    INA228::Status st = device.pollApplyCalibration(nowMs(), static_cast<uint8_t>(budget));
+    INA228::Status st = device.pollConfigReplayJob(nowMs(), static_cast<uint8_t>(budget));
     const bool accepted = st.ok() || st.inProgress();
-    std::printf("pollApplyCalibration(%lu): %s\n",
+    std::printf("pollConfigReplayJob(%lu): %s\n",
                 static_cast<unsigned long>(budget), errToStr(st.code));
     if (!accepted) printStatus(st);
   } else if (std::strcmp(cmd, "diag") == 0) {
@@ -1689,6 +1758,7 @@ void processCommand(char* cmd) {
     }
     runStress(static_cast<uint32_t>(count));
   } else {
+    hilCommandStatus = INA228::Err::INVALID_PARAM;
     std::printf("Unknown command: %s\n", cmd);
   }
 }

@@ -25,12 +25,19 @@ returning stale or invalid converted values.
   polling.
 - Explicit status coverage for accumulation invalidity, accumulation overflow,
   dirty hardware/cache state, and INA228 math overflow.
-- Native fake-bus coverage increased to 114 tests, including datasheet-style
+- Native fake-bus coverage increased to 138 tests, including datasheet-style
   calibration/scaling vectors, destructive diagnostic reads, scripted
   transaction failures, reset/recovery, output atomicity, and copy/move
   prevention.
 - Pure ESP-IDF build guide and CI matrix documentation for reproducible
   `idf.py` ESP32-S2/ESP32-S3 checks.
+- `Err::I2C_NACK_UNKNOWN_PHASE` and `errName(Err)` for precise status names
+  and ESP-IDF transfers whose NACK phase is not reported by the platform.
+- Example-only framed HIL command support (`hilrun`) and transfer counters
+  (`xfer_reset`, `xfer_stats`, `xfer_assert`) for serial framing and
+  max-instruction transfer-budget evidence.
+- Compatible `startConfigReplayJob()` / `pollConfigReplayJob()` aliases for
+  the fixed-step cached config/calibration replay job.
 
 ### Changed
 - `DIAG_ALRT` handling now separates cached alert configuration from
@@ -55,8 +62,9 @@ returning stale or invalid converted values.
 - Public API documentation now states the non-thread-safe/non-ISR-safe contract,
   callback re-entry restrictions, output-parameter commit rules, raw-register
   diagnostic risks, and calibration requirements for converted channels.
-- Public docs now describe the library as an industry-readiness hardened
-  pre-production candidate pending checked-in hardware validation.
+- Public docs now describe the library as a pre-production hardening candidate
+  with partial low-voltage Arduino ESP32-S3 HIL evidence, pending
+  release-grade hardware validation.
 - PlatformIO Arduino ESP32-S2/S3 builds are pinned to
   `platformio/espressif32@7.0.1` for more reproducible local and CI package
   resolution.
@@ -73,12 +81,16 @@ returning stale or invalid converted values.
   PDFs.
 
 ### Validation
-- Local native tests pass with 127/127 tests on this hardening checkout.
+- Local native tests pass with 138/138 tests on this hardening checkout.
 - Local PlatformIO Arduino builds pass for `esp32s2dev` and `esp32s3dev`.
 - GitHub Actions is configured for pure ESP-IDF ESP32-S2/S3 builds, but current
   CI results must be reviewed before claiming ESP-IDF build verification.
-- Hardware validation remains `NOT RUN`; no field, high-voltage, long-soak, or
-  hardware-safety validation is claimed.
+- Checked-in framed HIL reports include a targeted feature sweep with 196 PASS,
+  0 FAIL, 0 UNKNOWN and a transfer suite with 53 PASS, 0 FAIL, 0 UNKNOWN on
+  Arduino ESP32-S3/COM21. These remain dirty-worktree partial low-voltage
+  evidence only; release-grade hardware validation, field validation,
+  high-voltage validation, 8-hour clean-commit soak evidence, and
+  hardware-safety validation are not claimed.
 
 ## [1.3.0] - 2026-05-20
 

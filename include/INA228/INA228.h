@@ -360,6 +360,18 @@ public:
   /// stops on first failure, leaving dirty-state evidence for recovery.
   Status pollApplyCalibration(uint32_t nowMs, uint8_t maxInstructions);
 
+  /// Start replaying cached static configuration and calibration as a job.
+  ///
+  /// Preferred clearer alias for startApplyCalibration().
+  Status startConfigReplayJob() { return startApplyCalibration(); }
+
+  /// Poll cached static configuration and calibration replay.
+  ///
+  /// Preferred clearer alias for pollApplyCalibration().
+  Status pollConfigReplayJob(uint32_t nowMs, uint8_t maxInstructions) {
+    return pollApplyCalibration(nowMs, maxInstructions);
+  }
+
   /// Read shunt voltage in volts
   /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
   /// @param out Shunt voltage (V)

@@ -1,6 +1,6 @@
 # INA228 Driver Library
 
-Framework-neutral INA228 85-V, 20-bit I2C power/energy/charge monitor driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use). This is a pre-production hardening candidate pending checked-in hardware validation.
+Framework-neutral INA228 85-V, 20-bit I2C power/energy/charge monitor driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use). This is a pre-production hardening candidate pending release-grade hardware validation.
 
 Library version: `v2.0.0` hardening merge candidate. This version is not
 tagged or release-ready until current CI and release checks are reviewed.
@@ -64,13 +64,16 @@ not a substitute for a real `idf.py` build log.
   ADCRANGE, reset/RSTACC, recovery, dirty-state, and status precision behavior.
 - Documents that current, power, energy, and charge require valid calibration,
   clean hardware/cache state, and datasheet-supported accumulation conditions.
-- Includes native fake-bus tests and local PlatformIO Arduino ESP32-S2/S3 build
-  coverage on the hardening branch.
+- Includes native fake-bus tests, local PlatformIO Arduino ESP32-S2/S3 build
+  coverage, and partial low-voltage Arduino ESP32-S3 HIL evidence on the
+  hardening branch.
 - Configures GitHub Actions pure ESP-IDF `idf.py` builds for ESP32-S2 and
   ESP32-S3, but current CI logs must be reviewed before claiming ESP-IDF build
   verification.
-- Hardware validation remains `NOT RUN`; do not describe this branch as
-  production-ready, field-proven, or hardware validated.
+- Release-grade hardware validation remains blocked by clean-commit framed HIL
+  evidence, an 8-hour clean framed soak, fault-injection fixture coverage,
+  alert-pin capture, controlled reset/power-cycle evidence, and reviewed CI
+  logs.
 
 ## High-Voltage Safety
 
@@ -370,12 +373,14 @@ tracked by level so release wording cannot overstate what was actually run.
 | CI configured | GitHub Actions includes native tests, Arduino S2/S3 builds, package checks, guards, and ESP-IDF S2/S3 builds. |
 | CI verified | Not claimed here; workflow logs for the current branch or PR must be reviewed before saying CI is green. |
 | ESP-IDF build verified | Not claimed here unless local `idf.py` output or reviewed CI logs are captured. |
-| Hardware validated | `NOT RUN`; no hardware validation logs are checked in. |
+| Partial low-voltage HIL evidence | Checked-in reports under `docs/reports/` cover Arduino ESP32-S3 CLI-visible behavior and fixed-step transfer budgets on dirty worktrees; see `docs/validation/hardware-evidence.md`. |
+| Release-grade hardware validated | Not claimed; clean-commit framed HIL, 8-hour clean framed soak, fault-injection fixture coverage, alert-pin capture, controlled reset/power-cycle evidence, and reviewed CI logs are still required. |
 
 Hardware validation is tracked separately in
 [`docs/validation/hardware-validation-procedure.md`](docs/validation/hardware-validation-procedure.md).
-Hardware validation remains unclaimed until dated logs, equipment, board,
-module, shunt, rail/load, commands, and pass/fail notes are checked in. Use
+Release-grade hardware validation remains unclaimed until dated clean-commit
+logs, equipment, board, module, shunt, rail/load, commands, and pass/fail notes
+are checked in. Use
 [`tools/INA228_HIL_COMMAND_SEQUENCE.md`](tools/INA228_HIL_COMMAND_SEQUENCE.md)
 for repeatable CLI transcripts and
 [`docs/validation/release-checklist.md`](docs/validation/release-checklist.md) before
@@ -385,7 +390,9 @@ tagging.
 python tools/check_cli_contract.py
 python tools/check_idf_example_contract.py
 python tools/check_core_timing_guard.py
-python tools/run_i2c_hil.py --dry-run
+python tools/run_i2c_hil.py --parser-self-test
+python tools/run_i2c_hil.py --dry-run --suite targeted
+python tools/run_i2c_hil.py --dry-run --suite transfer
 pio test -e native
 pio run -e esp32s3dev
 pio run -e esp32s2dev

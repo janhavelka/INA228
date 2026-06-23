@@ -22,6 +22,8 @@ and validation/release evidence.
 
 - [Validation status](validation/validation-status.md) - current evidence level
   and claim policy.
+- [Hardware evidence index](validation/hardware-evidence.md) - checked-in HIL
+  reports and why they are partial evidence only.
 - [Hardware validation procedure](validation/hardware-validation-procedure.md)
   - repeatable hardware/HIL procedure and required evidence.
 - [Release checklist](validation/release-checklist.md) - version, CI, package,
