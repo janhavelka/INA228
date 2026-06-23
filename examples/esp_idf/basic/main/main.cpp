@@ -636,6 +636,71 @@ void printRawSample() {
   }
 }
 
+void printIntegerSampleFields(const INA228::IntegerSample& sample) {
+  std::printf("  Bus:     %lu mV\n", static_cast<unsigned long>(sample.busMillivolts));
+  std::printf("  Shunt:   %ld uV\n", static_cast<long>(sample.shuntMicrovolts));
+  std::printf("  Temp:    %ld mdegC\n",
+              static_cast<long>(sample.dieTemperatureMilliC));
+  std::printf("  Current: %ld mA\n", static_cast<long>(sample.currentMilliamps));
+  std::printf("  Power:   %lu mW\n", static_cast<unsigned long>(sample.powerMilliwatts));
+  if (sample.diagAlertValid) {
+    std::printf("  DIAG_ALRT snapshot before current/power reads: 0x%04X\n",
+                sample.diagAlertRaw);
+  }
+}
+
+void printIntegerSample() {
+  INA228::IntegerSample sample;
+  INA228::Status st = device.readIntegerSample(sample);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+  std::printf("=== Integer Sample ===\n");
+  printIntegerSampleFields(sample);
+}
+
+void printDiagSnapshot() {
+  INA228::DiagAlertSnapshot snap;
+  INA228::Status st = device.getDiagAlertSnapshot(snap);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+  std::printf("=== DIAG_ALRT Snapshot ===\n");
+  std::printf("  Note: cache-only; this command does not touch I2C.\n");
+  std::printf("  Valid:      %s\n", boolStr(snap.valid));
+  std::printf("  Raw:        0x%04X\n", snap.raw);
+  std::printf("  Captured:   %lu ms\n", static_cast<unsigned long>(snap.capturedMs));
+  std::printf("  MEMSTAT:    %s\n", boolStr(snap.diag.memstat));
+  std::printf("  CNVRF:      %s\n", boolStr(snap.diag.cnvrf));
+  std::printf("  ENERGYOF:   %s\n", boolStr(snap.diag.energyOF));
+  std::printf("  CHARGEOF:   %s\n", boolStr(snap.diag.chargeOF));
+  std::printf("  MATHOF:     %s\n", boolStr(snap.diag.mathOF));
+}
+
+void printPowerSampleStep(uint8_t maxInstructions) {
+  INA228::RawSample raw;
+  INA228::IntegerSample sample;
+  INA228::Status st = device.readPowerSampleRawStep(raw, sample, maxInstructions);
+  const bool accepted = st.ok() || st.inProgress();
+  std::printf("readPowerSampleRawStep(%u): %s\n",
+              static_cast<unsigned>(maxInstructions), errToStr(st.code));
+  if (st.ok()) {
+    std::printf("=== Power Sample Step Result ===\n");
+    printIntegerSampleFields(sample);
+    std::printf("  Raw Vshunt: %ld\n", static_cast<long>(raw.vshunt));
+    std::printf("  Raw Vbus:   %lu\n", static_cast<unsigned long>(raw.vbus));
+    std::printf("  Raw Temp:   %d\n", static_cast<int>(raw.dietemp));
+    std::printf("  Raw Current:%ld\n", static_cast<long>(raw.current));
+    std::printf("  Raw Power:  %lu\n", static_cast<unsigned long>(raw.power));
+  } else if (st.inProgress()) {
+    std::printf("  Step result pending; outputs are not committed yet.\n");
+  } else if (!accepted) {
+    printStatus(st);
+  }
+}
+
 void printDiag() {
   INA228::DiagAlert diag;
   INA228::Status st = device.readDiagAlert(diag);
@@ -819,6 +884,8 @@ void printHelp() {
   printHelpItem("scanina", "Probe INA228 IDs; reads DIAG_ALRT/MEMSTAT");
   printHelpItem("read", "Read all measurements with accumulator validity flags");
   printHelpItem("raw", "Read raw register values with validity flags");
+  printHelpItem("integer / int", "Read fixed-unit integer sample");
+  printHelpItem("diagsnap", "Show cache-only preserved DIAG_ALRT snapshot");
   printHelpItem("timing", "Show conversion timing and calibration info");
 
   std::printf("\n%s[Measurement]%s\n", COLOR_GREEN, COLOR_RESET);
@@ -831,6 +898,8 @@ void printHelp() {
   printHelpItem("charge", "Read accumulated charge (continuous accumulation only)");
   printHelpItem("ready", "Check if conversion is ready");
   printHelpItem("trigger [mode]", "Trigger single-shot conversion (0-7)");
+  printHelpItem("ready_step <budget>", "Poll readiness with maxInstructions budget");
+  printHelpItem("sample_step <budget>", "Read fixed-step power sample");
 
   std::printf("\n%s[Configuration]%s\n", COLOR_GREEN, COLOR_RESET);
   printHelpItem("mode [0..15]", "Set or show operating mode");
@@ -846,7 +915,9 @@ void printHelp() {
   printHelpItem("init [0x40..0x4F]", "Re-initialize device at current or given address");
   printHelpItem("end", "Shutdown driver");
   printHelpItem("reset", "Software reset device");
+  printHelpItem("reset_start / reset_step <budget>", "Run fixed-step reset job");
   printHelpItem("rstacc", "Reset energy/charge accumulators");
+  printHelpItem("apply_start / apply_step <budget>", "Replay config/calibration as fixed-step job");
 
   std::printf("\n%s[Alert & Diagnostics]%s\n", COLOR_GREEN, COLOR_RESET);
   printHelpItem("diag", "Read DIAG_ALRT flags (destructive/status-clearing)");
@@ -876,6 +947,7 @@ void printHelp() {
   printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   printHelpItem("stress [N]", "Run N measurement cycles (default 10)");
   printHelpItem("stress_mix [N]", "Run N mixed-operation cycles (default 50)");
+  printHelpItem("hilmark <token>", "Print token for automated HIL command framing");
   printHelpItem("selftest", "Run diagnostic self-test; reads DIAG_ALRT");
 }
 
@@ -1169,6 +1241,8 @@ void processCommand(char* cmd) {
     printHelp();
   } else if (std::strcmp(cmd, "version") == 0 || std::strcmp(cmd, "ver") == 0) {
     printVersionInfo();
+  } else if ((arg = argAfter(cmd, "hilmark ")) != nullptr) {
+    std::printf("HILMARK %s\n", arg);
   } else if (std::strcmp(cmd, "scan") == 0) {
     scanBus();
     scanIna228Addresses();
@@ -1178,6 +1252,10 @@ void processCommand(char* cmd) {
     printMeasurement();
   } else if (std::strcmp(cmd, "raw") == 0) {
     printRawSample();
+  } else if (std::strcmp(cmd, "integer") == 0 || std::strcmp(cmd, "int") == 0) {
+    printIntegerSample();
+  } else if (std::strcmp(cmd, "diagsnap") == 0) {
+    printDiagSnapshot();
   } else if (std::strcmp(cmd, "timing") == 0) {
     printTimingInfo();
   } else if (std::strcmp(cmd, "vbus") == 0 || std::strcmp(cmd, "vshunt") == 0 ||
@@ -1189,6 +1267,25 @@ void processCommand(char* cmd) {
     bool ready = false;
     INA228::Status st = device.isConversionReady(ready);
     if (st.ok()) std::printf("Conversion ready: %s\n", boolStr(ready)); else printStatus(st);
+  } else if ((arg = argAfter(cmd, "ready_step ")) != nullptr) {
+    uint32_t budget = 0;
+    if (!parseU32(arg, budget) || budget > 255U) {
+      std::printf("Usage: ready_step <0..255>\n");
+      return;
+    }
+    bool ready = false;
+    INA228::Status st = device.pollMeasurementReady(nowMs(), static_cast<uint8_t>(budget), ready);
+    const bool accepted = st.ok() || st.inProgress();
+    std::printf("pollMeasurementReady(%lu): %s ready=%s\n",
+                static_cast<unsigned long>(budget), errToStr(st.code), boolStr(ready));
+    if (!accepted) printStatus(st);
+  } else if ((arg = argAfter(cmd, "sample_step ")) != nullptr) {
+    uint32_t budget = 0;
+    if (!parseU32(arg, budget) || budget > 255U) {
+      std::printf("Usage: sample_step <0..255>\n");
+      return;
+    }
+    printPowerSampleStep(static_cast<uint8_t>(budget));
   } else if (std::strcmp(cmd, "trigger") == 0) {
     INA228::Status st = device.triggerConversion(INA228::Mode::TRIG_ALL);
     const bool accepted = st.ok() || st.inProgress();
@@ -1362,10 +1459,42 @@ void processCommand(char* cmd) {
     INA228::Status st = device.softReset();
     std::printf("softReset(): %s\n", errToStr(st.code));
     if (!st.ok()) printStatus(st);
+  } else if (std::strcmp(cmd, "reset_start") == 0) {
+    INA228::Status st = device.startResetJob();
+    const bool accepted = st.ok() || st.inProgress();
+    std::printf("startResetJob(): %s\n", errToStr(st.code));
+    if (!accepted) printStatus(st);
+  } else if ((arg = argAfter(cmd, "reset_step ")) != nullptr) {
+    uint32_t budget = 0;
+    if (!parseU32(arg, budget) || budget > 255U) {
+      std::printf("Usage: reset_step <0..255>\n");
+      return;
+    }
+    INA228::Status st = device.pollResetJob(nowMs(), static_cast<uint8_t>(budget));
+    const bool accepted = st.ok() || st.inProgress();
+    std::printf("pollResetJob(%lu): %s\n",
+                static_cast<unsigned long>(budget), errToStr(st.code));
+    if (!accepted) printStatus(st);
   } else if (std::strcmp(cmd, "rstacc") == 0) {
     INA228::Status st = device.resetAccumulators();
     std::printf("resetAccumulators(): %s\n", errToStr(st.code));
     if (!st.ok()) printStatus(st);
+  } else if (std::strcmp(cmd, "apply_start") == 0) {
+    INA228::Status st = device.startApplyCalibration();
+    const bool accepted = st.ok() || st.inProgress();
+    std::printf("startApplyCalibration(): %s\n", errToStr(st.code));
+    if (!accepted) printStatus(st);
+  } else if ((arg = argAfter(cmd, "apply_step ")) != nullptr) {
+    uint32_t budget = 0;
+    if (!parseU32(arg, budget) || budget > 255U) {
+      std::printf("Usage: apply_step <0..255>\n");
+      return;
+    }
+    INA228::Status st = device.pollApplyCalibration(nowMs(), static_cast<uint8_t>(budget));
+    const bool accepted = st.ok() || st.inProgress();
+    std::printf("pollApplyCalibration(%lu): %s\n",
+                static_cast<unsigned long>(budget), errToStr(st.code));
+    if (!accepted) printStatus(st);
   } else if (std::strcmp(cmd, "diag") == 0) {
     printDiag();
   } else if (std::strcmp(cmd, "diagraw") == 0) {

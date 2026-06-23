@@ -648,6 +648,80 @@ void printRawSample() {
   }
 }
 
+void printIntegerSampleFields(const INA228::IntegerSample& sample) {
+  Serial.printf("  Bus:     %lu mV\n",
+                static_cast<unsigned long>(sample.busMillivolts));
+  Serial.printf("  Shunt:   %ld uV\n",
+                static_cast<long>(sample.shuntMicrovolts));
+  Serial.printf("  Temp:    %ld mdegC\n",
+                static_cast<long>(sample.dieTemperatureMilliC));
+  Serial.printf("  Current: %ld mA\n",
+                static_cast<long>(sample.currentMilliamps));
+  Serial.printf("  Power:   %lu mW\n",
+                static_cast<unsigned long>(sample.powerMilliwatts));
+  if (sample.diagAlertValid) {
+    Serial.printf("  DIAG_ALRT snapshot before current/power reads: 0x%04X\n",
+                  sample.diagAlertRaw);
+  }
+}
+
+void printIntegerSample() {
+  INA228::IntegerSample sample{};
+  auto st = device.readIntegerSample(sample);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+
+  Serial.println("=== Integer Sample ===");
+  printIntegerSampleFields(sample);
+}
+
+void printDiagSnapshot() {
+  INA228::DiagAlertSnapshot snap{};
+  auto st = device.getDiagAlertSnapshot(snap);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+
+  Serial.println("=== DIAG_ALRT Snapshot ===");
+  Serial.println("  Note: cache-only; this command does not touch I2C.");
+  Serial.printf("  Valid:      %s\n", log_bool_str(snap.valid));
+  Serial.printf("  Raw:        0x%04X\n", snap.raw);
+  Serial.printf("  Captured:   %lu ms\n", static_cast<unsigned long>(snap.capturedMs));
+  Serial.printf("  MEMSTAT:    %s\n", log_bool_str(snap.diag.memstat));
+  Serial.printf("  CNVRF:      %s\n", log_bool_str(snap.diag.cnvrf));
+  Serial.printf("  ENERGYOF:   %s\n", log_bool_str(snap.diag.energyOF));
+  Serial.printf("  CHARGEOF:   %s\n", log_bool_str(snap.diag.chargeOF));
+  Serial.printf("  MATHOF:     %s\n", log_bool_str(snap.diag.mathOF));
+}
+
+void printPowerSampleStep(uint8_t maxInstructions) {
+  INA228::RawSample raw{};
+  INA228::IntegerSample sample{};
+  auto st = device.readPowerSampleRawStep(raw, sample, maxInstructions);
+  const bool accepted = st.ok() || st.inProgress();
+  LOGI("readPowerSampleRawStep(%u): %s%s%s",
+       static_cast<unsigned>(maxInstructions),
+       LOG_COLOR_RESULT(accepted),
+       errToStr(st.code),
+       LOG_COLOR_RESET);
+  if (st.ok()) {
+    Serial.println("=== Power Sample Step Result ===");
+    printIntegerSampleFields(sample);
+    Serial.printf("  Raw Vshunt: %ld\n", static_cast<long>(raw.vshunt));
+    Serial.printf("  Raw Vbus:   %lu\n", static_cast<unsigned long>(raw.vbus));
+    Serial.printf("  Raw Temp:   %d\n", static_cast<int>(raw.dietemp));
+    Serial.printf("  Raw Current:%ld\n", static_cast<long>(raw.current));
+    Serial.printf("  Raw Power:  %lu\n", static_cast<unsigned long>(raw.power));
+  } else if (st.inProgress()) {
+    Serial.println("  Step result pending; outputs are not committed yet.");
+  } else {
+    printStatus(st);
+  }
+}
+
 void printDiag() {
   INA228::DiagAlert diag{};
   auto st = device.readDiagAlert(diag);
@@ -1229,6 +1303,8 @@ void printHelp() {
   cli::printHelpItem("scanina", "Probe INA228 IDs; reads DIAG_ALRT/MEMSTAT");
   cli::printHelpItem("read", "Read all measurements with accumulator validity flags");
   cli::printHelpItem("raw", "Read raw register values with validity flags");
+  cli::printHelpItem("integer / int", "Read fixed-unit integer sample");
+  cli::printHelpItem("diagsnap", "Show cache-only preserved DIAG_ALRT snapshot");
   cli::printHelpItem("timing", "Show conversion timing and calibration info");
 
   cli::printHelpSection("Measurement");
@@ -1241,6 +1317,8 @@ void printHelp() {
   cli::printHelpItem("charge", "Read accumulated charge (continuous accumulation only)");
   cli::printHelpItem("ready", "Check if conversion is ready");
   cli::printHelpItem("trigger [mode]", "Trigger single-shot conversion (0-7)");
+  cli::printHelpItem("ready_step <budget>", "Poll readiness with maxInstructions budget");
+  cli::printHelpItem("sample_step <budget>", "Read fixed-step power sample");
 
   cli::printHelpSection("Configuration");
   cli::printHelpItem("mode [0..15]", "Set or show operating mode");
@@ -1256,7 +1334,9 @@ void printHelp() {
   cli::printHelpItem("init [0x40..0x4F]", "Re-initialize device at current or given address");
   cli::printHelpItem("end", "Shutdown driver");
   cli::printHelpItem("reset", "Software reset device");
+  cli::printHelpItem("reset_start / reset_step <budget>", "Run fixed-step reset job");
   cli::printHelpItem("rstacc", "Reset energy/charge accumulators");
+  cli::printHelpItem("apply_start / apply_step <budget>", "Replay config/calibration as fixed-step job");
 
   cli::printHelpSection("Alert & Diagnostics");
   cli::printHelpItem("diag", "Read DIAG_ALRT flags (destructive/status-clearing)");
@@ -1286,6 +1366,7 @@ void printHelp() {
   cli::printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   cli::printHelpItem("stress [N]", "Run N measurement cycles (default 10)");
   cli::printHelpItem("stress_mix [N]", "Run N mixed-operation cycles (default 50)");
+  cli::printHelpItem("hilmark <token>", "Print token for automated HIL command framing");
   cli::printHelpItem("selftest", "Run diagnostic self-test; reads DIAG_ALRT");
 }
 
@@ -1313,6 +1394,11 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd.startsWith("hilmark ")) {
+    LOGI("HILMARK %s", cmd.substring(8).c_str());
+    return;
+  }
+
   if (cmd == "scan") {
     bus_diag::scan();
     scanIna228Addresses();
@@ -1332,6 +1418,16 @@ void processCommand(const String& cmdLine) {
 
   if (cmd == "raw") {
     printRawSample();
+    return;
+  }
+
+  if (cmd == "integer" || cmd == "int") {
+    printIntegerSample();
+    return;
+  }
+
+  if (cmd == "diagsnap") {
+    printDiagSnapshot();
     return;
   }
 
@@ -1402,6 +1498,35 @@ void processCommand(const String& cmdLine) {
     auto st = device.isConversionReady(rdy);
     if (st.ok()) { LOGI("Conversion ready: %s", log_bool_str(rdy)); }
     else { printStatus(st); }
+    return;
+  }
+
+  if (cmd.startsWith("ready_step ")) {
+    uint32_t budget = 0;
+    if (!parseU32(cmd.substring(11), budget) || budget > 255u) {
+      LOGW("Usage: ready_step <0..255>");
+      return;
+    }
+    bool ready = false;
+    auto st = device.pollMeasurementReady(millis(), static_cast<uint8_t>(budget), ready);
+    const bool accepted = st.ok() || st.inProgress();
+    LOGI("pollMeasurementReady(%lu): %s%s%s ready=%s",
+         static_cast<unsigned long>(budget),
+         LOG_COLOR_RESULT(accepted),
+         errToStr(st.code),
+         LOG_COLOR_RESET,
+         log_bool_str(ready));
+    if (!accepted) printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("sample_step ")) {
+    uint32_t budget = 0;
+    if (!parseU32(cmd.substring(12), budget) || budget > 255u) {
+      LOGW("Usage: sample_step <0..255>");
+      return;
+    }
+    printPowerSampleStep(static_cast<uint8_t>(budget));
     return;
   }
 
@@ -1694,10 +1819,62 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd == "reset_start") {
+    auto st = device.startResetJob();
+    const bool accepted = st.ok() || st.inProgress();
+    LOGI("startResetJob(): %s%s%s",
+         LOG_COLOR_RESULT(accepted), errToStr(st.code), LOG_COLOR_RESET);
+    if (!accepted) printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("reset_step ")) {
+    uint32_t budget = 0;
+    if (!parseU32(cmd.substring(11), budget) || budget > 255u) {
+      LOGW("Usage: reset_step <0..255>");
+      return;
+    }
+    auto st = device.pollResetJob(millis(), static_cast<uint8_t>(budget));
+    const bool accepted = st.ok() || st.inProgress();
+    LOGI("pollResetJob(%lu): %s%s%s",
+         static_cast<unsigned long>(budget),
+         LOG_COLOR_RESULT(accepted),
+         errToStr(st.code),
+         LOG_COLOR_RESET);
+    if (!accepted) printStatus(st);
+    return;
+  }
+
   if (cmd == "rstacc") {
     auto st = device.resetAccumulators();
     LOGI("resetAccumulators(): %s%s%s", LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
     if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd == "apply_start") {
+    auto st = device.startApplyCalibration();
+    const bool accepted = st.ok() || st.inProgress();
+    LOGI("startApplyCalibration(): %s%s%s",
+         LOG_COLOR_RESULT(accepted), errToStr(st.code), LOG_COLOR_RESET);
+    if (!accepted) printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("apply_step ")) {
+    uint32_t budget = 0;
+    if (!parseU32(cmd.substring(11), budget) || budget > 255u) {
+      LOGW("Usage: apply_step <0..255>");
+      return;
+    }
+    auto st = device.pollApplyCalibration(millis(), static_cast<uint8_t>(budget));
+    const bool accepted = st.ok() || st.inProgress();
+    LOGI("pollApplyCalibration(%lu): %s%s%s",
+         static_cast<unsigned long>(budget),
+         LOG_COLOR_RESULT(accepted),
+         errToStr(st.code),
+         LOG_COLOR_RESET);
+    if (!accepted) printStatus(st);
     return;
   }
 
