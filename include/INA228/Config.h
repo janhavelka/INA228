@@ -9,6 +9,10 @@
 namespace INA228 {
 
 /// @brief I2C write callback signature.
+///
+/// The callback must be bounded by @p timeoutMs, must not re-enter the same
+/// INA228 instance, and should map platform errors to the most precise Status
+/// code available (address NACK, data NACK, timeout, bus, or generic I2C).
 /// @param addr     I2C device address (7-bit)
 /// @param data     Pointer to data to write
 /// @param len      Number of bytes to write
@@ -19,6 +23,10 @@ using I2cWriteFn = Status (*)(uint8_t addr, const uint8_t* data, size_t len,
                               uint32_t timeoutMs, void* user);
 
 /// @brief I2C write-then-read callback signature.
+///
+/// The callback must be bounded by @p timeoutMs, must not re-enter the same
+/// INA228 instance, and should map platform errors to the most precise Status
+/// code available (address NACK, data NACK, timeout, bus, or generic I2C).
 /// @param addr     I2C device address (7-bit)
 /// @param txData   Pointer to data to write
 /// @param txLen    Number of bytes to write
@@ -35,7 +43,8 @@ using I2cWriteReadFn = Status (*)(uint8_t addr, const uint8_t* txData, size_t tx
 /// @param user User context pointer passed through from Config
 /// @return Current monotonic milliseconds
 /// @note Framework-neutral builds do not call platform time APIs; if unset,
-/// health timestamps use 0 and triggered-conversion helpers cannot advance from wall time.
+/// health timestamps use 0. Triggered conversions can still be advanced by
+/// caller-supplied timestamps passed to tick() or pollConversionReady().
 using NowMsFn = uint32_t (*)(void* user);
 
 /// @brief ADC operating mode (MODE field in ADC_CONFIG register, bits 15:12).
@@ -89,6 +98,12 @@ enum class AdcRange : uint8_t {
 };
 
 /// @brief Configuration for INA228 driver.
+///
+/// The core driver is framework-neutral and does not own the I2C bus. The
+/// application-provided transport owns bus handles, locking, recovery, pins,
+/// pull-ups, and platform timeout policy. Shunt calibration fields describe
+/// software scaling only; they do not protect hardware from unsafe current,
+/// shunt heating, or high-voltage faults.
 struct Config {
   // === I2C Transport (required) ===
   I2cWriteFn i2cWrite = nullptr;         ///< I2C write function pointer
@@ -109,11 +124,11 @@ struct Config {
   ConvTime vshuntConvTime = ConvTime::US_1052; ///< Shunt voltage conversion time
   ConvTime vtempConvTime = ConvTime::US_1052;  ///< Temperature conversion time
   Averaging averaging = Averaging::AVG_1;      ///< Number of averages
-  AdcRange adcRange = AdcRange::MV_163_84;     ///< Shunt full-scale range
+  AdcRange adcRange = AdcRange::MV_163_84;     ///< Shunt full-scale range (+/-163.84 mV or +/-40.96 mV)
 
   // === Calibration ===
-  float shuntResistanceOhm = 0.0f;      ///< Shunt resistor value in ohms (0 = uncalibrated)
-  float maxExpectedCurrentA = 0.0f;      ///< Maximum expected current in amps (for CURRENT_LSB)
+  float shuntResistanceOhm = 0.0f;      ///< Installed Kelvin-sensed shunt value in ohms (0 = uncalibrated)
+  float maxExpectedCurrentA = 0.0f;     ///< CURRENT_LSB design point in amps (0 = uncalibrated)
 
   // === Temperature Compensation (optional) ===
   bool tempCompEnabled = false;          ///< Enable shunt temperature compensation
