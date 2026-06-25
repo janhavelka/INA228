@@ -35,26 +35,7 @@ inline const char* stateToString(INA228::DriverState state) {
  * @brief Convert Err enum to human-readable string.
  */
 inline const char* errToString(INA228::Err err) {
-  switch (err) {
-    case INA228::Err::OK:                    return "OK";
-    case INA228::Err::NOT_INITIALIZED:       return "NOT_INITIALIZED";
-    case INA228::Err::INVALID_CONFIG:        return "INVALID_CONFIG";
-    case INA228::Err::I2C_ERROR:             return "I2C_ERROR";
-    case INA228::Err::TIMEOUT:               return "TIMEOUT";
-    case INA228::Err::INVALID_PARAM:         return "INVALID_PARAM";
-    case INA228::Err::DEVICE_NOT_FOUND:      return "DEVICE_NOT_FOUND";
-    case INA228::Err::DEVICE_ID_MISMATCH:    return "DEVICE_ID_MISMATCH";
-    case INA228::Err::MEMORY_ERROR:          return "MEMORY_ERROR";
-    case INA228::Err::MEASUREMENT_NOT_READY: return "MEASUREMENT_NOT_READY";
-    case INA228::Err::MATH_OVERFLOW:         return "MATH_OVERFLOW";
-    case INA228::Err::BUSY:                  return "BUSY";
-    case INA228::Err::IN_PROGRESS:           return "IN_PROGRESS";
-    case INA228::Err::I2C_NACK_ADDR:         return "I2C_NACK_ADDR";
-    case INA228::Err::I2C_NACK_DATA:         return "I2C_NACK_DATA";
-    case INA228::Err::I2C_TIMEOUT:           return "I2C_TIMEOUT";
-    case INA228::Err::I2C_BUS:               return "I2C_BUS";
-    default:                                  return "UNKNOWN";
-  }
+  return INA228::errName(err);
 }
 
 /**

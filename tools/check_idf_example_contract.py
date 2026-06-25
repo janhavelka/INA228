@@ -24,6 +24,7 @@ REQUIRED_FILES = [
     "examples/esp_idf/basic/main/main.cpp",
     "examples/esp_idf/basic/main/Ina228IdfI2cTransport.h",
     "examples/esp_idf/basic/main/Ina228IdfI2cTransport.cpp",
+    "docs/integration/esp-idf.md",
 ]
 MANDATORY_COMMANDS = [
     "help",
@@ -81,6 +82,10 @@ MANDATORY_COMMANDS = [
     "verbose",
     "stress",
     "stress_mix",
+    "hilrun",
+    "xfer_reset",
+    "xfer_stats",
+    "xfer_assert",
     "selftest",
 ]
 FORBIDDEN_IDF_TOKENS = [
@@ -92,6 +97,33 @@ FORBIDDEN_IDF_TOKENS = [
     "ArduinoCompat",
     "IdfArduinoCompat",
     CLI_SOURCE_INCLUDE,
+]
+CI_REQUIRED_TOKENS = [
+    "esp-idf-basic:",
+    "uses: espressif/esp-idf-ci-action@v1",
+    "esp_idf_version: v6.0.1",
+    "target: ${{ matrix.target }}",
+    "path: examples/esp_idf/basic",
+    "command: idf.py set-target ${{ matrix.target }} build",
+    "workflow_dispatch:",
+    "Build ESP-IDF basic ${{ matrix.target }} with idf.py",
+    "esp32s3",
+    "esp32s2",
+]
+BUILD_DOC_REQUIRED_TOKENS = [
+    "ESP-IDF v6.0.1",
+    "idf.py --version",
+    "idf.py -C examples/esp_idf/basic set-target esp32s3 build",
+    "idf.py -C examples/esp_idf/basic set-target esp32s2 build",
+    "examples/esp_idf/basic/build/",
+    "static contract check",
+    "not hardware validation",
+]
+CLI_WARNING_TOKENS = [
+    "Safety:",
+    "destructive/status-clearing",
+    "continuous accumulation only",
+    "validity flags",
 ]
 
 
@@ -130,12 +162,15 @@ def main() -> int:
         '#include "driver/i2c_master.h"',
         "esp_timer_get_time",
         "vTaskDelay",
-        "std::fgets",
+        "select(",
+        "read(STDIN_FILENO",
         "char line[MAX_LINE_LEN]",
         "ina228IdfProbeAddress",
         "ina228IdfI2cWriteReadAt",
     ):
         require_token(idf_main, token, "ESP-IDF main")
+    if "std::fgets" in idf_main:
+        fail("ESP-IDF main must not block driver tick progress in std::fgets")
     if IDF_EXAMPLE_MACRO in idf_main:
         fail("ESP-IDF main must not enable the old shared Arduino CLI path")
     for token in FORBIDDEN_IDF_TOKENS:
@@ -145,6 +180,8 @@ def main() -> int:
     cmake = (
         ROOT / "examples" / "esp_idf" / "basic" / "main" / "CMakeLists.txt"
     ).read_text(encoding="utf-8", errors="replace")
+    if "../../../.." in cmake or "examples/common" in cmake:
+        fail("ESP-IDF main CMake must not expose repo root or examples/common include paths")
     for component in REQUIRED_COMPONENTS:
         if re.search(rf"\b{re.escape(component)}\b", cmake) is None:
             fail(f"ESP-IDF CMake missing required component '{component}'")
@@ -164,6 +201,12 @@ def main() -> int:
         "i2c_master_probe",
         "i2c_master_transmit",
         "i2c_master_transmit_receive",
+        "mapEspProbeErr",
+        "ESP_ERR_NOT_FOUND",
+        "I2C_NACK_ADDR",
+        "I2C_NACK_UNKNOWN_PHASE",
+        "I2C NACK, ESP-IDF phase unavailable",
+        "single-owner",
     ):
         require_token(transport, token, "ESP-IDF transport")
     for token in FORBIDDEN_IDF_TOKENS:
@@ -173,6 +216,11 @@ def main() -> int:
     cli = (ROOT / "examples" / "01_basic_bringup_cli" / "main.cpp").read_text(
         encoding="utf-8", errors="replace"
     )
+    for text, label in ((cli, "Arduino CLI"), (idf_main, "native ESP-IDF CLI")):
+        for token in CLI_WARNING_TOKENS:
+            require_token(text, token, label)
+    if "st.code == INA228::Err::I2C_NACK_ADDR || st.code == INA228::Err::I2C_ERROR" in idf_main:
+        fail("native ESP-IDF scan must not hide generic I2C_ERROR as an empty address")
     for command in MANDATORY_COMMANDS:
         if f'printHelpItem("{command}' not in cli:
             fail(f"Arduino CLI missing help item '{command}'")
@@ -186,6 +234,18 @@ def main() -> int:
     manifest = (ROOT / "idf_component.yml").read_text(encoding="utf-8", errors="replace")
     for token in ("esp32s2", "esp32s3", "idf:"):
         require_token(manifest, token, "idf_component.yml")
+
+    build_doc = (ROOT / "docs" / "integration" / "esp-idf.md").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    for token in BUILD_DOC_REQUIRED_TOKENS:
+        require_token(build_doc, token, "ESP-IDF build guide")
+
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    for token in CI_REQUIRED_TOKENS:
+        require_token(ci, token, "CI ESP-IDF build matrix")
 
     print("IDF example contract PASSED")
     return 0

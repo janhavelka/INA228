@@ -7,6 +7,9 @@
 #include "driver/i2c_master.h"
 #include "esp_err.h"
 
+// Diagnostic single-owner ESP-IDF example glue. Production shared-bus or
+// multitask applications should wrap the bus/device handles in their own bus
+// manager and lock before calling into one or more INA228 instances.
 struct Ina228IdfI2c {
   i2c_master_bus_handle_t bus = nullptr;
   i2c_master_dev_handle_t dev = nullptr;
@@ -15,7 +18,14 @@ struct Ina228IdfI2c {
   esp_err_t lastError = ESP_OK;
 };
 
+struct Ina228IdfTransferStats {
+  uint32_t read = 0;
+  uint32_t write = 0;
+};
+
 Ina228IdfI2c& ina228IdfTransportContext();
+void ina228IdfResetTransferStats();
+Ina228IdfTransferStats ina228IdfTransferStats();
 bool ina228IdfInitI2c(int sda, int scl, uint32_t freqHz, uint16_t timeoutMs,
                       uint8_t address);
 void ina228IdfDeinitI2c();

@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -39,7 +40,17 @@ jobs:
           pip install platformio
 
       - name: Build ${{ matrix.environment }}
-        run: pio run -e ${{ matrix.environment }}
+        run: |
+          set -o pipefail
+          pio run -e ${{ matrix.environment }} 2>&1 | tee platformio-${{ matrix.environment }}.log
+
+      - name: Upload PlatformIO build log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: platformio-build-${{ matrix.environment }}
+          path: platformio-${{ matrix.environment }}.log
+          if-no-files-found: error
 
   native-tests:
     runs-on: ubuntu-latest
@@ -66,10 +77,55 @@ jobs:
           pip install platformio
 
       - name: Enforce core timing guard
-        run: python tools/check_core_timing_guard.py
+        run: |
+          set -o pipefail
+          python tools/check_core_timing_guard.py 2>&1 | tee core-timing-guard.log
 
       - name: Run native tests
-        run: pio test -e native
+        run: |
+          set -o pipefail
+          pio test -e native 2>&1 | tee native-test-results.log
+
+      - name: Upload native test artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-test-results
+          path: |
+            core-timing-guard.log
+            native-test-results.log
+          if-no-files-found: error
+
+  esp-idf-basic:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - esp32s3
+          - esp32s2
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build ESP-IDF basic ${{ matrix.target }} with idf.py
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.0.1
+          target: ${{ matrix.target }}
+          path: examples/esp_idf/basic
+          command: idf.py set-target ${{ matrix.target }} build
+
+      - name: Upload ESP-IDF build logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: esp-idf-build-logs-${{ matrix.target }}
+          path: |
+            examples/esp_idf/basic/build/**/*.log
+            examples/esp_idf/basic/build/log/**
+          if-no-files-found: ignore
 
   validate-library:
     runs-on: ubuntu-latest
@@ -85,14 +141,32 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
-      - name: Enforce example CLI contract
-        run: python tools/check_cli_contract.py
+      - name: Run static contract checks
+        run: |
+          set -o pipefail
+          mkdir -p static-contract-logs
+          python -m py_compile tools/run_i2c_hil.py 2>&1 | tee static-contract-logs/py_compile_run_i2c_hil.log
+          python tools/run_i2c_hil.py --parser-self-test 2>&1 | tee static-contract-logs/hil_parser_self_test.log
+          python tools/check_cli_contract.py 2>&1 | tee static-contract-logs/check_cli_contract.log
+          python tools/check_idf_example_contract.py 2>&1 | tee static-contract-logs/check_idf_example_contract.log
+          python tools/check_core_timing_guard.py 2>&1 | tee static-contract-logs/check_core_timing_guard.log
+          python scripts/generate_version.py check 2>&1 | tee static-contract-logs/generate_version_check.log
 
-      - name: Enforce ESP-IDF example contract
-        run: python tools/check_idf_example_contract.py
-
-      - name: Check generated version metadata
-        run: python scripts/generate_version.py check
+      - name: Upload static contract logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: static-contract-logs
+          path: static-contract-logs/
+          if-no-files-found: error
 
       - name: Validate library package
         run: pio pkg pack
+
+      - name: Upload PlatformIO package
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: platformio-package
+          path: "*.tar.gz"
+          if-no-files-found: error
