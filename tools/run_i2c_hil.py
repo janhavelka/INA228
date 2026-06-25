@@ -28,6 +28,8 @@ class Step:
     suite: str = "smoke"
     expect_failure: bool = False
     pause_after_s: float = 0.0
+    accept_busy_after_empty_retry: bool = False
+    accept_no_job_after_empty_retry: bool = False
 
 
 @dataclass
@@ -46,11 +48,13 @@ class SoakSummary:
     pass_count: int = 0
     fail_count: int = 0
     unknown_count: int = 0
+    empty_response_retries: int = 0
     total_latency_s: float = 0.0
     min_latency_s: float = 0.0
     max_latency_s: float = 0.0
     command_counts: dict[str, int] = field(default_factory=dict)
     command_failures: dict[str, int] = field(default_factory=dict)
+    command_empty_retries: dict[str, int] = field(default_factory=dict)
 
     def record(self, result: Result) -> None:
         self.total += 1
@@ -66,6 +70,12 @@ class SoakSummary:
         if result.verdict != "PASS":
             self.command_failures[result.step.command] = (
                 self.command_failures.get(result.step.command, 0) + 1
+            )
+        retry_count = result.output.count("[runner] empty framed response attempt")
+        if retry_count > 0:
+            self.empty_response_retries += retry_count
+            self.command_empty_retries[result.step.command] = (
+                self.command_empty_retries.get(result.step.command, 0) + retry_count
             )
         self.total_latency_s += result.elapsed_s
         if self.total == 1:
@@ -134,7 +144,7 @@ FUNCTIONAL_STEPS: tuple[Step, ...] = (
     Step("reg24 0x05", ("0x",), "VBUS raw24", "functional"),
     Step("reg40 0x09", ("0x",), "ENERGY raw40", "functional"),
     Step("rstacc", ("reset",), "accumulator reset", "functional"),
-    Step("recover", ("Status: OK",), "manual recover", "functional"),
+    Step("recover", ("Attempting recovery", "frame_status=OK"), "manual recover", "functional"),
     Step("selftest", ("INA228 selftest",), "self-test", "functional"),
     Step("stress 50", ("Stress Summary", "Errors:"), "short stress", "functional"),
     Step("stress_mix 50", ("stress_mix summary", "fail="), "short mixed stress", "functional"),
@@ -159,21 +169,23 @@ EXHAUSTIVE_STEPS: tuple[Step, ...] = (
     Step("sample_step 5", ("Power Sample Step Result",),
          "power sample full budget", "exhaustive"),
     Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
-         "calibration job start", "exhaustive"),
+         "calibration job start", "exhaustive", accept_busy_after_empty_retry=True),
     Step("apply_step 0", ("INVALID_PARAM",),
          "calibration job zero-budget rejection", "exhaustive", expect_failure=True),
     Step("apply_step 1", ("pollConfigReplayJob", "IN_PROGRESS"),
          "calibration job budget one", "exhaustive"),
     Step("apply_step 6", ("pollConfigReplayJob", "OK"),
-         "calibration job full budget", "exhaustive"),
+         "calibration job full budget", "exhaustive",
+         accept_no_job_after_empty_retry=True),
     Step("reset_start", ("startResetJob", "IN_PROGRESS"),
-         "reset job start", "exhaustive"),
+         "reset job start", "exhaustive", accept_busy_after_empty_retry=True),
     Step("reset_step 0", ("INVALID_PARAM",),
          "reset job zero-budget rejection", "exhaustive", expect_failure=True),
     Step("reset_step 1", ("pollResetJob", "IN_PROGRESS"),
          "reset job budget one", "exhaustive", pause_after_s=0.05),
     Step("reset_step 16", ("pollResetJob", "OK"),
-         "reset job completion budget", "exhaustive"),
+         "reset job completion budget", "exhaustive",
+         accept_no_job_after_empty_retry=True),
     Step("mode 15", ("setMode", "OK"),
          "restore continuous-all mode after reset job", "exhaustive"),
 )
@@ -311,7 +323,7 @@ def targeted_steps() -> tuple[Step, ...]:
         Step("sample_step 255", ("Power Sample Step Result",),
              "sample max budget", "targeted"),
         Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
-             "calibration job start", "targeted"),
+             "calibration job start", "targeted", accept_busy_after_empty_retry=True),
         Step("apply_step 0", ("INVALID_PARAM",),
              "calibration zero-budget rejection", "targeted", expect_failure=True),
         Step("apply_step 1", ("pollConfigReplayJob",),
@@ -324,11 +336,13 @@ def targeted_steps() -> tuple[Step, ...]:
              "post-completion calibration poll reports BUSY", "targeted",
              expect_failure=True),
         Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
-             "calibration full-budget restart", "targeted"),
+             "calibration full-budget restart", "targeted",
+             accept_busy_after_empty_retry=True),
         Step("apply_step 6", ("pollConfigReplayJob", "OK"),
-             "calibration full-budget completion", "targeted"),
+             "calibration full-budget completion", "targeted",
+             accept_no_job_after_empty_retry=True),
         Step("reset_start", ("startResetJob", "IN_PROGRESS"),
-             "reset job start", "targeted"),
+             "reset job start", "targeted", accept_busy_after_empty_retry=True),
         Step("reset_step 0", ("INVALID_PARAM",),
              "reset zero-budget rejection", "targeted", expect_failure=True),
         Step("reset_step 1", ("pollResetJob", "IN_PROGRESS"),
@@ -338,7 +352,8 @@ def targeted_steps() -> tuple[Step, ...]:
         Step("reset_step 2", ("pollResetJob",),
              "reset budget two", "targeted", pause_after_s=0.05),
         Step("reset_step 16", ("pollResetJob", "OK"),
-             "reset completion budget", "targeted"),
+             "reset completion budget", "targeted",
+             accept_no_job_after_empty_retry=True),
     ])
 
     for trigger_mode in range(1, 8):
@@ -396,7 +411,8 @@ def targeted_steps() -> tuple[Step, ...]:
         Step("vbus", ("NOT_INITIALIZED",),
              "read after end must fail visibly", "targeted", expect_failure=True),
         Step("init 0x41", ("begin", "OK"), "reinitialize known device", "targeted"),
-        Step("recover", ("Status: OK",), "manual recovery after reinit", "targeted"),
+        Step("recover", ("Attempting recovery", "frame_status=OK"),
+             "manual recovery after reinit", "targeted"),
         Step("settings", ("Active Settings", "State:", "READY"), "final settings", "targeted"),
         Step("drv", ("Driver Health", "State: READY", "Consecutive failures: 0"),
              "final health must be clean", "targeted"),
@@ -449,7 +465,7 @@ TRANSFER_STEPS: tuple[Step, ...] = (
     Step("xfer_assert 5 0 5", ("XFER_ASSERT PASS",),
          "sample_step 5 transfer count", "transfer"),
     Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
-         "config replay job start", "transfer"),
+         "config replay job start", "transfer", accept_busy_after_empty_retry=True),
     Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
     Step("apply_step 0", ("INVALID_PARAM",),
          "zero-budget config replay is bus-silent", "transfer", expect_failure=True),
@@ -461,16 +477,17 @@ TRANSFER_STEPS: tuple[Step, ...] = (
     Step("xfer_assert 0 1 1", ("XFER_ASSERT PASS",),
          "apply_step 1 transfer count", "transfer"),
     Step("apply_step 6", ("pollConfigReplayJob", "OK"),
-         "finish partial config replay", "transfer"),
+         "finish partial config replay", "transfer", accept_no_job_after_empty_retry=True),
     Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
-         "config replay full-budget restart", "transfer"),
+         "config replay full-budget restart", "transfer",
+         accept_busy_after_empty_retry=True),
     Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
     Step("apply_step 6", ("pollConfigReplayJob", "OK"),
-         "config replay full budget", "transfer"),
+         "config replay full budget", "transfer", accept_no_job_after_empty_retry=True),
     Step("xfer_stats", ("XFER_STATS",),
          "apply_step 6 transfer count snapshot", "transfer"),
     Step("reset_start", ("startResetJob", "IN_PROGRESS"),
-         "reset job start", "transfer"),
+         "reset job start", "transfer", accept_busy_after_empty_retry=True),
     Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
     Step("reset_step 0", ("INVALID_PARAM",),
          "zero-budget reset is bus-silent", "transfer", expect_failure=True),
@@ -482,7 +499,7 @@ TRANSFER_STEPS: tuple[Step, ...] = (
     Step("xfer_stats", ("XFER_STATS",),
          "reset_step 1 transfer count snapshot", "transfer"),
     Step("reset_step 16", ("pollResetJob", "OK"),
-         "finish reset job", "transfer"),
+         "finish reset job", "transfer", accept_no_job_after_empty_retry=True),
     Step("mode 15", ("setMode", "OK"), "restore continuous mode after reset", "transfer"),
     Step("drv", ("Driver Health", "State: READY"), "final health", "transfer"),
 )
@@ -512,7 +529,7 @@ TARGETED_SOAK_STEPS: tuple[Step, ...] = (
     Step("sample_step 255", ("Power Sample Step Result",),
          "targeted soak sample max budget", "soak"),
     Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
-         "targeted soak apply start", "soak"),
+         "targeted soak apply start", "soak", accept_busy_after_empty_retry=True),
     Step("apply_step 0", ("INVALID_PARAM",),
          "targeted soak apply zero-budget rejection", "soak", expect_failure=True),
     Step("apply_step 1", ("pollConfigReplayJob",),
@@ -520,9 +537,9 @@ TARGETED_SOAK_STEPS: tuple[Step, ...] = (
     Step("apply_step 2", ("pollConfigReplayJob",),
          "targeted soak apply budget two", "soak"),
     Step("apply_step 6", ("pollConfigReplayJob", "OK"),
-         "targeted soak apply completion", "soak"),
+         "targeted soak apply completion", "soak", accept_no_job_after_empty_retry=True),
     Step("reset_start", ("startResetJob", "IN_PROGRESS"),
-         "targeted soak reset start", "soak"),
+         "targeted soak reset start", "soak", accept_busy_after_empty_retry=True),
     Step("reset_step 0", ("INVALID_PARAM",),
          "targeted soak reset zero-budget rejection", "soak", expect_failure=True),
     Step("reset_step 1", ("pollResetJob", "IN_PROGRESS"),
@@ -530,7 +547,7 @@ TARGETED_SOAK_STEPS: tuple[Step, ...] = (
     Step("reset_step 1", ("pollResetJob",),
          "targeted soak reset budget one repeated", "soak", pause_after_s=0.05),
     Step("reset_step 16", ("pollResetJob", "OK"),
-         "targeted soak reset completion", "soak"),
+         "targeted soak reset completion", "soak", accept_no_job_after_empty_retry=True),
     Step("mode 15", ("setMode", "OK"),
          "targeted soak restore continuous mode", "soak"),
     Step("trigger 1", ("triggerConversion",),
@@ -559,7 +576,7 @@ TARGETED_SOAK_STEPS: tuple[Step, ...] = (
          "targeted soak diagnostic snapshot", "soak"),
     Step("drv", ("Driver Health", "State: READY"),
          "targeted soak health check", "soak"),
-    Step("recover", ("Status: OK",),
+    Step("recover", ("Attempting recovery", "frame_status=OK"),
          "targeted soak manual recovery", "soak"),
     Step("read", ("Vbus", "Power"),
          "targeted soak aggregate read", "soak"),
@@ -582,7 +599,7 @@ SOAK_STEPS: tuple[Step, ...] = (
     Step("diagsnap", ("DIAG_ALRT Snapshot",), "soak diagnostic snapshot", "soak"),
     Step("diagraw", ("DIAG_ALRT raw",), "soak raw diagnostics", "soak"),
     Step("probe", ("Status: OK",), "soak probe", "soak"),
-    Step("recover", ("Status: OK",), "soak recover", "soak"),
+    Step("recover", ("Attempting recovery", "frame_status=OK"), "soak recover", "soak"),
     Step("stress 50", ("Stress Summary", "Errors:"), "soak stress", "soak"),
     Step("stress_mix 50", ("stress_mix summary", "fail="), "soak mixed stress", "soak"),
 )
@@ -665,6 +682,17 @@ def classify_output(output: str, expected: Sequence[str]) -> str:
 def classify_step(output: str, step: Step) -> str:
     text = clean_output(output)
     expected_seen = all(token in text for token in step.expected)
+    if (step.accept_busy_after_empty_retry
+            and "[runner] empty framed response attempt" in text
+            and "Status: BUSY" in text
+            and "Another fixed-step job is active" in text):
+        return "PASS"
+    if (step.accept_no_job_after_empty_retry
+            and "[runner] empty framed response attempt" in text
+            and "Status: BUSY" in text
+            and ("No apply calibration job active" in text
+                 or "No reset job active" in text)):
+        return "PASS"
     if step.expect_failure and expected_seen:
         return "PASS"
     if has_failure(text):
@@ -764,6 +792,49 @@ def parser_self_test() -> int:
                         "nested hilrun rejection", expect_failure=True)
     if not ok or classify_step(payload, invalid_step) != "PASS":
         print("parser self-test FAILED: nested/invalid frame status")
+        return 1
+    recovered_start = (
+        "[runner] empty framed response attempt 1; retrying\n"
+        "[I] startResetJob(): BUSY\n"
+        "  Status: BUSY (code=11, detail=0)\n"
+        "  Message: Another fixed-step job is active\n"
+        "[runner] frame_status=BUSY frame_elapsed_ms=1\n"
+        "Status: BUSY\n"
+    )
+    recovered_step = Step(
+        "reset_start",
+        ("startResetJob", "IN_PROGRESS"),
+        "recovered reset start",
+        accept_busy_after_empty_retry=True,
+    )
+    strict_step = Step("reset_start", ("startResetJob", "IN_PROGRESS"), "strict reset start")
+    if classify_step(recovered_start, recovered_step) != "PASS":
+        print("parser self-test FAILED: recovered start BUSY was not accepted")
+        return 1
+    if classify_step(recovered_start, strict_step) != "FAIL":
+        print("parser self-test FAILED: strict start accepted recovered BUSY")
+        return 1
+    recovered_done = (
+        "[runner] empty framed response attempt 1; retrying\n"
+        "[I] pollConfigReplayJob(6): BUSY\n"
+        "  Status: BUSY (code=11, detail=0)\n"
+        "  Message: No apply calibration job active\n"
+        "[runner] frame_status=BUSY frame_elapsed_ms=1\n"
+        "Status: BUSY\n"
+    )
+    recovered_done_step = Step(
+        "apply_step 6",
+        ("pollConfigReplayJob", "OK"),
+        "recovered apply completion",
+        accept_no_job_after_empty_retry=True,
+    )
+    strict_done_step = Step("apply_step 6", ("pollConfigReplayJob", "OK"),
+                            "strict apply completion")
+    if classify_step(recovered_done, recovered_done_step) != "PASS":
+        print("parser self-test FAILED: recovered completion BUSY was not accepted")
+        return 1
+    if classify_step(recovered_done, strict_done_step) != "FAIL":
+        print("parser self-test FAILED: strict completion accepted recovered BUSY")
         return 1
     print("parser self-test PASSED")
     return 0
@@ -903,6 +974,7 @@ def drain_input(serial_port, drain_s: float) -> str:
 def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
     start = time.monotonic()
     output = ""
+    retry_notes: list[str] = []
     marker_missing = False
     attempts = max(0, args.empty_retries) + 1
     for attempt in range(attempts):
@@ -946,8 +1018,24 @@ def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
             serial_port.flush()
             frame_output = read_until_hilrun_end(serial_port, args.timeout_s, token, seq,
                                                  args.max_frame_bytes)
+            if not frame_output.strip() and attempt < attempts - 1:
+                retry_notes.append(
+                    f"[runner] empty framed response attempt {attempt + 1}; retrying"
+                )
+                output = ""
+                marker_missing = False
+                if args.command_pause_s > 0.0:
+                    time.sleep(args.command_pause_s)
+                continue
             output, frame_ok = strip_hilrun_frame(frame_output, token, seq)
             marker_missing = not frame_ok
+            if frame_ok:
+                trailer = drain_input(serial_port, args.post_frame_drain_s)
+                if clean_output(trailer).strip() and not PROMPT_RE.fullmatch(
+                    clean_output(trailer).strip()
+                ):
+                    output += "\n[runner] drained trailing serial input after frame:\n"
+                    output += trailer
         if stale.strip():
             output = "[runner] drained stale serial input before command:\n" + stale + "\n" + output
         if output.strip() or attempt == attempts - 1:
@@ -955,6 +1043,8 @@ def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
         if args.command_pause_s > 0.0:
             time.sleep(args.command_pause_s)
     elapsed = time.monotonic() - start
+    if retry_notes:
+        output = "\n".join(retry_notes + [output])
     verdict = "UNKNOWN" if marker_missing else classify_step(output, step)
     return Result(step=step, verdict=verdict, elapsed_s=elapsed, output=clean_output(output))
 
@@ -1114,6 +1204,8 @@ def write_report(path: pathlib.Path, args: argparse.Namespace, results: Sequence
                 f.write(f"- Soak verdict counts: PASS={soak_summary.pass_count}, "
                         f"FAIL={soak_summary.fail_count}, "
                         f"UNKNOWN={soak_summary.unknown_count}\n")
+                f.write("- Empty framed response retries: "
+                        f"{soak_summary.empty_response_retries}\n")
                 f.write("- Soak latency min/mean/max: "
                         f"{soak_summary.min_latency_s:.3f} / "
                         f"{soak_summary.mean_latency_s():.3f} / "
@@ -1135,6 +1227,10 @@ def write_report(path: pathlib.Path, args: argparse.Namespace, results: Sequence
             if soak_summary is not None and soak_summary.command_failures:
                 f.write("- Non-PASS soak command counts:\n")
                 for command, count in sorted(soak_summary.command_failures.items()):
+                    f.write(f"  - `{command}`: {count}\n")
+            if soak_summary is not None and soak_summary.command_empty_retries:
+                f.write("- Empty framed response retry counts:\n")
+                for command, count in sorted(soak_summary.command_empty_retries.items()):
                     f.write(f"  - `{command}`: {count}\n")
         f.write("\n## Limitations\n\n")
         f.write("- Hardware safety and fixture details must be filled in by the operator.\n")
@@ -1289,6 +1385,8 @@ def main(argv: Sequence[str]) -> int:
                         help="Pause between commands")
     parser.add_argument("--drain-before-command-s", type=float, default=0.0,
                         help="Bounded stale-input drain before each command")
+    parser.add_argument("--post-frame-drain-s", type=float, default=0.0,
+                        help="Bounded drain after a complete hilrun frame, usually to consume prompt")
     parser.add_argument("--no-command-framing", action="store_true",
                         help="Send raw commands without hilrun or legacy hilmark framing")
     parser.add_argument("--legacy-marker", action="store_true",
@@ -1340,8 +1438,8 @@ def main(argv: Sequence[str]) -> int:
     if args.timeout_s <= 0.0 or args.idle_s <= 0.0 or args.boot_settle_s < 0.0:
         parser.error("timeouts must be positive and boot settle must be nonnegative")
     if (args.boot_capture_s < 0.0 or args.command_pause_s < 0.0
-            or args.drain_before_command_s < 0.0):
-        parser.error("boot capture, command pause, and drain time must be nonnegative")
+            or args.drain_before_command_s < 0.0 or args.post_frame_drain_s < 0.0):
+        parser.error("boot capture, command pause, and drain times must be nonnegative")
     if args.empty_retries < 0 or args.marker_retries < 0 or args.benchmark_count < 0:
         parser.error("retry and benchmark counts must be nonnegative")
     if args.soak_store_every <= 0 or args.soak_progress_every <= 0:

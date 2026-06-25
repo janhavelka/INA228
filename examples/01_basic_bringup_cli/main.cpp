@@ -49,7 +49,7 @@ static constexpr uint8_t DEFAULT_I2C_ADDRESS = board::INA228_I2C_ADDR;
 static constexpr uint8_t INA228_ADDR_MIN = 0x40;
 static constexpr uint8_t INA228_ADDR_MAX = 0x4F;
 static constexpr size_t CLI_MAX_LINE_LEN = 128;
-static constexpr uint8_t CLI_MAX_BYTES_PER_LOOP = 32;
+static constexpr uint8_t CLI_MAX_BYTES_PER_LOOP = 96;
 static constexpr int MAX_STRESS_COUNT = 100000;
 uint8_t selectedAddress = DEFAULT_I2C_ADDRESS;
 
