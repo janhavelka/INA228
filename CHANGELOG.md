@@ -5,12 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] - Unreleased
+## [2.0.0] - 2026-06-26
 
-This is a major-version hardening candidate. The branch deletes copy/move
-operations for `INA228::INA228`, adds public statuses/snapshots, and changes
-several measurement APIs to return explicit semantic errors instead of silently
-returning stale or invalid converted values.
+This major release deletes copy/move operations for `INA228::INA228`, adds
+public statuses/snapshots, and changes several measurement APIs to return
+explicit semantic errors instead of silently returning stale or invalid
+converted values.
 
 ### Added
 - Hardware validation matrix template documenting required board, shunt,
@@ -62,9 +62,9 @@ returning stale or invalid converted values.
 - Public API documentation now states the non-thread-safe/non-ISR-safe contract,
   callback re-entry restrictions, output-parameter commit rules, raw-register
   diagnostic risks, and calibration requirements for converted channels.
-- Public docs now describe the library as a pre-production hardening candidate
-  with partial low-voltage Arduino ESP32-S3 HIL evidence, pending
-  release-grade hardware validation.
+- Public docs now describe the library with conservative validation claims,
+  compact partial low-voltage Arduino ESP32-S3 HIL evidence, and no
+  release-grade hardware-validation claim.
 - PlatformIO Arduino ESP32-S2/S3 builds are pinned to
   `platformio/espressif32@7.0.1` for more reproducible local and CI package
   resolution.
@@ -81,16 +81,17 @@ returning stale or invalid converted values.
   PDFs.
 
 ### Validation
-- Local native tests pass with 138/138 tests on this hardening checkout.
+- Local native tests pass with 138/138 tests on this release checkout.
 - Local PlatformIO Arduino builds pass for `esp32s2dev` and `esp32s3dev`.
 - GitHub Actions is configured for pure ESP-IDF ESP32-S2/S3 builds, but current
   CI results must be reviewed before claiming ESP-IDF build verification.
-- Checked-in framed HIL reports include a targeted feature sweep with 196 PASS,
-  0 FAIL, 0 UNKNOWN and a transfer suite with 53 PASS, 0 FAIL, 0 UNKNOWN on
-  Arduino ESP32-S3/COM21. These remain dirty-worktree partial low-voltage
-  evidence only; release-grade hardware validation, field validation,
-  high-voltage validation, 8-hour clean-commit soak evidence, and
-  hardware-safety validation are not claimed.
+- Compact HIL evidence summarizes dirty-worktree Arduino ESP32-S3/COM21 runs:
+  a targeted feature sweep with 196 PASS, 0 FAIL, 0 UNKNOWN; a transfer suite
+  with 53 PASS, 0 FAIL, 0 UNKNOWN; an 8-hour low-voltage run with 256931 PASS,
+  0 FAIL, 48 UNKNOWN; and an incomplete 20-hour attempt with 128416 PASS,
+  0 FAIL, 1 UNKNOWN. These remain partial low-voltage evidence only;
+  release-grade hardware validation, field validation, high-voltage validation,
+  clean-commit soak evidence, and hardware-safety validation are not claimed.
 
 ## [1.3.0] - 2026-05-20
 
@@ -198,7 +199,7 @@ returning stale or invalid converted values.
 - `recover()` now re-validates manufacturer ID, device ID, and MEMSTAT before reapplying cached configuration and calibration.
 - Bringup `scan` now includes an INA228-specific address probe, and startup can auto-detect a single healthy INA228 on `0x40..0x4F`.
 
-[2.0.0]: https://github.com/janhavelka/INA228/compare/v1.3.0...HEAD
+[2.0.0]: https://github.com/janhavelka/INA228/compare/v1.3.0...v2.0.0
 [1.3.0]: https://github.com/janhavelka/INA228/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/janhavelka/INA228/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/janhavelka/INA228/compare/v1.0.0...v1.1.0

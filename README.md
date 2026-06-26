@@ -1,9 +1,8 @@
 # INA228 Driver Library
 
-Framework-neutral INA228 85-V, 20-bit I2C power/energy/charge monitor driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use). This is a pre-production hardening candidate pending release-grade hardware validation.
+Framework-neutral INA228 85-V, 20-bit I2C power/energy/charge monitor driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use). Release-grade hardware validation is not claimed.
 
-Library version: `v2.0.0` hardening merge candidate. This version is not
-tagged or release-ready until current CI and release checks are reviewed.
+Library version: `v2.0.0`.
 
 ## Features
 
@@ -22,16 +21,7 @@ Add to `platformio.ini`:
 
 ```ini
 lib_deps = 
-  https://github.com/janhavelka/INA228.git#v1.3.0
-```
-
-`v1.3.0` is the latest tagged public release referenced by this README before
-the hardening branch is tagged. To test the hardening candidate before a
-`v2.0.0` tag exists, pin the branch explicitly:
-
-```ini
-lib_deps =
-  https://github.com/janhavelka/INA228.git#hardening/ina228-industry-readiness
+  https://github.com/janhavelka/INA228.git#v2.0.0
 ```
 
 ### Manual
@@ -55,9 +45,9 @@ Reproducible local and CI build commands are documented in
 `tools/check_idf_example_contract.py` guard is a static contract check; it is
 not a substitute for a real `idf.py` build log.
 
-## Version 2.0.0 Hardening Candidate
+## Version 2.0.0
 
-- Uses a major SemVer target because the hardening branch deletes copy/move
+- Uses a major SemVer target because this release deletes copy/move
   operations and changes several public failure semantics to fail closed.
 - Hardens destructive `DIAG_ALRT` handling, alert configuration side effects,
   triggered freshness, ENERGY/CHARGE validity, `MATHOF` handling, calibration,
@@ -65,15 +55,14 @@ not a substitute for a real `idf.py` build log.
 - Documents that current, power, energy, and charge require valid calibration,
   clean hardware/cache state, and datasheet-supported accumulation conditions.
 - Includes native fake-bus tests, local PlatformIO Arduino ESP32-S2/S3 build
-  coverage, and partial low-voltage Arduino ESP32-S3 HIL evidence on the
-  hardening branch.
+  coverage, and compact partial low-voltage Arduino ESP32-S3 HIL evidence.
 - Configures GitHub Actions pure ESP-IDF `idf.py` builds for ESP32-S2 and
-  ESP32-S3, but current CI logs must be reviewed before claiming ESP-IDF build
-  verification.
-- Release-grade hardware validation remains blocked by clean-commit framed HIL
-  evidence, an 8-hour clean framed soak, fault-injection fixture coverage,
-  alert-pin capture, controlled reset/power-cycle evidence, and reviewed CI
-  logs.
+  ESP32-S3. Review CI logs for the exact release commit before claiming a
+  dated CI pass.
+- Release-grade hardware validation remains unclaimed until clean-commit
+  framed HIL evidence, an 8-hour clean framed soak, fault-injection fixture
+  coverage, alert-pin capture, controlled reset/power-cycle evidence, and
+  reviewed CI logs are available.
 
 ## High-Voltage Safety
 
@@ -367,13 +356,13 @@ tracked by level so release wording cannot overstate what was actually run.
 
 | Evidence level | Current status |
 | --- | --- |
-| Implemented | Core hardening, Arduino example, pure ESP-IDF example, CI configuration, and docs are present on this branch. |
+| Implemented | Core library, Arduino example, pure ESP-IDF example, CI configuration, and docs are present. |
 | Tested by native fake-bus | Native Unity tests cover device semantics; run `pio test -e native` for current evidence. |
 | Locally built | PlatformIO native, Arduino ESP32-S2/S3, and package commands are documented below; retain logs before claiming a dated local pass. |
 | CI configured | GitHub Actions includes native tests, Arduino S2/S3 builds, package checks, guards, and ESP-IDF S2/S3 builds. |
 | CI verified | Not claimed here; workflow logs for the current branch or PR must be reviewed before saying CI is green. |
 | ESP-IDF build verified | Not claimed here unless local `idf.py` output or reviewed CI logs are captured. |
-| Partial low-voltage HIL evidence | Checked-in reports under `docs/reports/` cover Arduino ESP32-S3 CLI-visible behavior and fixed-step transfer budgets on dirty worktrees; see `docs/validation/hardware-evidence.md`. |
+| Partial low-voltage HIL evidence | Compact evidence in `docs/validation/hardware-evidence.md` summarizes Arduino ESP32-S3 CLI-visible behavior and fixed-step transfer budgets from dirty worktrees. |
 | Release-grade hardware validated | Not claimed; clean-commit framed HIL, 8-hour clean framed soak, fault-injection fixture coverage, alert-pin capture, controlled reset/power-cycle evidence, and reviewed CI logs are still required. |
 
 Hardware validation is tracked separately in
