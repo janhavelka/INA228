@@ -1,190 +1,192 @@
-# INA228 HIL Command Sequence Template
+# INA228 v3 HIL command sequence
 
-This is a no-hardware transcript template for future hardware-in-loop runs. It
-documents the command sequence to paste into either bring-up CLI:
+This is a procedure template, not evidence. Run on a clean, exact commit and
+store the framed transcript under `docs/validation/hardware/` with fixture,
+shunt, address, equipment, operator, and safety information.
 
-- Arduino: `examples/01_basic_bringup_cli`
-- Pure ESP-IDF: `examples/esp_idf/basic`
+The examples use a 15 mOhm/10 A demonstration profile unless changed by the
+operator. Confirm it is safe for the connected hardware before running.
 
-For an automated bounded smoke pass, run:
-
-```bash
-python tools/run_i2c_hil.py --dry-run
-python tools/run_i2c_hil.py --parser-self-test
-python tools/run_i2c_hil.py --port <serial-port>
-```
-
-The runner sends `version`, `scan`, `probe`, `settings`, `drv`, `diagraw`, and
-`raw`, with a finite timeout for each command. It classifies visible failure
-tokens such as timeout, NACK, device-not-found, device-ID mismatch, memory
-error, invalid argument, busy, and hardware-dirty status lines. A runner pass is
-only HIL evidence when the serial command was run against hardware and the full
-transcript is retained.
-
-Do not mark any hardware validation row `PASS` unless the full transcript,
-setup metadata, commit hash, and equipment details are checked in under
-`docs/validation/hardware/...`.
-
-## Transcript Header
-
-Record this before opening the serial monitor:
-
-```text
-Commit:
-Date/time:
-Operator:
-Framework/target:
-Build command:
-Board:
-INA228 module:
-Address straps:
-Shunt value/tolerance/power/TCR:
-Supply/load:
-Bus voltage range:
-Equipment:
-Log directory:
-Safety review complete: yes/no
-```
-
-## Baseline CLI Smoke
-
-These commands exist in both Arduino and ESP-IDF examples:
+## Basic identity and configuration
 
 ```text
 version
-help
 scan
 scanina
-addr 0x40
-init 0x40
 probe
 mfgid
 devid
 cfg
-drv
-diag
-diagraw
 timing
-read
-raw
-selftest
-stress 500
-stress_mix 200
+drv
 ```
 
-If the active address is not `0x40`, replace `0x40` with the documented strap
-address from `0x40` through `0x4F`.
+Expected identity is manufacturer `0x5449`, DIEID `0x228`, and an explicitly
+reported/accepted revision. Do not validate identity by masking arbitrary high
+bits or by assuming the whole DEVICE_ID must always equal `0x2281`.
 
-## Measurement And Calibration Sequence
+## Cooperative sample transfer budget
 
-Use safe low-energy sources first. Do not connect high-energy rails or
-USB-grounded development boards to unsafe systems.
+Run commands with framed `hilrun` mode when collecting release evidence. The
+following counts refer to example transport callbacks, not logic-analyzer byte
+counts.
 
 ```text
-adcrange 0
-cal <shunt_ohm> <max_current_a>
-cfg
-vbus
-vshunt
-current
-power
-read
-raw
-adcrange 1
-cal <shunt_ohm> <max_current_a>
-cfg
-vbus
-vshunt
-current
-power
-read
-raw
+xfer_reset
+sample_step 0
+xfer_assert 0 0 0
+
+xfer_reset
+sample_step 1
+xfer_assert 1 0 1
+
+xfer_reset
+sample_step 2
+xfer_assert 1 1 2
 ```
 
-Replace `<shunt_ohm>` and `<max_current_a>` with the actual fixture values.
-Record the expected current from the reference DMM/e-load/source.
-
-## Mode And Accumulator Sequence
+Wait longer than the configured conversion time, then finish the active sample:
 
 ```text
-mode 15
-ready
+xfer_reset
+sample_step 8
+xfer_assert 7 1 8
+```
+
+The terminal output must be one `Cooperative Sample Result` with operation ID,
+request token, configuration generation, fixed-unit values, raw values, channel
+validity, and diagnostic evidence. No intermediate command may expose a partial
+sample as successful.
+
+Repeat with a fresh job and a large budget:
+
+```text
+sample_step 255
+sample_step 255
+```
+
+The first command can stop at the zero-I2C conversion wait even with remaining
+budget. The second command, after elapsed time, completes. Total callbacks for
+the job must not exceed 11.
+
+## Cooperative reinitialization budget
+
+```text
+apply_start
+xfer_reset
+apply_step 0
+xfer_assert 0 0 0
+
+xfer_reset
+apply_step 1
+xfer_assert 1 0 1
+
+apply_step 13
+```
+
+The job maximum is 14 callbacks, performs no driver retry, and must end only
+after identity, MEMSTAT, desired configuration, calibration, alert defaults,
+temperature coefficient, and ADC profile have been read back successfully.
+
+## Cooperative reset budget and wait
+
+```text
+reset_start
+xfer_reset
+reset_step 0
+xfer_assert 0 0 0
+
+xfer_reset
+reset_step 1
+xfer_assert 0 1 1
+```
+
+The first callback writes reset. Before the data-sheet startup delay expires,
+repeat a zero-budget step and verify it remains bus-silent:
+
+```text
+xfer_reset
+reset_step 0
+xfer_assert 0 0 0
+```
+
+After the wait, finish with:
+
+```text
+reset_step 15
+```
+
+The whole maintenance job maximum is 16 callbacks, including full verified
+initialization. No blind retry is permitted after an ambiguous reset write.
+
+## Accumulator and diagnostics
+
+```text
 rstacc
-ready
-energy
-charge
-read
-trigger 7
-ready
-read
-energy
-charge
-mode 0
-energy
-charge
-mode 15
+diagsnap
+diag
+diagsnap
+integer
 ```
 
-Expected behavior:
+Record that `diag` is destructive/status-sensitive while `diagsnap` is
+cache-only. Verify accumulation is not reported valid across calibration,
+ADCRANGE, mode/timing, triggered-operation, temperature-compensation, or reset
+generation changes until a verified accumulator reset establishes a coherent
+epoch.
 
-- Continuous mode can make ENERGY/CHARGE valid after a continuous CNVRF.
-- Triggered and shutdown modes must not report ENERGY/CHARGE as valid.
-- Triggered reads must not report stale data as a fresh completed conversion.
+## Fault injection
 
-## Alert And DIAG Sequence
+At each meaningful cooperative stage inject, where the fixture safely permits:
 
-Only cross thresholds with safe sources and current limits.
+- definite address NACK;
+- data NACK or NACK with unknown phase;
+- transfer timeout;
+- arbitration/bus error;
+- removal and reappearance;
+- failed read after a successful write;
+- ambiguous failed write callback;
+- owner cancellation and deadline timeout before a write, after a confirmed
+  write, and after an ambiguous write.
+
+For every case record:
+
+- exact request token and operation ID;
+- callback count and outer deadline;
+- terminal state/status/effect;
+- whether a result was delivered exactly once;
+- hardware state (`UNKNOWN`, `SYNCHRONIZED`, or `RESYNC_REQUIRED`);
+- application bus recovery/retry action;
+- successful verified reconciliation before subsequent publication.
+
+A write callback is one physical attempt. Do not make the fixture or adapter
+blindly retry an ambiguous mutation.
+
+## Alert and electrical validation
+
+Use safe controlled crossings and independent instruments for:
 
 ```text
-limits
-alatch 1
-cnvralert 1
+alatch 0
+apol 0
+cnvralert 0
 alslow 0
-apol 1
-sovl <volts>
-suvl <volts>
-bovl <volts>
-buvl <volts>
-tmplim <degC>
-pwrlim <watts>
 limits
-diag
-diagraw
-diag
 ```
 
-`DIAG_ALRT` reads are destructive/status-clearing. Preserve command order in
-the transcript.
+Then exercise each threshold while capturing ALERT. Record polarity,
+latch/transparent clearing, conversion-ready routing, and diagnostic evidence.
+ALERT is monitoring only and is not a safety interlock.
 
-## Reset And Recovery Sequence
+## Stress and soak
+
+After the targeted and transfer suites pass with no FAIL/UNKNOWN rows:
 
 ```text
-cfg
-drv
-rstacc
-cfg
-ready
-reset
-probe
-cfg
-read
-drv
-recover
-probe
-read
+stress_mix 1000
+stress 1000
 ```
 
-Use the hardware matrix for MCU-reset, INA228-reset/brownout, address NACK,
-and timeout/stuck-bus fault injection steps. Do not simulate bus faults without
-a safe fixture.
-
-## Missing Convenience Aliases
-
-Older internal examples sometimes used these names, but the current CLI does not
-implement them:
-
-- `id`: use `mfgid` and `devid`.
-- `read raw`: use `raw`.
-
-Recommended future additions, if desired: add harmless aliases for `id` and
-`read raw` to reduce operator mistakes during validation transcripts.
+Run the framed 8-hour soak from a clean commit. Serial framing loss is UNKNOWN,
+not PASS. Record device removal/reappearance and owner recovery separately from
+steady-state measurement reliability.

@@ -5,6 +5,95 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-07-19
+
+This breaking release adds a bounded, fixed-memory cooperative operation model
+for external I2C-owner tasks. The application remains responsible for the bus,
+serialization, transfer timeouts, operation deadlines, retries, health policy,
+and recovery.
+
+### Added
+
+- Zero-I2C `bind()` and typed cooperative starts for initialization,
+  reinitialization, configuration verification, instantaneous sampling,
+  software reset, and accumulator reset.
+- `pollJob(nowMs, maxTransfers)` with a hard per-call transport-callback budget,
+  valid zero-budget/bus-silent wait advancement, and no driver retry.
+- Cache-only job snapshots, nonzero operation IDs, caller request tokens, and
+  exactly-once terminal result delivery with stale-result rejection.
+- Bus-silent, idempotent cancellation and timeout with explicit
+  `NONE`, `CONFIRMED`, `PARTIAL`, and `INDETERMINATE` hardware-effect reporting.
+- `HardwareState` and explicit invalidation so desired cache is not presented as
+  synchronized hardware until full readback verification succeeds.
+- Fixed-unit calibration modes for maximum-current-derived and explicit current
+  LSB planning, including quantization, clamping, current-register range, and
+  shunt-voltage range results. Unsafe plans require explicit opt-in.
+- Atomic triggered instantaneous samples with request/operation provenance,
+  configuration generation, channel validity, raw and fixed-unit values, and
+  correlated diagnostic evidence.
+- Fixed-memory diagnostic event lifecycle with new/sticky evidence,
+  first-observed timestamps, and bus-silent acknowledgement.
+- Pure DEVICE_ID parsing that separates DIEID `0x228` from the revision nibble,
+  plus configurable supported-revision policy.
+- Exact job limits for operation class, maximum transfers, additional wait, and
+  retry count.
+- Atomic identity publication: initialization/reinitialization keeps parsed
+  identity in job-local scratch, and failed/cancelled reconciliation or active
+  invalidation revokes previously synchronized identity state.
+- Static owner-contract guard and CI coverage for the cooperative API, example
+  usage, framework neutrality, passive health, and effective C++17 flags.
+
+### Changed
+
+- `HealthPolicy::PASSIVE` is the default so diagnostic health never takes
+  scheduling or recovery authority from an external owner. The legacy latched
+  OFFLINE policy remains explicit opt-in behavior.
+- Initialization writes deterministic alert configuration and verifies
+  identity, revision, MEMSTAT, configuration, ADC profile, calibration,
+  temperature coefficient, and writable DIAG_ALRT state.
+- Software reset now has an owner-visible zero-I2C startup wait and a verified
+  full initialization sequence.
+- Accumulator validity is generation/epoch based. Range, calibration,
+  mode/timing, triggered operation, temperature compensation, and reset changes
+  invalidate energy/charge until a verified accumulator reset establishes a
+  coherent epoch.
+- Arduino and native ESP-IDF examples use the cooperative lifecycle for
+  initialization, fixed-unit sampling, reset, and reinitialization.
+- Arduino builds now remove the framework's GNU++11 flag and apply GNU++17
+  effectively; native code remains C++17.
+- Documentation now separates owner-safe production operations, pure helpers,
+  synchronous convenience APIs, diagnostics, implemented behavior, build/native
+  evidence, historical HIL, and external hardware-validation gates.
+
+### Compatibility
+
+- The release is major because configuration gained fixed-unit calibration,
+  deterministic alerts, revision, and health-policy contracts, and the
+  recommended lifecycle changes from synchronous `begin()`/`recover()` to
+  bind/start/poll/take.
+- Existing synchronous typed functionality remains available as bounded
+  convenience/diagnostic APIs. Legacy stepped helper names remain for source
+  compatibility but are not the recommended external-owner path.
+- No TunnelMonitor-node source or dependency pin is changed by this release.
+  Product calibration choice, private adapter integration, immutable exact pin,
+  and HIL remain external gates.
+
+### Validation
+
+- Native fake-bus tests inject failures at every distinct cooperative transfer
+  phase, including verification, reset, and accumulator reset; they also cover
+  zero-I2C waits, exact budgets, cancellation/timeout, ambiguous writes,
+  stale/exactly-once results, revision policy, deterministic alerts, calibration
+  boundaries, atomic reinitialization identity, retained synchronous wrappers,
+  diagnostic lifecycle, accumulator epochs, passive health, and explicit
+  legacy offline policy.
+- CI is configured for native tests, Arduino ESP32-S2/S3 builds, native ESP-IDF
+  ESP32-S2/S3 builds, static contract guards, version synchronization, and
+  package validation.
+- Historical v2 low-voltage HIL evidence is not v3 validation. Version 3 has no
+  release-grade hardware-validation claim until the documented hardware gates
+  are completed on an exact clean commit.
+
 ## [2.0.0] - 2026-06-26
 
 This major release deletes copy/move operations for `INA228::INA228`, adds
@@ -199,6 +288,7 @@ converted values.
 - `recover()` now re-validates manufacturer ID, device ID, and MEMSTAT before reapplying cached configuration and calibration.
 - Bringup `scan` now includes an INA228-specific address probe, and startup can auto-detect a single healthy INA228 on `0x40..0x4F`.
 
+[3.0.0]: https://github.com/janhavelka/INA228/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/janhavelka/INA228/compare/v1.3.0...v2.0.0
 [1.3.0]: https://github.com/janhavelka/INA228/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/janhavelka/INA228/compare/v1.1.0...v1.2.0

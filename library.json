@@ -1,7 +1,7 @@
 {
   "name": "INA228",
-  "version": "2.0.0",
-  "description": "Framework-neutral INA228 85-V, 20-bit power/energy/charge monitor driver.",
+  "version": "3.0.0",
+  "description": "Framework-neutral INA228 power monitor with bounded owner-driven cooperative operations.",
   "keywords": [
     "ina228",
     "power-monitor",

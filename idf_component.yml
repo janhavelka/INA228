@@ -1,5 +1,5 @@
-version: "2.0.0"
-description: "Framework-neutral INA228 85-V, 20-bit power/energy/charge monitor driver."
+version: "3.0.0"
+description: "Framework-neutral INA228 power monitor with bounded owner-driven cooperative operations."
 license: "MIT"
 url: "https://github.com/janhavelka/INA228"
 repository: "https://github.com/janhavelka/INA228.git"

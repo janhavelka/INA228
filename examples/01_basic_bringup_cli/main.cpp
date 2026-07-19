@@ -48,10 +48,14 @@ INA228::Err hilCommandStatus = INA228::Err::OK;
 static constexpr uint8_t DEFAULT_I2C_ADDRESS = board::INA228_I2C_ADDR;
 static constexpr uint8_t INA228_ADDR_MIN = 0x40;
 static constexpr uint8_t INA228_ADDR_MAX = 0x4F;
+static constexpr uint16_t SUPPORTED_REVISION_MASK = 0x0002;
 static constexpr size_t CLI_MAX_LINE_LEN = 128;
 static constexpr uint8_t CLI_MAX_BYTES_PER_LOOP = 96;
 static constexpr int MAX_STRESS_COUNT = 100000;
 uint8_t selectedAddress = DEFAULT_I2C_ADDRESS;
+uint32_t activeOperationId = 0;
+uint32_t nextRequestToken = 1;
+static constexpr uint32_t EXAMPLE_OPERATION_DEADLINE_MS = 2000;
 
 struct ProbeSnapshot {
   uint8_t address = DEFAULT_I2C_ADDRESS;
@@ -101,8 +105,11 @@ INA228::Config makeExampleConfig(uint8_t address) {
   cfg.i2cAddress = address;
   cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
   cfg.mode = INA228::Mode::CONT_ALL;
-  cfg.shuntResistanceOhm = 0.015f;
-  cfg.maxExpectedCurrentA = 10.0f;
+  cfg.calibration.shuntMicroOhms = 15000;
+  cfg.calibration.mode = INA228::CalibrationMode::FROM_MAXIMUM_CURRENT;
+  cfg.calibration.maxCurrentMilliAmps = 10000;
+  cfg.healthPolicy = INA228::HealthPolicy::PASSIVE;
+  cfg.supportedRevisionMask = SUPPORTED_REVISION_MASK;
   cfg.offlineThreshold = 5;
   return cfg;
 }
@@ -150,10 +157,17 @@ INA228::Status probeAddressRaw(uint8_t address, ProbeSnapshot& out) {
   if (!st.ok()) {
     return st;
   }
-  if (out.deviceId != INA228::cmd::DEVICE_ID) {
-    return INA228::Status::Error(INA228::Err::DEVICE_ID_MISMATCH,
-                                 "Device ID mismatch",
-                                 static_cast<int32_t>(out.deviceId));
+  INA228::DeviceIdentity identity{};
+  st = INA228::INA228::parseDeviceIdentity(out.manufacturerId, out.deviceId, identity);
+  if (!st.ok()) {
+    return st;
+  }
+  if (identity.revision >= 16U ||
+      (SUPPORTED_REVISION_MASK &
+       static_cast<uint16_t>(1U << identity.revision)) == 0U) {
+    return INA228::Status::Error(INA228::Err::UNSUPPORTED_REVISION,
+                                 "Unsupported INA228 revision",
+                                 identity.revision);
   }
 
   st = readRegister16AtAddress(address, INA228::cmd::REG_DIAG_ALRT, out.diagAlert);
@@ -249,6 +263,111 @@ uint8_t detectHealthyIna228Addresses(ProbeSnapshot* matches, uint8_t maxMatches)
   return count;
 }
 
+uint32_t allocateRequestToken() {
+  const uint32_t token = nextRequestToken;
+  ++nextRequestToken;
+  if (nextRequestToken == 0U) {
+    nextRequestToken = 1U;
+  }
+  return token;
+}
+
+INA228::Status startOwnerJob(INA228::JobKind kind) {
+  if (activeOperationId != 0U) {
+    return INA228::Status::Error(INA228::Err::BUSY,
+                                 "A cooperative operation is already active");
+  }
+
+  uint32_t operationId = 0;
+  const uint32_t requestToken = allocateRequestToken();
+  INA228::Status st;
+  switch (kind) {
+    case INA228::JobKind::INITIALIZE:
+      st = device.startInitialize(requestToken, operationId);
+      break;
+    case INA228::JobKind::REINITIALIZE:
+      st = device.startReinitialize(requestToken, operationId);
+      break;
+    case INA228::JobKind::VERIFY_CONFIGURATION:
+      st = device.startVerifyConfiguration(requestToken, operationId);
+      break;
+    case INA228::JobKind::INSTANTANEOUS_SAMPLE:
+      st = device.startInstantaneousSample(requestToken, operationId);
+      break;
+    case INA228::JobKind::RESET:
+      st = device.startReset(requestToken, operationId);
+      break;
+    case INA228::JobKind::ACCUMULATOR_RESET:
+      st = device.startAccumulatorReset(requestToken, operationId);
+      break;
+    default:
+      return INA228::Status::Error(INA228::Err::INVALID_PARAM,
+                                   "Unsupported cooperative job kind");
+  }
+  if (st.ok()) {
+    activeOperationId = operationId;
+  }
+  return st;
+}
+
+INA228::Status pollOwnerJob(uint8_t maxTransfers, INA228::JobResult& result,
+                            bool& completed) {
+  completed = false;
+  if (activeOperationId == 0U) {
+    return INA228::Status::Error(INA228::Err::RESULT_NOT_AVAILABLE,
+                                 "No cooperative operation is active");
+  }
+
+  const INA228::Status pollStatus = device.pollJob(millis(), maxTransfers);
+  INA228::JobSnapshot snapshot{};
+  INA228::Status st = device.getJobState(snapshot);
+  if (!st.ok()) {
+    return st;
+  }
+  if (snapshot.state == INA228::JobState::ACTIVE) {
+    return pollStatus;
+  }
+
+  st = device.takeJobResult(activeOperationId, result);
+  if (!st.ok()) {
+    return st;
+  }
+  activeOperationId = 0U;
+  completed = true;
+  return result.job.status;
+}
+
+INA228::Status runOwnerJob(INA228::JobKind kind, INA228::JobResult& result) {
+  INA228::Status st = startOwnerJob(kind);
+  if (!st.ok()) {
+    return st;
+  }
+
+  const uint32_t startedAtMs = millis();
+  for (;;) {
+    bool completed = false;
+    st = pollOwnerJob(1U, result, completed);
+    if (completed) {
+      return st;
+    }
+    if (!st.inProgress()) {
+      return st;
+    }
+    if (static_cast<uint32_t>(millis() - startedAtMs) >=
+        EXAMPLE_OPERATION_DEADLINE_MS) {
+      const uint32_t timedOutOperationId = activeOperationId;
+      st = device.timeoutJob();
+      if (!st.ok()) {
+        return st;
+      }
+      st = device.takeJobResult(timedOutOperationId, result);
+      activeOperationId = 0U;
+      return st.ok() ? result.job.status : st;
+    }
+    delay(1U);
+  }
+}
+
 bool parseAddressArg(const String& text, uint8_t& outAddress) {
   String trimmed = text;
   trimmed.trim();
@@ -274,8 +393,13 @@ bool parseAddressArg(const String& text, uint8_t& outAddress) {
 INA228::Status initializeDevice(uint8_t address, bool allowAutoDetectFallback) {
   selectedAddress = address;
   device.end();
+  activeOperationId = 0U;
 
-  INA228::Status st = device.begin(makeExampleConfig(address));
+  INA228::Status st = device.bind(makeExampleConfig(address));
+  INA228::JobResult result{};
+  if (st.ok()) {
+    st = runOwnerJob(INA228::JobKind::INITIALIZE, result);
+  }
   if (st.ok()) {
     selectedAddress = address;
     return st;
@@ -291,7 +415,12 @@ INA228::Status initializeDevice(uint8_t address, bool allowAutoDetectFallback) {
     LOGW("Configured address 0x%02X failed; detected INA228 at 0x%02X",
          address, matches[0].address);
     selectedAddress = matches[0].address;
-    st = device.begin(makeExampleConfig(matches[0].address));
+    device.end();
+    activeOperationId = 0U;
+    st = device.bind(makeExampleConfig(matches[0].address));
+    if (st.ok()) {
+      st = runOwnerJob(INA228::JobKind::INITIALIZE, result);
+    }
     if (st.ok()) {
       selectedAddress = matches[0].address;
     }
@@ -667,15 +796,24 @@ void printIntegerSampleFields(const INA228::IntegerSample& sample) {
 }
 
 void printIntegerSample() {
-  INA228::IntegerSample sample{};
-  auto st = device.readIntegerSample(sample);
+  INA228::JobResult result{};
+  const auto st = runOwnerJob(INA228::JobKind::INSTANTANEOUS_SAMPLE, result);
   if (!st.ok()) {
     printStatus(st);
     return;
   }
+  if (!result.hasInstantaneousSample) {
+    printStatus(INA228::Status::Error(INA228::Err::RESULT_NOT_AVAILABLE,
+                                     "Sample job produced no sample"));
+    return;
+  }
 
-  Serial.println("=== Integer Sample ===");
-  printIntegerSampleFields(sample);
+  Serial.println("=== Cooperative Instantaneous Sample ===");
+  Serial.printf("  Operation: %lu request: %lu generation: %lu\n",
+                static_cast<unsigned long>(result.instantaneousSample.operationId),
+                static_cast<unsigned long>(result.instantaneousSample.requestToken),
+                static_cast<unsigned long>(result.instantaneousSample.configurationGeneration));
+  printIntegerSampleFields(result.instantaneousSample.values);
 }
 
 void printDiagSnapshot() {
@@ -698,26 +836,47 @@ void printDiagSnapshot() {
   Serial.printf("  MATHOF:     %s\n", log_bool_str(snap.diag.mathOF));
 }
 
-void printPowerSampleStep(uint8_t maxInstructions) {
-  INA228::RawSample raw{};
-  INA228::IntegerSample sample{};
-  auto st = device.readPowerSampleRawStep(raw, sample, maxInstructions);
+void printPowerSampleStep(uint8_t maxTransfers) {
+  if (activeOperationId == 0U) {
+    const INA228::Status startStatus =
+        startOwnerJob(INA228::JobKind::INSTANTANEOUS_SAMPLE);
+    if (!startStatus.ok()) {
+      printStatus(startStatus);
+      return;
+    }
+    LOGI("startInstantaneousSample(): OK operation=%lu",
+         static_cast<unsigned long>(activeOperationId));
+  }
+
+  INA228::JobSnapshot before{};
+  auto st = device.getJobState(before);
+  if (!st.ok() || before.kind != INA228::JobKind::INSTANTANEOUS_SAMPLE) {
+    printStatus(st.ok() ? INA228::Status::Error(INA228::Err::BUSY,
+                                                "Active job is not a sample")
+                        : st);
+    return;
+  }
+
+  INA228::JobResult result{};
+  bool completed = false;
+  st = pollOwnerJob(maxTransfers, result, completed);
   const bool accepted = st.ok() || st.inProgress();
-  LOGI("readPowerSampleRawStep(%u): %s%s%s",
-       static_cast<unsigned>(maxInstructions),
+  LOGI("pollJob(%u): %s%s%s",
+       static_cast<unsigned>(maxTransfers),
        LOG_COLOR_RESULT(accepted),
        errToStr(st.code),
        LOG_COLOR_RESET);
-  if (st.ok()) {
-    Serial.println("=== Power Sample Step Result ===");
-    printIntegerSampleFields(sample);
-    Serial.printf("  Raw Vshunt: %ld\n", static_cast<long>(raw.vshunt));
-    Serial.printf("  Raw Vbus:   %lu\n", static_cast<unsigned long>(raw.vbus));
-    Serial.printf("  Raw Temp:   %d\n", static_cast<int>(raw.dietemp));
-    Serial.printf("  Raw Current:%ld\n", static_cast<long>(raw.current));
-    Serial.printf("  Raw Power:  %lu\n", static_cast<unsigned long>(raw.power));
+  if (completed && st.ok() && result.hasInstantaneousSample) {
+    const INA228::InstantaneousSample& sample = result.instantaneousSample;
+    Serial.println("=== Cooperative Sample Result ===");
+    printIntegerSampleFields(sample.values);
+    Serial.printf("  Raw Vshunt: %ld\n", static_cast<long>(sample.raw.vshunt));
+    Serial.printf("  Raw Vbus:   %lu\n", static_cast<unsigned long>(sample.raw.vbus));
+    Serial.printf("  Raw Temp:   %d\n", static_cast<int>(sample.raw.dietemp));
+    Serial.printf("  Raw Current:%ld\n", static_cast<long>(sample.raw.current));
+    Serial.printf("  Raw Power:  %lu\n", static_cast<unsigned long>(sample.raw.power));
   } else if (st.inProgress()) {
-    Serial.println("  Step result pending; outputs are not committed yet.");
+    Serial.println("  Job pending; no partial sample is exposed.");
   } else {
     printStatus(st);
   }
@@ -1228,7 +1387,11 @@ void runSelfTest() {
   uint16_t devId = 0;
   st = device.readDeviceId(devId);
   reportCheck("readDeviceId", st.ok(), st.ok() ? "" : errToStr(st.code));
-  reportCheck("device id = 0x2281", st.ok() && devId == 0x2281, "");
+  INA228::DeviceIdentity identity{};
+  const INA228::Status identityStatus =
+      INA228::INA228::parseDeviceIdentity(mfgId, devId, identity);
+  reportCheck("DEVICE_ID DIEID = 0x228", st.ok() && identityStatus.ok() &&
+              identity.dieId == 0x228U, "");
 
   // Mode read
   INA228::Mode mode = INA228::Mode::SHUTDOWN;
@@ -1277,9 +1440,15 @@ void runSelfTest() {
   const float lsb = device.currentLsb();
   reportCheck("currentLsb>0 (calibrated)", lsb > 0.0f, "");
 
-  // Recovery
-  st = device.recover();
-  reportCheck("recover", st.ok(), st.ok() ? "" : errToStr(st.code));
+  // Owner-directed invalidation and verified reinitialization.
+  st = device.invalidateHardwareState(
+      INA228::Status::Error(INA228::Err::I2C_ERROR,
+                            "Example self-test requested revalidation"));
+  INA228::JobResult recoveryResult{};
+  if (st.ok()) {
+    st = runOwnerJob(INA228::JobKind::REINITIALIZE, recoveryResult);
+  }
+  reportCheck("cooperative reinitialize", st.ok(), st.ok() ? "" : errToStr(st.code));
   reportCheck("isOnline", device.isOnline(), "");
 
   Serial.printf("Selftest result: pass=%s%lu%s fail=%s%lu%s skip=%s%lu%s\n",
@@ -1304,7 +1473,7 @@ void printHelp() {
   cli::printHelpItem("scanina", "Probe INA228 IDs; reads DIAG_ALRT/MEMSTAT");
   cli::printHelpItem("read", "Read all measurements with accumulator validity flags");
   cli::printHelpItem("raw", "Read raw register values with validity flags");
-  cli::printHelpItem("integer / int", "Read fixed-unit integer sample");
+  cli::printHelpItem("integer / int", "Run a bounded cooperative instantaneous sample");
   cli::printHelpItem("diagsnap", "Show cache-only preserved DIAG_ALRT snapshot");
   cli::printHelpItem("timing", "Show conversion timing and calibration info");
 
@@ -1319,7 +1488,7 @@ void printHelp() {
   cli::printHelpItem("ready", "Check if conversion is ready");
   cli::printHelpItem("trigger [mode]", "Trigger single-shot conversion (0-7)");
   cli::printHelpItem("ready_step <budget>", "Poll readiness with maxInstructions budget");
-  cli::printHelpItem("sample_step <budget>", "Read fixed-step power sample");
+  cli::printHelpItem("sample_step <budget>", "Start/advance sample by at most budget I2C transfers");
 
   cli::printHelpSection("Configuration");
   cli::printHelpItem("mode [0..15]", "Set or show operating mode");
@@ -1335,10 +1504,10 @@ void printHelp() {
   cli::printHelpItem("init [0x40..0x4F]", "Re-initialize device at current or given address");
   cli::printHelpItem("end", "Shutdown driver");
   cli::printHelpItem("reset", "Software reset device");
-  cli::printHelpItem("reset_start / reset_step <budget>", "Run fixed-step reset job");
+  cli::printHelpItem("reset_start / reset_step <budget>", "Start/advance cooperative reset job");
   cli::printHelpItem("rstacc", "Reset energy/charge accumulators");
-  cli::printHelpItem("apply_start / apply_step <budget>", "Replay config/calibration as fixed-step job");
-  cli::printHelpItem("replay_start / replay_step <budget>", "Alias for config replay fixed-step job");
+  cli::printHelpItem("apply_start / apply_step <budget>", "Start/advance verified reinitialization");
+  cli::printHelpItem("replay_start / replay_step <budget>", "Alias for verified reinitialization");
 
   cli::printHelpSection("Alert & Diagnostics");
   cli::printHelpItem("diag", "Read DIAG_ALRT flags (destructive/status-clearing)");
@@ -1355,7 +1524,7 @@ void printHelp() {
   cli::printHelpItem("tmplim [degC]", "Show or set temperature over-limit threshold");
   cli::printHelpItem("pwrlim [watts]", "Show or set power over-limit threshold");
   cli::printHelpItem("mfgid", "Read manufacturer ID (expect 0x5449)");
-  cli::printHelpItem("devid", "Read device ID (expect 0x2281)");
+  cli::printHelpItem("devid", "Read DEVICE_ID (DIEID 0x228 plus revision nibble)");
   cli::printHelpItem("reg16 <addr>", "Read 16-bit register (diagnostic; may clear flags)");
   cli::printHelpItem("reg24 <addr>", "Read 24-bit register (diagnostic; may clear flags)");
   cli::printHelpItem("reg40 <addr>", "Read 40-bit register (diagnostic; may clear flags)");
@@ -1364,7 +1533,7 @@ void printHelp() {
   cli::printHelpSection("Diagnostics");
   cli::printHelpItem("drv", "Show driver state and health");
   cli::printHelpItem("probe", "Probe device; reads DIAG_ALRT; no health tracking");
-  cli::printHelpItem("recover", "Manual recovery attempt");
+  cli::printHelpItem("recover", "Invalidate cached hardware state and reinitialize cooperatively");
   cli::printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   cli::printHelpItem("stress [N]", "Run N measurement cycles (default 10)");
   cli::printHelpItem("stress_mix [N]", "Run N mixed-operation cycles (default 50)");
@@ -1886,7 +2055,7 @@ void processCommand(const String& cmdLine) {
     }
 
     auto st = initializeDevice(address, allowAutoDetectFallback);
-    LOGI("begin(0x%02X): %s%s%s",
+    LOGI("bind + initialize(0x%02X): %s%s%s",
          configuredAddress(),
          LOG_COLOR_RESULT(st.ok()),
          errToStr(st.code),
@@ -1897,23 +2066,25 @@ void processCommand(const String& cmdLine) {
 
   if (cmd == "end") {
     device.end();
+    activeOperationId = 0U;
     LOGI("Device shut down.");
     return;
   }
 
   if (cmd == "reset") {
-    auto st = device.softReset();
-    LOGI("softReset(): %s%s%s", LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    INA228::JobResult result{};
+    auto st = runOwnerJob(INA228::JobKind::RESET, result);
+    LOGI("cooperative reset: %s%s%s", LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
     if (!st.ok()) printStatus(st);
     return;
   }
 
   if (cmd == "reset_start") {
-    auto st = device.startResetJob();
-    const bool accepted = st.ok() || st.inProgress();
-    LOGI("startResetJob(): %s%s%s",
-         LOG_COLOR_RESULT(accepted), errToStr(st.code), LOG_COLOR_RESET);
-    if (!accepted) printStatus(st);
+    auto st = startOwnerJob(INA228::JobKind::RESET);
+    LOGI("startReset(): %s%s%s operation=%lu",
+         LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET,
+         static_cast<unsigned long>(activeOperationId));
+    if (!st.ok()) printStatus(st);
     return;
   }
 
@@ -1923,30 +2094,34 @@ void processCommand(const String& cmdLine) {
       LOGW("Usage: reset_step <0..255>");
       return;
     }
-    auto st = device.pollResetJob(millis(), static_cast<uint8_t>(budget));
+    INA228::JobResult result{};
+    bool completed = false;
+    auto st = pollOwnerJob(static_cast<uint8_t>(budget), result, completed);
     const bool accepted = st.ok() || st.inProgress();
-    LOGI("pollResetJob(%lu): %s%s%s",
+    LOGI("pollJob(%lu): %s%s%s%s",
          static_cast<unsigned long>(budget),
          LOG_COLOR_RESULT(accepted),
          errToStr(st.code),
-         LOG_COLOR_RESET);
+         LOG_COLOR_RESET,
+         completed ? " terminal result consumed" : "");
     if (!accepted) printStatus(st);
     return;
   }
 
   if (cmd == "rstacc") {
-    auto st = device.resetAccumulators();
-    LOGI("resetAccumulators(): %s%s%s", LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
+    INA228::JobResult result{};
+    auto st = runOwnerJob(INA228::JobKind::ACCUMULATOR_RESET, result);
+    LOGI("cooperative accumulator reset: %s%s%s", LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
     if (!st.ok()) printStatus(st);
     return;
   }
 
   if (cmd == "apply_start" || cmd == "replay_start") {
-    auto st = device.startConfigReplayJob();
-    const bool accepted = st.ok() || st.inProgress();
-    LOGI("startConfigReplayJob(): %s%s%s",
-         LOG_COLOR_RESULT(accepted), errToStr(st.code), LOG_COLOR_RESET);
-    if (!accepted) printStatus(st);
+    auto st = startOwnerJob(INA228::JobKind::REINITIALIZE);
+    LOGI("startReinitialize(): %s%s%s operation=%lu",
+         LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET,
+         static_cast<unsigned long>(activeOperationId));
+    if (!st.ok()) printStatus(st);
     return;
   }
 
@@ -1957,13 +2132,16 @@ void processCommand(const String& cmdLine) {
       LOGW("Usage: apply_step|replay_step <0..255>");
       return;
     }
-    auto st = device.pollConfigReplayJob(millis(), static_cast<uint8_t>(budget));
+    INA228::JobResult result{};
+    bool completed = false;
+    auto st = pollOwnerJob(static_cast<uint8_t>(budget), result, completed);
     const bool accepted = st.ok() || st.inProgress();
-    LOGI("pollConfigReplayJob(%lu): %s%s%s",
+    LOGI("pollJob(%lu): %s%s%s%s",
          static_cast<unsigned long>(budget),
          LOG_COLOR_RESULT(accepted),
          errToStr(st.code),
-         LOG_COLOR_RESET);
+         LOG_COLOR_RESET,
+         completed ? " terminal result consumed" : "");
     if (!accepted) printStatus(st);
     return;
   }
@@ -2294,8 +2472,14 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "recover") {
-    LOGI("Attempting recovery...");
-    auto st = device.recover();
+    LOGI("Invalidating cached hardware state and reinitializing...");
+    auto st = device.invalidateHardwareState(
+        INA228::Status::Error(INA228::Err::I2C_ERROR,
+                              "Application requested reinitialization"));
+    INA228::JobResult result{};
+    if (st.ok()) {
+      st = runOwnerJob(INA228::JobKind::REINITIALIZE, result);
+    }
     printStatus(st);
     printDriverHealth();
     return;
@@ -2393,8 +2577,6 @@ void setup() {
 }
 
 void loop() {
-  device.tick(millis());
-
   static char inputBuffer[CLI_MAX_LINE_LEN] = {};
   static size_t inputLen = 0;
   static bool inputOverflow = false;

@@ -144,7 +144,8 @@ FUNCTIONAL_STEPS: tuple[Step, ...] = (
     Step("reg24 0x05", ("0x",), "VBUS raw24", "functional"),
     Step("reg40 0x09", ("0x",), "ENERGY raw40", "functional"),
     Step("rstacc", ("reset",), "accumulator reset", "functional"),
-    Step("recover", ("Attempting recovery", "frame_status=OK"), "manual recover", "functional"),
+    Step("recover", ("Invalidating cached hardware state", "frame_status=OK"),
+         "owner invalidation and verified reinitialization", "functional"),
     Step("selftest", ("INA228 selftest",), "self-test", "functional"),
     Step("stress 50", ("Stress Summary", "Errors:"), "short stress", "functional"),
     Step("stress_mix 50", ("stress_mix summary", "fail="), "short mixed stress", "functional"),
@@ -589,9 +590,9 @@ SOAK_STEPS: tuple[Step, ...] = (
     Step("temp", ("Temp",), "soak temperature", "soak"),
     Step("current", ("Current",), "soak current", "soak"),
     Step("power", ("Power",), "soak power", "soak"),
-    Step("integer", ("Integer Sample",), "soak integer sample", "soak"),
+    Step("integer", ("Cooperative Instantaneous Sample",),
+         "soak atomic sample", "soak"),
     Step("raw", ("Raw Registers", "Vbus"), "soak raw", "soak"),
-    Step("sample_step 5", ("Power Sample Step Result",), "soak fixed-step sample", "soak"),
     Step("read", ("Vbus", "Power"), "soak aggregate", "soak"),
     Step("ready", ("Conversion ready",), "soak readiness", "soak"),
     Step("settings", ("Active Settings",), "soak settings", "soak"),
@@ -599,15 +600,16 @@ SOAK_STEPS: tuple[Step, ...] = (
     Step("diagsnap", ("DIAG_ALRT Snapshot",), "soak diagnostic snapshot", "soak"),
     Step("diagraw", ("DIAG_ALRT raw",), "soak raw diagnostics", "soak"),
     Step("probe", ("Status: OK",), "soak probe", "soak"),
-    Step("recover", ("Attempting recovery", "frame_status=OK"), "soak recover", "soak"),
+    Step("recover", ("Invalidating cached hardware state", "frame_status=OK"),
+         "soak verified reinitialization", "soak"),
     Step("stress 50", ("Stress Summary", "Errors:"), "soak stress", "soak"),
     Step("stress_mix 50", ("stress_mix summary", "fail="), "soak mixed stress", "soak"),
 )
 
 
 def soak_steps_for_suite(suite: str) -> tuple[Step, ...]:
-    if suite == "targeted":
-        return TARGETED_SOAK_STEPS
+    # v3 cooperative sample steps intentionally span commands. Keep soak paths
+    # self-contained so a pending job cannot interfere with the next command.
     return SOAK_STEPS
 
 
@@ -616,9 +618,100 @@ BENCHMARK_STEPS: tuple[Step, ...] = (
     Step("vshunt", ("Vshunt",), "benchmark shunt voltage", "benchmark"),
     Step("temp", ("Temp",), "benchmark temperature", "benchmark"),
     Step("raw", ("Raw Registers", "Vbus"), "benchmark raw sample", "benchmark"),
-    Step("integer", ("Integer Sample",), "benchmark integer sample", "benchmark"),
+    Step("integer", ("Cooperative Instantaneous Sample",),
+         "benchmark atomic sample", "benchmark"),
     Step("read", ("Vbus", "Power"), "benchmark aggregate", "benchmark"),
-    Step("sample_step 5", ("Power Sample Step Result",), "benchmark fixed-step sample", "benchmark"),
+)
+
+
+V3_TARGETED_STEPS: tuple[Step, ...] = (
+    Step("help", ("sample_step <budget>", "reset_start", "apply_start"),
+         "v3 cooperative CLI surface", "targeted"),
+    Step("integer", ("Cooperative Instantaneous Sample", "Operation:", "Current:"),
+         "bounded atomic sample", "targeted"),
+    Step("sample_step 0", ("pollJob(0)", "IN_PROGRESS"),
+         "zero-budget sample start", "targeted"),
+    Step("sample_step 3", ("pollJob(3)", "IN_PROGRESS"),
+         "sample verify/trigger budget", "targeted", pause_after_s=0.05),
+    Step("sample_step 8", ("Cooperative Sample Result",),
+         "sample wait/read/restore completion", "targeted"),
+    Step("apply_start", ("startReinitialize", "OK"),
+         "verified reinitialization start", "targeted"),
+    Step("apply_step 0", ("pollJob(0)", "IN_PROGRESS"),
+         "reinitialization zero budget", "targeted"),
+    Step("apply_step 14", ("pollJob(14)", "OK", "terminal result consumed"),
+         "verified reinitialization completion", "targeted"),
+    Step("reset_start", ("startReset", "OK"),
+         "maintenance reset start", "targeted"),
+    Step("reset_step 1", ("pollJob(1)", "IN_PROGRESS"),
+         "reset write", "targeted", pause_after_s=0.05),
+    Step("reset_step 0", ("pollJob(0)", "IN_PROGRESS"),
+         "reset wait zero budget", "targeted"),
+    Step("reset_step 15", ("pollJob(15)", "OK", "terminal result consumed"),
+         "reset verification and initialization", "targeted"),
+    Step("recover", ("Invalidating cached hardware state", "Status: OK"),
+         "application-owned recovery boundary", "targeted"),
+    Step("diagsnap", ("DIAG_ALRT Snapshot", "cache-only"),
+         "cache-only diagnostic evidence", "targeted"),
+    Step("selftest", ("Selftest result", "fail=0"),
+         "device self-test", "targeted"),
+)
+
+
+V3_TRANSFER_STEPS: tuple[Step, ...] = (
+    Step("xfer_reset", ("XFER_RESET",), "reset counters", "transfer"),
+    Step("sample_step 0", ("pollJob(0)", "IN_PROGRESS"),
+         "sample zero budget", "transfer"),
+    Step("xfer_assert 0 0 0", ("XFER_ASSERT PASS",),
+         "sample start is bus-silent", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset counters", "transfer"),
+    Step("sample_step 1", ("pollJob(1)", "IN_PROGRESS"),
+         "sample budget one", "transfer"),
+    Step("xfer_assert 1 0 1", ("XFER_ASSERT PASS",),
+         "sample budget-one count", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset counters", "transfer"),
+    Step("sample_step 2", ("pollJob(2)", "IN_PROGRESS"),
+         "sample calibration/trigger", "transfer", pause_after_s=0.05),
+    Step("xfer_assert 1 1 2", ("XFER_ASSERT PASS",),
+         "sample trigger count", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset counters", "transfer"),
+    Step("sample_step 8", ("Cooperative Sample Result",),
+         "sample completion", "transfer"),
+    Step("xfer_assert 7 1 8", ("XFER_ASSERT PASS",),
+         "sample completion count", "transfer"),
+    Step("apply_start", ("startReinitialize", "OK"),
+         "reinitialization start", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset counters", "transfer"),
+    Step("apply_step 0", ("pollJob(0)", "IN_PROGRESS"),
+         "reinitialization zero budget", "transfer"),
+    Step("xfer_assert 0 0 0", ("XFER_ASSERT PASS",),
+         "reinitialization zero count", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset counters", "transfer"),
+    Step("apply_step 1", ("pollJob(1)", "IN_PROGRESS"),
+         "reinitialization budget one", "transfer"),
+    Step("xfer_assert 1 0 1", ("XFER_ASSERT PASS",),
+         "reinitialization first read", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset counters", "transfer"),
+    Step("apply_step 13", ("pollJob(13)", "OK"),
+         "reinitialization completion", "transfer"),
+    Step("xfer_assert 7 6 13", ("XFER_ASSERT PASS",),
+         "reinitialization remaining count", "transfer"),
+    Step("reset_start", ("startReset", "OK"), "reset start", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset counters", "transfer"),
+    Step("reset_step 0", ("pollJob(0)", "IN_PROGRESS"),
+         "reset zero budget", "transfer"),
+    Step("xfer_assert 0 0 0", ("XFER_ASSERT PASS",),
+         "reset zero count", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset counters", "transfer"),
+    Step("reset_step 1", ("pollJob(1)", "IN_PROGRESS"),
+         "reset write", "transfer", pause_after_s=0.05),
+    Step("xfer_assert 0 1 1", ("XFER_ASSERT PASS",),
+         "reset write count", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset counters", "transfer"),
+    Step("reset_step 15", ("pollJob(15)", "OK"),
+         "reset completion", "transfer"),
+    Step("xfer_assert 9 6 15", ("XFER_ASSERT PASS",),
+         "reset remaining count", "transfer"),
 )
 
 
@@ -724,11 +817,11 @@ def selected_steps(suite: str) -> tuple[Step, ...]:
     if suite == "functional":
         return SMOKE_STEPS + FUNCTIONAL_STEPS
     if suite == "exhaustive":
-        return SMOKE_STEPS + FUNCTIONAL_STEPS + EXHAUSTIVE_STEPS
+        return SMOKE_STEPS + FUNCTIONAL_STEPS + V3_TARGETED_STEPS
     if suite == "targeted":
-        return SMOKE_STEPS + TARGETED_STEPS
+        return SMOKE_STEPS + V3_TARGETED_STEPS
     if suite == "transfer":
-        return SMOKE_STEPS + TRANSFER_STEPS
+        return SMOKE_STEPS + V3_TRANSFER_STEPS
     raise ValueError(f"unsupported suite: {suite}")
 
 

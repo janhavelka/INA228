@@ -150,6 +150,7 @@ jobs:
           python tools/check_cli_contract.py 2>&1 | tee static-contract-logs/check_cli_contract.log
           python tools/check_idf_example_contract.py 2>&1 | tee static-contract-logs/check_idf_example_contract.log
           python tools/check_core_timing_guard.py 2>&1 | tee static-contract-logs/check_core_timing_guard.log
+          python tools/check_owner_contract.py 2>&1 | tee static-contract-logs/check_owner_contract.log
           python scripts/generate_version.py check 2>&1 | tee static-contract-logs/generate_version_check.log
 
       - name: Upload static contract logs
