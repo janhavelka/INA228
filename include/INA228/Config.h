@@ -97,6 +97,40 @@ enum class AdcRange : uint8_t {
   MV_40_96  = 1   ///< ±40.96 mV (4x higher resolution)
 };
 
+/// @brief How CURRENT_LSB is selected for SHUNT_CAL planning.
+enum class CalibrationMode : uint8_t {
+  NONE = 0,                 ///< Current-derived channels are disabled
+  FROM_MAXIMUM_CURRENT,     ///< Select the minimum LSB representing max current
+  EXPLICIT_CURRENT_LSB      ///< Use currentLsbNanoAmps as the design value
+};
+
+/// @brief Fixed-unit calibration request.
+///
+/// maxCurrentMilliAmps is required in both calibrated modes. It validates the
+/// electrical shunt range and is not silently changed to obtain a convenient
+/// CURRENT_LSB.
+struct CalibrationConfig {
+  uint32_t shuntMicroOhms = 0;
+  CalibrationMode mode = CalibrationMode::NONE;
+  uint32_t maxCurrentMilliAmps = 0;
+  uint32_t currentLsbNanoAmps = 0;
+  bool allowUnsafePlan = false; ///< Explicit opt-in to clamp/range exceedance
+};
+
+/// @brief Deterministic writable DIAG_ALRT configuration.
+struct AlertConfig {
+  bool latched = false;
+  bool conversionReady = false;
+  bool slowAlert = false;
+  bool activeHigh = false;
+};
+
+/// @brief Transport health behavior.
+enum class HealthPolicy : uint8_t {
+  PASSIVE = 0,       ///< Observe transfers but never suppress owner-requested I2C
+  LATCH_OFFLINE      ///< Legacy admission latch; recover() is required
+};
+
 /// @brief Configuration for INA228 driver.
 ///
 /// The core driver is framework-neutral and does not own the I2C bus. The
@@ -119,7 +153,7 @@ struct Config {
   uint32_t i2cTimeoutMs = 50;            ///< I2C transaction timeout in ms
 
   // === ADC Settings ===
-  Mode mode = Mode::CONT_ALL;            ///< Operating mode
+  Mode mode = Mode::CONT_ALL;            ///< Stable shutdown/continuous base mode; jobs own one-shot triggers
   ConvTime vbusConvTime = ConvTime::US_1052;  ///< Bus voltage conversion time
   ConvTime vshuntConvTime = ConvTime::US_1052; ///< Shunt voltage conversion time
   ConvTime vtempConvTime = ConvTime::US_1052;  ///< Temperature conversion time
@@ -127,6 +161,7 @@ struct Config {
   AdcRange adcRange = AdcRange::MV_163_84;     ///< Shunt full-scale range (+/-163.84 mV or +/-40.96 mV)
 
   // === Calibration ===
+  CalibrationConfig calibration{};          ///< Preferred fixed-unit calibration contract
   float shuntResistanceOhm = 0.0f;      ///< Installed Kelvin-sensed shunt value in ohms (0 = uncalibrated)
   float maxExpectedCurrentA = 0.0f;     ///< CURRENT_LSB design point in amps (0 = uncalibrated)
 
@@ -137,8 +172,15 @@ struct Config {
   // === Conversion Delay (optional) ===
   uint8_t convDelayMs2 = 0;             ///< Conversion delay in 2-ms steps (0–255 = 0–510 ms)
 
+  // === Alert Output ===
+  AlertConfig alerts{};                 ///< Explicit writable DIAG_ALRT startup state
+
+  // === Identity Policy ===
+  uint16_t supportedRevisionMask = 0x0002; ///< Bit N accepts REV_ID N (default revision 1)
+
   // === Health Tracking ===
   uint8_t offlineThreshold = 5;          ///< Consecutive failures before OFFLINE state
+  HealthPolicy healthPolicy = HealthPolicy::PASSIVE; ///< Passive external-owner default
 };
 
 } // namespace INA228

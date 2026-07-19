@@ -13,7 +13,6 @@ namespace INA228 {
 namespace {
 
 static constexpr size_t MAX_WRITE_LEN = 6;
-static constexpr uint8_t RESET_VERIFY_ATTEMPTS = 3;
 static constexpr uint32_t RESET_STARTUP_MS =
     (cmd::POR_STARTUP_US + 999U) / 1000U;
 static constexpr uint16_t DIAG_EVIDENCE_MASK =
@@ -21,24 +20,6 @@ static constexpr uint16_t DIAG_EVIDENCE_MASK =
     cmd::DIAG_TMPOL | cmd::DIAG_SHNTOL | cmd::DIAG_SHNTUL |
     cmd::DIAG_BUSOL | cmd::DIAG_BUSUL | cmd::DIAG_POL |
     cmd::DIAG_CNVRF;
-
-class ScopedOfflineI2cAllowance {
-public:
-  explicit ScopedOfflineI2cAllowance(bool& flag, bool allow) : _flag(flag), _old(flag) {
-    _flag = allow;
-  }
-
-  ~ScopedOfflineI2cAllowance() {
-    _flag = _old;
-  }
-
-  ScopedOfflineI2cAllowance(const ScopedOfflineI2cAllowance&) = delete;
-  ScopedOfflineI2cAllowance& operator=(const ScopedOfflineI2cAllowance&) = delete;
-
-private:
-  bool& _flag;
-  bool _old;
-};
 
 static bool isValidAddress(uint8_t addr) {
   return addr >= 0x40 && addr <= 0x4F;
@@ -254,174 +235,1082 @@ static Status mapPresenceReadFailure(const Status& st, const char* message) {
 // Lifecycle
 // ===========================================================================
 
-Status INA228::begin(const Config& config) {
-  _config = Config{};
+Status INA228::calculateCalibration(const CalibrationConfig& config,
+                                    AdcRange range, CalibrationPlan& out) {
+  CalibrationPlan plan{};
+  if (!isValidAdcRange(range)) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid ADC range");
+  }
+  plan.shuntFullScaleMicrovolts =
+      range == AdcRange::MV_40_96 ? 40960U : 163840U;
+  if (config.mode == CalibrationMode::NONE) {
+    if (config.shuntMicroOhms != 0 || config.maxCurrentMilliAmps != 0 ||
+        config.currentLsbNanoAmps != 0) {
+      return Status::Error(Err::INVALID_PARAM,
+                           "Uncalibrated mode requires zero calibration fields");
+    }
+    out = plan;
+    return Status::Ok();
+  }
+  if (config.mode != CalibrationMode::FROM_MAXIMUM_CURRENT &&
+      config.mode != CalibrationMode::EXPLICIT_CURRENT_LSB) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid calibration mode");
+  }
+  if (config.shuntMicroOhms == 0 || config.maxCurrentMilliAmps == 0) {
+    return Status::Error(Err::INVALID_PARAM,
+                         "Shunt and maximum current must be nonzero");
+  }
+
+  uint64_t selectedNanoAmps = 0;
+  if (config.mode == CalibrationMode::FROM_MAXIMUM_CURRENT) {
+    const uint64_t numerator =
+        static_cast<uint64_t>(config.maxCurrentMilliAmps) * 1000000ULL;
+    selectedNanoAmps = (numerator + 524287ULL) / 524288ULL;
+  } else {
+    selectedNanoAmps = config.currentLsbNanoAmps;
+  }
+  if (selectedNanoAmps == 0 ||
+      selectedNanoAmps > std::numeric_limits<uint32_t>::max()) {
+    return Status::Error(Err::INVALID_PARAM, "CURRENT_LSB is out of range");
+  }
+  plan.selectedCurrentLsbNanoAmps =
+      static_cast<uint32_t>(selectedNanoAmps);
+
+  const uint64_t requestedShuntMicrovolts =
+      (static_cast<uint64_t>(config.maxCurrentMilliAmps) *
+       config.shuntMicroOhms + 999ULL) / 1000ULL;
+  plan.maxCurrentExceedsShuntRange =
+      requestedShuntMicrovolts > plan.shuntFullScaleMicrovolts;
+
+  const double rangeMultiplier =
+      range == AdcRange::MV_40_96 ? 4.0 : 1.0;
+  double requestedCal = cmd::SHUNT_CAL_FACTOR *
+      (static_cast<double>(selectedNanoAmps) * 1.0e-9) *
+      (static_cast<double>(config.shuntMicroOhms) * 1.0e-6) *
+      rangeMultiplier;
+  if (!std::isfinite(requestedCal) || requestedCal <= 0.0) {
+    return Status::Error(Err::INVALID_PARAM, "Calibration is out of range");
+  }
+  if (requestedCal > cmd::MASK_SHUNT_CAL) {
+    plan.clamped = true;
+    requestedCal = cmd::MASK_SHUNT_CAL;
+  }
+  const uint32_t rounded = static_cast<uint32_t>(std::round(requestedCal));
+  if (rounded == 0) {
+    return Status::Error(Err::INVALID_PARAM, "Calibration underflows SHUNT_CAL");
+  }
+  plan.shuntCal = static_cast<uint16_t>(rounded) & cmd::MASK_SHUNT_CAL;
+
+  const double effectiveNanoAmps =
+      (static_cast<double>(plan.shuntCal) * 1.0e9) /
+      (cmd::SHUNT_CAL_FACTOR *
+       (static_cast<double>(config.shuntMicroOhms) * 1.0e-6) *
+       rangeMultiplier);
+  if (!std::isfinite(effectiveNanoAmps) || effectiveNanoAmps <= 0.0 ||
+      effectiveNanoAmps > std::numeric_limits<uint32_t>::max()) {
+    return Status::Error(Err::INVALID_PARAM, "Effective CURRENT_LSB is out of range");
+  }
+  plan.effectiveCurrentLsbNanoAmps =
+      static_cast<uint32_t>(std::round(effectiveNanoAmps));
+  plan.representableCurrentMilliAmps = static_cast<uint32_t>(
+      (static_cast<uint64_t>(plan.effectiveCurrentLsbNanoAmps) * 524287ULL) /
+      1000000ULL);
+  plan.maxCurrentExceedsCurrentRegister =
+      config.maxCurrentMilliAmps > plan.representableCurrentMilliAmps;
+  plan.quantized = plan.effectiveCurrentLsbNanoAmps !=
+                   plan.selectedCurrentLsbNanoAmps;
+
+  if (!config.allowUnsafePlan &&
+      (plan.clamped || plan.maxCurrentExceedsShuntRange ||
+       plan.maxCurrentExceedsCurrentRegister)) {
+    return Status::Error(Err::INVALID_CONFIG,
+                         plan.clamped ? "SHUNT_CAL would clamp" :
+                         plan.maxCurrentExceedsShuntRange ?
+                           "Maximum current exceeds shunt range" :
+                           "CURRENT_LSB cannot represent maximum current");
+  }
+  out = plan;
+  return Status::Ok();
+}
+
+Status INA228::parseDeviceIdentity(uint16_t manufacturerId, uint16_t deviceId,
+                                   DeviceIdentity& out) {
+  if (manufacturerId != cmd::MANUFACTURER_ID) {
+    return Status::Error(Err::DEVICE_ID_MISMATCH,
+                         "Manufacturer ID mismatch", manufacturerId);
+  }
+  const uint16_t dieId = static_cast<uint16_t>(
+      (deviceId & cmd::DEVICE_DIE_ID_MASK) >> 4);
+  if (dieId != cmd::DEVICE_DIE_ID) {
+    return Status::Error(Err::DEVICE_ID_MISMATCH,
+                         "INA228 die ID mismatch", deviceId);
+  }
+  DeviceIdentity parsed{};
+  parsed.manufacturerId = manufacturerId;
+  parsed.dieId = dieId;
+  parsed.revision = static_cast<uint8_t>(deviceId & cmd::DEVICE_REV_ID_MASK);
+  out = parsed;
+  return Status::Ok();
+}
+
+Status INA228::_validateBinding(const Config& config, CalibrationPlan& plan,
+                                bool& usesFixedCalibration) const {
+  if (config.i2cWrite == nullptr || config.i2cWriteRead == nullptr) {
+    return Status::Error(Err::INVALID_CONFIG, "I2C callbacks not set");
+  }
+  if (config.i2cTimeoutMs == 0 || !isValidAddress(config.i2cAddress)) {
+    return Status::Error(Err::INVALID_CONFIG, "Invalid I2C address or timeout");
+  }
+  if (!isValidMode(config.mode) || !isValidConvTime(config.vbusConvTime) ||
+      !isValidConvTime(config.vshuntConvTime) ||
+      !isValidConvTime(config.vtempConvTime) ||
+      !isValidAveraging(config.averaging) || !isValidAdcRange(config.adcRange)) {
+    return Status::Error(Err::INVALID_CONFIG, "Invalid ADC configuration");
+  }
+  if (isTriggeredMode(config.mode)) {
+    return Status::Error(
+        Err::INVALID_CONFIG,
+        "Bound base mode must be shutdown or continuous; use a triggered job");
+  }
+  if (config.shuntTempCoeffPpmC > cmd::TEMPCO_MAX ||
+      config.supportedRevisionMask == 0) {
+    return Status::Error(Err::INVALID_CONFIG,
+                         "Invalid temperature coefficient or revision policy");
+  }
+  usesFixedCalibration = config.calibration.mode != CalibrationMode::NONE ||
+      config.calibration.shuntMicroOhms != 0 ||
+      config.calibration.maxCurrentMilliAmps != 0 ||
+      config.calibration.currentLsbNanoAmps != 0;
+  if (usesFixedCalibration) {
+    if (config.shuntResistanceOhm != 0.0f || config.maxExpectedCurrentA != 0.0f) {
+      return Status::Error(Err::INVALID_CONFIG,
+                           "Choose fixed-unit or legacy calibration, not both");
+    }
+    Status st = calculateCalibration(config.calibration, config.adcRange, plan);
+    return st.ok() ? st : Status::Error(Err::INVALID_CONFIG, st.msg, st.detail);
+  }
+  if (!std::isfinite(config.shuntResistanceOhm) ||
+      !std::isfinite(config.maxExpectedCurrentA) ||
+      config.shuntResistanceOhm < 0.0f || config.maxExpectedCurrentA < 0.0f ||
+      ((config.shuntResistanceOhm > 0.0f) !=
+       (config.maxExpectedCurrentA > 0.0f))) {
+    return Status::Error(Err::INVALID_CONFIG, "Invalid legacy calibration");
+  }
+  if (config.shuntResistanceOhm == 0.0f) {
+    plan = CalibrationPlan{};
+    plan.shuntFullScaleMicrovolts =
+        config.adcRange == AdcRange::MV_40_96 ? 40960U : 163840U;
+    return Status::Ok();
+  }
+  uint16_t shuntCal = 0;
+  float currentLsb = 0.0f;
+  bool clamped = false;
+  bool exceeds = false;
+  Status st = computeCalibration(config.shuntResistanceOhm,
+                                 config.maxExpectedCurrentA, config.adcRange,
+                                 shuntCal, currentLsb, clamped, exceeds);
+  if (!st.ok()) {
+    return Status::Error(Err::INVALID_CONFIG, st.msg, st.detail);
+  }
+  if (clamped || exceeds) {
+    return Status::Error(Err::INVALID_CONFIG,
+                         clamped ? "Legacy SHUNT_CAL would clamp" :
+                                   "Legacy maximum current exceeds shunt range");
+  }
+  plan = CalibrationPlan{};
+  plan.shuntCal = shuntCal;
+  plan.selectedCurrentLsbNanoAmps = static_cast<uint32_t>(std::round(
+      static_cast<double>(config.maxExpectedCurrentA) * 1.0e9 / 524288.0));
+  plan.effectiveCurrentLsbNanoAmps = static_cast<uint32_t>(std::round(
+      static_cast<double>(currentLsb) * 1.0e9));
+  plan.representableCurrentMilliAmps = static_cast<uint32_t>(
+      (static_cast<uint64_t>(plan.effectiveCurrentLsbNanoAmps) * 524287ULL) /
+      1000000ULL);
+  plan.shuntFullScaleMicrovolts =
+      config.adcRange == AdcRange::MV_40_96 ? 40960U : 163840U;
+  plan.quantized = plan.selectedCurrentLsbNanoAmps !=
+                   plan.effectiveCurrentLsbNanoAmps;
+  plan.clamped = clamped;
+  plan.maxCurrentExceedsShuntRange = exceeds;
+  return Status::Ok();
+}
+
+Status INA228::bind(const Config& config) {
+  if (_cooperativeJobActive() || _terminalResultAvailable) {
+    return Status::Error(Err::BUSY, "Consume or cancel current job before bind");
+  }
+  CalibrationPlan plan{};
+  bool usesFixed = false;
+  Status st = _validateBinding(config, plan, usesFixed);
+  if (!st.ok()) return st;
+
+  _config = config;
+  if (_config.offlineThreshold == 0) _config.offlineThreshold = 1;
+  _bound = true;
   _initialized = false;
   _driverState = DriverState::UNINIT;
-  _allowOfflineI2c = false;
-
+  _hardwareState = HardwareState::UNKNOWN;
+  _deviceIdentity = DeviceIdentity{};
+  _deviceIdentityValid = false;
+  _calibrationPlan = plan;
+  _usesFixedCalibration = usesFixed;
+  _shuntCal = plan.shuntCal;
+  _currentLsb = _plannedCurrentLsbAmps();
+  _calibrationClamped = plan.clamped;
+  _maxCurrentExceedsShuntRange = plan.maxCurrentExceedsShuntRange;
+  _diagAlertConfigBits = _desiredDiagConfigBits();
+  _diagAlertSnapshot = DiagAlertSnapshot{};
+  _diagnosticEvents = DiagnosticEvents{};
+  _clearHardwareDirty();
+  _hardwareDirty = true;
+  _hardwareDirtyCause = Status::Error(
+      Err::HARDWARE_STATE_UNKNOWN, "Bound hardware has not been verified");
+  _trigPending = false;
+  _accumulationReady = false;
+  _configurationGeneration = 0;
+  _accumulatorGeneration = 0;
+  _accumulatorResetAtMs = 0;
   _lastOkMs = 0;
   _lastErrorMs = 0;
   _lastError = Status::Ok();
   _consecutiveFailures = 0;
   _totalFailures = 0;
   _totalSuccess = 0;
-
-  _currentLsb = 0.0f;
-  _shuntCal = 0;
-  _calibrationClamped = false;
-  _maxCurrentExceedsShuntRange = false;
-  _hardwareDirty = false;
-  _dirtyRegisterMask = 0;
-  _hardwareDirtyCause = Status::Ok();
-  _thresholdsDirty = false;
-  _trigPending = false;
-  _trigStartMs = 0;
-  _accumulationReady = false;
-  _diagAlertConfigBits = 0;
-  _diagAlertSnapshot = DiagAlertSnapshot{};
-  _clearAsyncJob();
-
-  if (config.i2cWrite == nullptr || config.i2cWriteRead == nullptr) {
-    return Status::Error(Err::INVALID_CONFIG, "I2C callbacks not set");
-  }
-  if (config.i2cTimeoutMs == 0) {
-    return Status::Error(Err::INVALID_CONFIG, "I2C timeout must be > 0");
-  }
-  if (!isValidAddress(config.i2cAddress)) {
-    return Status::Error(Err::INVALID_CONFIG, "Invalid I2C address (0x40-0x4F)");
-  }
-  if (!isValidMode(config.mode)) {
-    return Status::Error(Err::INVALID_CONFIG, "Invalid operating mode");
-  }
-  if (!isValidConvTime(config.vbusConvTime) ||
-      !isValidConvTime(config.vshuntConvTime) ||
-      !isValidConvTime(config.vtempConvTime)) {
-    return Status::Error(Err::INVALID_CONFIG, "Invalid conversion time");
-  }
-  if (!isValidAveraging(config.averaging)) {
-    return Status::Error(Err::INVALID_CONFIG, "Invalid averaging count");
-  }
-  if (!isValidAdcRange(config.adcRange)) {
-    return Status::Error(Err::INVALID_CONFIG, "Invalid ADC range");
-  }
-  if (config.shuntTempCoeffPpmC > cmd::TEMPCO_MAX) {
-    return Status::Error(Err::INVALID_CONFIG, "Shunt temp coeff exceeds 16383");
-  }
-  if (!std::isfinite(config.shuntResistanceOhm) ||
-      !std::isfinite(config.maxExpectedCurrentA)) {
-    return Status::Error(Err::INVALID_CONFIG, "Calibration values must be finite");
-  }
-  if ((config.shuntResistanceOhm > 0.0f) != (config.maxExpectedCurrentA > 0.0f)) {
-    return Status::Error(Err::INVALID_CONFIG, "Incomplete calibration values");
-  }
-  if (config.shuntResistanceOhm < 0.0f || config.maxExpectedCurrentA < 0.0f) {
-    return Status::Error(Err::INVALID_CONFIG, "Calibration values must be >= 0");
-  }
-  if (config.shuntResistanceOhm > 0.0f) {
-    uint16_t cal = 0;
-    float lsb = 0.0f;
-    bool clamped = false;
-    bool maxCurrentExceedsRange = false;
-    Status calStatus = computeCalibration(config.shuntResistanceOhm,
-                                          config.maxExpectedCurrentA,
-                                          config.adcRange,
-                                          cal,
-                                          lsb,
-                                          clamped,
-                                          maxCurrentExceedsRange);
-    if (!calStatus.ok()) {
-      return Status::Error(Err::INVALID_CONFIG, calStatus.msg, calStatus.detail);
-    }
-  }
-
-  _config = config;
-  if (_config.offlineThreshold == 0) {
-    _config.offlineThreshold = 1;
-  }
-
-  auto failBeginAfterConfig = [this](const Status& failure,
-                                     bool hardwareMayDiffer = false) {
-    _config = Config{};
-    _allowOfflineI2c = false;
-    _currentLsb = 0.0f;
-    _shuntCal = 0;
-    _calibrationClamped = false;
-    _maxCurrentExceedsShuntRange = false;
-    _hardwareDirty = false;
-    _dirtyRegisterMask = 0;
-    _hardwareDirtyCause = Status::Ok();
-    _thresholdsDirty = false;
-    _trigPending = false;
-    _trigStartMs = 0;
-    _accumulationReady = false;
-    _diagAlertConfigBits = 0;
-    _diagAlertSnapshot = DiagAlertSnapshot{};
-    _clearAsyncJob();
-    if (hardwareMayDiffer) {
-      _markConfigReplayDirty(failure);
-      _markCalibrationDirty(failure);
-      _markThresholdsDirty();
-    }
-    return failure;
-  };
-
-  // Verify device identity using raw reads (before health tracking is active)
-  uint16_t mfgId = 0;
-  Status st = _readReg16Raw(cmd::REG_MANUFACTURER_ID, mfgId);
-  if (!st.ok()) {
-    return failBeginAfterConfig(
-        mapPresenceReadFailure(st, "Device not responding"));
-  }
-  if (mfgId != cmd::MANUFACTURER_ID) {
-    return failBeginAfterConfig(
-        Status::Error(Err::DEVICE_ID_MISMATCH, "Manufacturer ID mismatch",
-                      static_cast<int32_t>(mfgId)));
-  }
-
-  uint16_t devId = 0;
-  st = _readReg16Raw(cmd::REG_DEVICE_ID, devId);
-  if (!st.ok()) {
-    return failBeginAfterConfig(
-        mapPresenceReadFailure(st, "Device ID read failed"));
-  }
-  if (devId != cmd::DEVICE_ID) {
-    return failBeginAfterConfig(
-        Status::Error(Err::DEVICE_ID_MISMATCH, "Device ID mismatch",
-                      static_cast<int32_t>(devId)));
-  }
-
-  // Check MEMSTAT bit
-  uint16_t diagAlrt = 0;
-  st = _readDiagAlertRaw(diagAlrt);
-  if (!st.ok()) {
-    return failBeginAfterConfig(
-        mapPresenceReadFailure(st, "DIAG_ALRT read failed"));
-  }
-  if ((diagAlrt & cmd::DIAG_MEMSTAT) == 0) {
-    return failBeginAfterConfig(
-        Status::Error(Err::MEMORY_ERROR, "NV trim memory checksum error"));
-  }
-
-  // Apply configuration
-  st = _applyConfig();
-  if (!st.ok()) {
-    return failBeginAfterConfig(st, true);
-  }
-
-  // Apply calibration if provided
-  st = _applyCalibration();
-  if (!st.ok()) {
-    return failBeginAfterConfig(st, true);
-  }
-
-  _initialized = true;
-  _driverState = DriverState::READY;
-  if (isTriggeredMode(_config.mode)) {
-    _markTriggeredConversionStarted(_nowMs());
-  }
-
+  _clearCooperativeState();
   return Status::Ok();
+}
+
+uint16_t INA228::_desiredDiagConfigBits() const {
+  uint16_t bits = 0;
+  if (_config.alerts.latched) bits |= cmd::DIAG_ALATCH;
+  if (_config.alerts.conversionReady) bits |= cmd::DIAG_CNVR;
+  if (_config.alerts.slowAlert) bits |= cmd::DIAG_SLOWALERT;
+  if (_config.alerts.activeHigh) bits |= cmd::DIAG_APOL;
+  return bits;
+}
+
+uint16_t INA228::_triggeredAllAdcConfig() const {
+  return static_cast<uint16_t>(
+      (static_cast<uint16_t>(Mode::TRIG_ALL) << cmd::BIT_ADC_MODE) |
+      (static_cast<uint16_t>(_config.vbusConvTime) << cmd::BIT_ADC_VBUSCT) |
+      (static_cast<uint16_t>(_config.vshuntConvTime) << cmd::BIT_ADC_VSHCT) |
+      (static_cast<uint16_t>(_config.vtempConvTime) << cmd::BIT_ADC_VTCT) |
+      (static_cast<uint16_t>(_config.averaging) << cmd::BIT_ADC_AVG));
+}
+
+float INA228::_plannedCurrentLsbAmps() const {
+  if (_calibrationPlan.shuntCal == 0) return 0.0f;
+  const double shuntOhms = _usesFixedCalibration
+      ? static_cast<double>(_config.calibration.shuntMicroOhms) * 1.0e-6
+      : static_cast<double>(_config.shuntResistanceOhm);
+  if (shuntOhms <= 0.0) return 0.0f;
+  const double rangeMultiplier =
+      _config.adcRange == AdcRange::MV_40_96 ? 4.0 : 1.0;
+  return static_cast<float>(static_cast<double>(_calibrationPlan.shuntCal) /
+      (cmd::SHUNT_CAL_FACTOR * shuntOhms * rangeMultiplier));
+}
+
+uint32_t INA228::_nextOperationIdValue() {
+  uint32_t value = _nextOperationId;
+  if (value == 0) value = 1;
+  _nextOperationId = value + 1U;
+  if (_nextOperationId == 0) _nextOperationId = 1;
+  return value;
+}
+
+bool INA228::_cooperativeJobActive() const {
+  return _jobSnapshot.state == JobState::ACTIVE;
+}
+
+bool INA228::_hardwareAccessAllowed() const {
+  return _jobPollActive ||
+         (!_cooperativeJobActive() && !_terminalResultAvailable);
+}
+
+void INA228::_clearCooperativeState() {
+  _jobSnapshot = JobSnapshot{};
+  _jobPhase = JobPhase::IDLE;
+  _terminalResult = JobResult{};
+  _terminalResultAvailable = false;
+  _jobPollActive = false;
+  _jobHadSuccessfulWrite = false;
+  _jobTouchedRegisterMask = 0;
+  _jobIdentityScratch = DeviceIdentity{};
+  _sampleScratch = InstantaneousSample{};
+  _jobReadback = 0;
+  _jobWaitStartMs = 0;
+  _jobDeferredStatus = Status::Ok();
+}
+
+void INA228::_setJobPhase(JobPhase phase) {
+  _jobPhase = phase;
+  _jobSnapshot.phase = static_cast<uint16_t>(phase);
+}
+
+Status INA228::_startJob(JobKind kind, JobPhase firstPhase,
+                         uint32_t requestToken, uint32_t& operationId) {
+  if (!_bound) {
+    return Status::Error(Err::NOT_BOUND, "bind() has not completed");
+  }
+  if (_cooperativeJobActive() || _terminalResultAvailable) {
+    return Status::Error(Err::BUSY, "A job or unconsumed result already exists");
+  }
+
+  const uint32_t id = _nextOperationIdValue();
+  _jobSnapshot = JobSnapshot{};
+  _jobSnapshot.kind = kind;
+  _jobSnapshot.state = JobState::ACTIVE;
+  _jobSnapshot.operationId = id;
+  _jobSnapshot.requestToken = requestToken;
+  _jobSnapshot.startConfigurationGeneration = _configurationGeneration;
+  _jobSnapshot.configurationGeneration = _configurationGeneration;
+  _jobSnapshot.startedAtMs = _nowMs();
+  _jobSnapshot.status = Status{Err::IN_PROGRESS, 0, "Job in progress"};
+  _setJobPhase(firstPhase);
+  _jobHadSuccessfulWrite = false;
+  _jobTouchedRegisterMask = 0;
+  _jobIdentityScratch = DeviceIdentity{};
+  _sampleScratch = InstantaneousSample{};
+  _sampleScratch.operationId = id;
+  _sampleScratch.requestToken = requestToken;
+  _sampleScratch.configurationGeneration = _configurationGeneration;
+  _jobReadback = 0;
+  _jobWaitStartMs = 0;
+  _jobDeferredStatus = Status::Ok();
+  operationId = id;
+  return Status::Ok();
+}
+
+Status INA228::startInitialize(uint32_t requestToken, uint32_t& operationId) {
+  return _startJob(JobKind::INITIALIZE, JobPhase::READ_MANUFACTURER,
+                   requestToken, operationId);
+}
+
+Status INA228::startReinitialize(uint32_t requestToken, uint32_t& operationId) {
+  return _startJob(JobKind::REINITIALIZE, JobPhase::READ_MANUFACTURER,
+                   requestToken, operationId);
+}
+
+Status INA228::startVerifyConfiguration(uint32_t requestToken,
+                                        uint32_t& operationId) {
+  if (!_initialized || _hardwareState != HardwareState::SYNCHRONIZED) {
+    return Status::Error(Err::HARDWARE_STATE_UNKNOWN,
+                         "Initialize hardware before verification");
+  }
+  return _startJob(JobKind::VERIFY_CONFIGURATION,
+                   JobPhase::READ_MANUFACTURER, requestToken, operationId);
+}
+
+Status INA228::startInstantaneousSample(uint32_t requestToken,
+                                        uint32_t& operationId) {
+  if (!_initialized || _hardwareState != HardwareState::SYNCHRONIZED) {
+    return Status::Error(Err::HARDWARE_STATE_UNKNOWN,
+                         "Initialize hardware before sampling");
+  }
+  if (_calibrationPlan.shuntCal == 0) {
+    return Status::Error(Err::INVALID_CONFIG,
+                         "Instantaneous current/power sample requires calibration");
+  }
+  if (isTriggeredMode(_config.mode)) {
+    return Status::Error(Err::INVALID_CONFIG,
+                         "Instantaneous job requires shutdown or continuous base mode");
+  }
+  return _startJob(JobKind::INSTANTANEOUS_SAMPLE,
+                   JobPhase::SAMPLE_VERIFY_CONFIG, requestToken, operationId);
+}
+
+Status INA228::startReset(uint32_t requestToken, uint32_t& operationId) {
+  if (!_initialized || _hardwareState != HardwareState::SYNCHRONIZED) {
+    return Status::Error(Err::HARDWARE_STATE_UNKNOWN,
+                         "Initialize hardware before reset");
+  }
+  return _startJob(JobKind::RESET, JobPhase::RESET_WRITE,
+                   requestToken, operationId);
+}
+
+Status INA228::startAccumulatorReset(uint32_t requestToken,
+                                     uint32_t& operationId) {
+  if (!_initialized || _hardwareState != HardwareState::SYNCHRONIZED) {
+    return Status::Error(Err::HARDWARE_STATE_UNKNOWN,
+                         "Initialize hardware before accumulator reset");
+  }
+  return _startJob(JobKind::ACCUMULATOR_RESET,
+                   JobPhase::ACCUMULATOR_WRITE, requestToken, operationId);
+}
+
+Status INA228::_finishJob(const Status& status, JobState state,
+                          JobEffect effect, uint32_t nowMs) {
+  _jobSnapshot.state = state;
+  _jobSnapshot.effect = effect;
+  _jobSnapshot.status = status;
+  _jobSnapshot.finishedAtMs = nowMs;
+  _jobSnapshot.configurationGeneration = _configurationGeneration;
+  _jobSnapshot.resultAvailable = true;
+  _terminalResult = JobResult{};
+  _terminalResult.job = _jobSnapshot;
+  if (_jobSnapshot.kind == JobKind::INSTANTANEOUS_SAMPLE &&
+      _sampleScratch.raw.diagAlertValid) {
+    _terminalResult.hasInstantaneousSample = true;
+    _terminalResult.instantaneousSample = _sampleScratch;
+  }
+  _terminalResultAvailable = true;
+  _jobPollActive = false;
+  return status;
+}
+
+Status INA228::_failJob(const Status& status, bool failedWrite,
+                        uint32_t nowMs) {
+  const bool identityJob = _jobSnapshot.kind == JobKind::INITIALIZE ||
+                           _jobSnapshot.kind == JobKind::REINITIALIZE;
+  JobEffect effect = JobEffect::NONE;
+  if (failedWrite) {
+    effect = JobEffect::INDETERMINATE;
+  } else if (_jobHadSuccessfulWrite) {
+    effect = JobEffect::PARTIAL;
+  }
+  if (failedWrite || _jobHadSuccessfulWrite || identityJob ||
+      _jobSnapshot.kind == JobKind::VERIFY_CONFIGURATION ||
+      _jobSnapshot.kind == JobKind::INSTANTANEOUS_SAMPLE) {
+    _hardwareState = HardwareState::RESYNC_REQUIRED;
+    _initialized = false;
+    _driverState = DriverState::UNINIT;
+    _hardwareDirty = true;
+    _dirtyRegisterMask |= _jobTouchedRegisterMask;
+    _hardwareDirtyCause = status;
+    _deviceIdentityValid = false;
+    _invalidateAccumulatorEpoch();
+  }
+  return _finishJob(status, JobState::FAILED, effect, nowMs);
+}
+
+Status INA228::_cancelJob(const Status& status, JobState state) {
+  if (!_cooperativeJobActive()) {
+    return Status::Ok();
+  }
+  JobEffect effect = JobEffect::NONE;
+  const bool identityJob = _jobSnapshot.kind == JobKind::INITIALIZE ||
+                           _jobSnapshot.kind == JobKind::REINITIALIZE;
+  if (_jobHadSuccessfulWrite || identityJob) {
+    if (_jobHadSuccessfulWrite) effect = JobEffect::PARTIAL;
+    _hardwareState = HardwareState::RESYNC_REQUIRED;
+    _initialized = false;
+    _driverState = DriverState::UNINIT;
+    _hardwareDirty = true;
+    _dirtyRegisterMask |= _jobTouchedRegisterMask;
+    _hardwareDirtyCause = status;
+    _deviceIdentityValid = false;
+    _invalidateAccumulatorEpoch();
+  }
+  _sampleScratch = InstantaneousSample{};
+  return _finishJob(status, state, effect, _nowMs());
+}
+
+Status INA228::cancelJob() {
+  return _cancelJob(Status::Error(Err::CANCELLED, "Job cancelled by owner"),
+                    JobState::CANCELLED);
+}
+
+Status INA228::timeoutJob() {
+  return _cancelJob(Status::Error(Err::OPERATION_TIMEOUT,
+                                  "Owner operation deadline expired"),
+                    JobState::TIMED_OUT);
+}
+
+Status INA228::getJobState(JobSnapshot& out) const {
+  out = _jobSnapshot;
+  out.resultAvailable = _terminalResultAvailable;
+  return Status::Ok();
+}
+
+Status INA228::getJobLimits(JobKind kind, JobLimits& out) const {
+  if (!_bound) {
+    return Status::Error(Err::NOT_BOUND, "bind() has not completed");
+  }
+  JobLimits limits{};
+  switch (kind) {
+    case JobKind::INITIALIZE:
+    case JobKind::REINITIALIZE:
+      limits.maxTransfers = 14;
+      break;
+    case JobKind::VERIFY_CONFIGURATION:
+      limits.maxTransfers = 8;
+      break;
+    case JobKind::INSTANTANEOUS_SAMPLE:
+      limits.operationClass = OperationClass::STEADY_STATE;
+      limits.maxTransfers = 11;
+      limits.maxWaitMicroseconds =
+          (static_cast<uint32_t>(convTimeUs(_config.vbusConvTime)) +
+           convTimeUs(_config.vshuntConvTime) +
+           convTimeUs(_config.vtempConvTime)) * avgCount(_config.averaging) +
+          static_cast<uint32_t>(_config.convDelayMs2) * 2000U +
+          cmd::SHUTDOWN_WAKEUP_US;
+      limits.maxWaitMicroseconds =
+          ((limits.maxWaitMicroseconds + 999U) / 1000U) * 1000U;
+      break;
+    case JobKind::RESET:
+      limits.operationClass = OperationClass::MAINTENANCE;
+      limits.maxTransfers = 16;
+      limits.maxWaitMicroseconds = RESET_STARTUP_MS * 1000U;
+      break;
+    case JobKind::ACCUMULATOR_RESET:
+      limits.operationClass = OperationClass::MULTI_STEP_RUNTIME;
+      limits.maxTransfers = 2;
+      break;
+    case JobKind::NONE:
+      return Status::Error(Err::INVALID_PARAM, "NONE has no job limits");
+  }
+  out = limits;
+  return Status::Ok();
+}
+
+Status INA228::takeJobResult(uint32_t expectedOperationId, JobResult& out) {
+  if (expectedOperationId == 0) {
+    return Status::Error(Err::INVALID_PARAM, "Operation ID must be nonzero");
+  }
+  if (_cooperativeJobActive()) {
+    if (_jobSnapshot.operationId != expectedOperationId) {
+      return Status::Error(Err::STALE_RESULT, "Operation ID does not match active job");
+    }
+    return Status{Err::IN_PROGRESS, 0, "Job has not reached a terminal state"};
+  }
+  if (!_terminalResultAvailable) {
+    return Status::Error(Err::RESULT_NOT_AVAILABLE,
+                         "Terminal result already consumed or unavailable");
+  }
+  if (_terminalResult.job.operationId != expectedOperationId) {
+    return Status::Error(Err::STALE_RESULT,
+                         "Operation ID does not match terminal result");
+  }
+  out = _terminalResult;
+  _terminalResultAvailable = false;
+  _jobSnapshot.resultAvailable = false;
+  _terminalResult = JobResult{};
+  return Status::Ok();
+}
+
+Status INA228::invalidateHardwareState(const Status& cause) {
+  if (!_bound) {
+    return Status::Error(Err::NOT_BOUND, "bind() has not completed");
+  }
+  Status reason = cause.ok() ?
+      Status::Error(Err::HARDWARE_STATE_UNKNOWN,
+                    "Hardware state invalidated by owner") : cause;
+  Status result = Status::Ok();
+  if (_cooperativeJobActive()) {
+    result = _cancelJob(reason, JobState::FAILED);
+  }
+  _hardwareState = HardwareState::RESYNC_REQUIRED;
+  _initialized = false;
+  _driverState = DriverState::UNINIT;
+  _hardwareDirty = true;
+  _hardwareDirtyCause = reason;
+  _dirtyRegisterMask = 0;
+  _deviceIdentityValid = false;
+  _invalidateAccumulatorEpoch();
+  return result;
+}
+
+Status INA228::getDeviceIdentity(DeviceIdentity& out) const {
+  if (!_deviceIdentityValid || !_initialized ||
+      _hardwareState != HardwareState::SYNCHRONIZED) {
+    return Status::Error(Err::HARDWARE_STATE_UNKNOWN,
+                         "Verified identity is not available");
+  }
+  out = _deviceIdentity;
+  return Status::Ok();
+}
+
+Status INA228::getCalibrationPlan(CalibrationPlan& out) const {
+  if (!_bound) {
+    return Status::Error(Err::NOT_BOUND, "bind() has not completed");
+  }
+  out = _calibrationPlan;
+  return Status::Ok();
+}
+
+Status INA228::getDiagnosticEvents(DiagnosticEvents& out) const {
+  out = _diagnosticEvents;
+  return Status::Ok();
+}
+
+Status INA228::acknowledgeDiagnosticEvents(uint16_t mask) {
+  const uint16_t acknowledged = mask & DIAG_EVIDENCE_MASK;
+  _diagnosticEvents.stickyEvents &= static_cast<uint16_t>(~acknowledged);
+  _diagnosticEvents.newlyObservedEvents &= static_cast<uint16_t>(~acknowledged);
+  for (uint8_t bit = 0; bit < 16; ++bit) {
+    if ((acknowledged & (static_cast<uint16_t>(1U) << bit)) != 0) {
+      _diagnosticEvents.firstObservedAtMs[bit] = 0;
+    }
+  }
+  return Status::Ok();
+}
+
+Status INA228::_verifyRegister(uint8_t reg, uint16_t actual,
+                               uint16_t expected, uint16_t mask) const {
+  if ((actual & mask) != (expected & mask)) {
+    return Status::Error(Err::CONFIG_MISMATCH,
+                         "Register readback mismatch",
+                         (static_cast<int32_t>(reg) << 16) | actual);
+  }
+  return Status::Ok();
+}
+
+Status INA228::_pollJobTransfer(uint32_t nowMs) {
+  ++_jobSnapshot.transfersCompleted;
+  Status st = Status::Ok();
+  uint16_t raw16 = 0;
+  uint32_t raw24 = 0;
+
+  switch (_jobPhase) {
+    case JobPhase::READ_MANUFACTURER:
+      st = readReg16(cmd::REG_MANUFACTURER_ID, raw16);
+      if (!st.ok()) {
+        return _failJob(mapPresenceReadFailure(st, "Manufacturer ID read failed"),
+                        false, nowMs);
+      }
+      _jobIdentityScratch = DeviceIdentity{};
+      _jobIdentityScratch.manufacturerId = raw16;
+      _setJobPhase(JobPhase::READ_DEVICE);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::READ_DEVICE: {
+      st = readReg16(cmd::REG_DEVICE_ID, raw16);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      DeviceIdentity parsed{};
+      st = parseDeviceIdentity(_jobIdentityScratch.manufacturerId, raw16,
+                               parsed);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      if ((_config.supportedRevisionMask &
+           (static_cast<uint16_t>(1U) << parsed.revision)) == 0) {
+        return _failJob(Status::Error(Err::UNSUPPORTED_REVISION,
+                                      "Unsupported INA228 revision",
+                                      parsed.revision), false, nowMs);
+      }
+      _jobIdentityScratch = parsed;
+      _setJobPhase(JobPhase::READ_DIAG);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+    }
+
+    case JobPhase::READ_DIAG:
+      st = readReg16(cmd::REG_DIAG_ALRT, raw16);
+      if (!st.ok()) return _failJob(st, true, nowMs);
+      _captureDiagAlert(raw16, nowMs);
+      if ((raw16 & cmd::DIAG_MEMSTAT) == 0) {
+        return _failJob(Status::Error(Err::MEMORY_ERROR,
+                                      "NV trim memory checksum error"),
+                        false, nowMs);
+      }
+      if (_jobSnapshot.kind == JobKind::VERIFY_CONFIGURATION) {
+        _setJobPhase(JobPhase::VERIFY_CONFIG);
+      } else {
+        _setJobPhase(JobPhase::WRITE_ADC_SHUTDOWN);
+      }
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::WRITE_ADC_SHUTDOWN: {
+      _jobTouchedRegisterMask |= (1ULL << cmd::REG_ADC_CONFIG);
+      const uint16_t shutdown = static_cast<uint16_t>(
+          _buildAdcConfig() & ~cmd::MASK_ADC_MODE);
+      st = writeReg16(cmd::REG_ADC_CONFIG, shutdown);
+      if (!st.ok()) return _failJob(st, true, nowMs);
+      _jobHadSuccessfulWrite = true;
+      _setJobPhase(JobPhase::WRITE_CONFIG);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+    }
+
+    case JobPhase::WRITE_CONFIG:
+      _jobTouchedRegisterMask |= (1ULL << cmd::REG_CONFIG);
+      st = writeReg16(cmd::REG_CONFIG, _buildConfig());
+      if (!st.ok()) return _failJob(st, true, nowMs);
+      _jobHadSuccessfulWrite = true;
+      _setJobPhase(JobPhase::WRITE_DIAG);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::WRITE_DIAG:
+      _jobTouchedRegisterMask |= (1ULL << cmd::REG_DIAG_ALRT);
+      st = writeReg16(cmd::REG_DIAG_ALRT, _desiredDiagConfigBits());
+      if (!st.ok()) return _failJob(st, true, nowMs);
+      _jobHadSuccessfulWrite = true;
+      _diagAlertConfigBits = _desiredDiagConfigBits();
+      _setJobPhase(JobPhase::WRITE_TEMPCO);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::WRITE_TEMPCO:
+      _jobTouchedRegisterMask |= (1ULL << cmd::REG_SHUNT_TEMPCO);
+      st = writeReg16(cmd::REG_SHUNT_TEMPCO,
+                      _config.shuntTempCoeffPpmC & cmd::MASK_SHUNT_TEMPCO);
+      if (!st.ok()) return _failJob(st, true, nowMs);
+      _jobHadSuccessfulWrite = true;
+      _setJobPhase(JobPhase::WRITE_SHUNT_CAL);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::WRITE_SHUNT_CAL:
+      _jobTouchedRegisterMask |= (1ULL << cmd::REG_SHUNT_CAL);
+      st = writeReg16(cmd::REG_SHUNT_CAL, _calibrationPlan.shuntCal);
+      if (!st.ok()) return _failJob(st, true, nowMs);
+      _jobHadSuccessfulWrite = true;
+      _setJobPhase(JobPhase::WRITE_ADC_CONFIG);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::WRITE_ADC_CONFIG:
+      _jobTouchedRegisterMask |= (1ULL << cmd::REG_ADC_CONFIG);
+      st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
+      if (!st.ok()) return _failJob(st, true, nowMs);
+      _jobHadSuccessfulWrite = true;
+      if (isTriggeredMode(_config.mode)) {
+        _markTriggeredConversionStarted(nowMs);
+      }
+      _setJobPhase(JobPhase::VERIFY_CONFIG);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::VERIFY_CONFIG:
+      st = readReg16(cmd::REG_CONFIG, raw16);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      st = _verifyRegister(cmd::REG_CONFIG, raw16, _buildConfig(),
+          cmd::MASK_CONFIG_CONVDLY | cmd::CONFIG_TEMPCOMP |
+          cmd::CONFIG_ADCRANGE | cmd::CONFIG_RST | cmd::CONFIG_RSTACC);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      _setJobPhase(JobPhase::VERIFY_ADC_CONFIG);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::VERIFY_ADC_CONFIG:
+      st = readReg16(cmd::REG_ADC_CONFIG, raw16);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      st = _verifyRegister(cmd::REG_ADC_CONFIG, raw16,
+                           _buildAdcConfig(), 0xFFFFU);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      _setJobPhase(JobPhase::VERIFY_SHUNT_CAL);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::VERIFY_SHUNT_CAL:
+      st = readReg16(cmd::REG_SHUNT_CAL, raw16);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      st = _verifyRegister(cmd::REG_SHUNT_CAL, raw16,
+                           _calibrationPlan.shuntCal, cmd::MASK_SHUNT_CAL);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      _setJobPhase(JobPhase::VERIFY_DIAG);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::VERIFY_DIAG:
+      st = readReg16(cmd::REG_DIAG_ALRT, raw16);
+      if (!st.ok()) return _failJob(st, true, nowMs);
+      _captureDiagAlert(raw16, nowMs);
+      if ((raw16 & cmd::DIAG_MEMSTAT) == 0) {
+        return _failJob(Status::Error(Err::MEMORY_ERROR,
+                                      "NV trim memory checksum error"),
+                        false, nowMs);
+      }
+      st = _verifyRegister(cmd::REG_DIAG_ALRT, raw16,
+                           _desiredDiagConfigBits() | cmd::DIAG_MEMSTAT,
+                           cmd::DIAG_CONFIG_MASK | cmd::DIAG_MEMSTAT);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      _setJobPhase(JobPhase::VERIFY_TEMPCO);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::VERIFY_TEMPCO:
+      st = readReg16(cmd::REG_SHUNT_TEMPCO, raw16);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      st = _verifyRegister(cmd::REG_SHUNT_TEMPCO, raw16,
+                           _config.shuntTempCoeffPpmC,
+                           cmd::MASK_SHUNT_TEMPCO);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      _hardwareState = HardwareState::SYNCHRONIZED;
+      _initialized = true;
+      _driverState = DriverState::READY;
+      _deviceIdentity = _jobIdentityScratch;
+      _deviceIdentityValid = true;
+      _clearHardwareDirty();
+      if (_jobSnapshot.kind != JobKind::VERIFY_CONFIGURATION) {
+        ++_configurationGeneration;
+        if (_configurationGeneration == 0) ++_configurationGeneration;
+        _invalidateAccumulatorEpoch();
+      }
+      _shuntCal = _calibrationPlan.shuntCal;
+      _currentLsb = _plannedCurrentLsbAmps();
+      return _finishJob(Status::Ok(), JobState::SUCCEEDED,
+                        JobEffect::CONFIRMED, nowMs);
+
+    case JobPhase::SAMPLE_VERIFY_CONFIG:
+      st = readReg16(cmd::REG_CONFIG, raw16);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      st = _verifyRegister(cmd::REG_CONFIG, raw16, _buildConfig(),
+          cmd::MASK_CONFIG_CONVDLY | cmd::CONFIG_TEMPCOMP |
+          cmd::CONFIG_ADCRANGE | cmd::CONFIG_RST | cmd::CONFIG_RSTACC);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      _setJobPhase(JobPhase::SAMPLE_VERIFY_SHUNT_CAL);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::SAMPLE_VERIFY_SHUNT_CAL:
+      st = readReg16(cmd::REG_SHUNT_CAL, raw16);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      st = _verifyRegister(cmd::REG_SHUNT_CAL, raw16,
+                           _calibrationPlan.shuntCal, cmd::MASK_SHUNT_CAL);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      _setJobPhase(JobPhase::SAMPLE_TRIGGER);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::SAMPLE_TRIGGER:
+      _jobTouchedRegisterMask |= (1ULL << cmd::REG_ADC_CONFIG);
+      st = writeReg16(cmd::REG_ADC_CONFIG, _triggeredAllAdcConfig());
+      if (!st.ok()) return _failJob(st, true, nowMs);
+      _jobHadSuccessfulWrite = true;
+      _jobWaitStartMs = nowMs;
+      _invalidateAccumulatorEpoch();
+      _clearCapturedConversionReadyFlag();
+      _setJobPhase(JobPhase::SAMPLE_WAIT);
+      return Status{Err::IN_PROGRESS, 0, "Conversion wait in progress"};
+
+    case JobPhase::SAMPLE_DIAG:
+      st = readReg16(cmd::REG_DIAG_ALRT, raw16);
+      if (!st.ok()) return _failJob(st, true, nowMs);
+      _captureDiagAlert(raw16, nowMs);
+      _sampleScratch.raw.diagAlertValid = true;
+      _sampleScratch.raw.diagAlertRaw = raw16;
+      _sampleScratch.raw.mathOverflow = (raw16 & cmd::DIAG_MATHOF) != 0;
+      _sampleScratch.diagnostics = _diagnosticEvents;
+      _sampleScratch.diagnostics.latestRaw = raw16;
+      _sampleScratch.capturedAtMs = nowMs;
+      if ((raw16 & cmd::DIAG_MEMSTAT) == 0) {
+        _jobDeferredStatus = Status::Error(
+            Err::MEMORY_ERROR, "NV trim memory checksum error");
+        _setJobPhase(JobPhase::SAMPLE_RESTORE_ADC);
+      } else if ((raw16 & cmd::DIAG_CNVRF) == 0) {
+        _jobDeferredStatus = Status::Error(
+            Err::MEASUREMENT_NOT_READY, "CNVRF not set after conversion deadline");
+        _setJobPhase(JobPhase::SAMPLE_RESTORE_ADC);
+      } else if ((raw16 & cmd::DIAG_MATHOF) != 0) {
+        _jobDeferredStatus = Status::Error(
+            Err::MATH_OVERFLOW, "INA228 MATHOF invalidates current and power",
+            raw16);
+        _setJobPhase(JobPhase::SAMPLE_RESTORE_ADC);
+      } else {
+        _setJobPhase(JobPhase::SAMPLE_VSHUNT);
+      }
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::SAMPLE_VSHUNT:
+      st = readReg24(cmd::REG_VSHUNT, raw24);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      _sampleScratch.raw.vshunt = _signExtend20(raw24);
+      _setJobPhase(JobPhase::SAMPLE_VBUS);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::SAMPLE_VBUS:
+      st = readReg24(cmd::REG_VBUS, raw24);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      _sampleScratch.raw.vbus = raw24 >> 4;
+      _setJobPhase(JobPhase::SAMPLE_DIETEMP);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::SAMPLE_DIETEMP:
+      st = readReg16(cmd::REG_DIETEMP, raw16);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      _sampleScratch.raw.dietemp = static_cast<int16_t>(raw16);
+      _setJobPhase(JobPhase::SAMPLE_CURRENT);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::SAMPLE_CURRENT:
+      st = readReg24(cmd::REG_CURRENT, raw24);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      _sampleScratch.raw.current = _signExtend20(raw24);
+      _setJobPhase(JobPhase::SAMPLE_POWER);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::SAMPLE_POWER:
+      st = readReg24(cmd::REG_POWER, raw24);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      _sampleScratch.raw.power = raw24;
+      _setJobPhase(JobPhase::SAMPLE_RESTORE_ADC);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::SAMPLE_RESTORE_ADC:
+      _jobTouchedRegisterMask |= (1ULL << cmd::REG_ADC_CONFIG);
+      st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
+      if (!st.ok()) return _failJob(st, true, nowMs);
+      _jobHadSuccessfulWrite = true;
+      _setJobPhase(JobPhase::SAMPLE_VERIFY_ADC);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::SAMPLE_VERIFY_ADC:
+      st = readReg16(cmd::REG_ADC_CONFIG, raw16);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      st = _verifyRegister(cmd::REG_ADC_CONFIG, raw16,
+                           _buildAdcConfig(), 0xFFFFU);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      _hardwareState = HardwareState::SYNCHRONIZED;
+      _initialized = true;
+      if (!_jobDeferredStatus.ok()) {
+        if (_jobDeferredStatus.code == Err::MEMORY_ERROR) {
+          _hardwareState = HardwareState::RESYNC_REQUIRED;
+          _initialized = false;
+          _driverState = DriverState::UNINIT;
+        }
+        return _finishJob(_jobDeferredStatus, JobState::FAILED,
+                          JobEffect::CONFIRMED, nowMs);
+      }
+      st = _fillPowerSampleUnits(_sampleScratch.raw, _sampleScratch.values);
+      if (!st.ok()) {
+        return _finishJob(st, JobState::FAILED, JobEffect::CONFIRMED, nowMs);
+      }
+      _sampleScratch.operationId = _jobSnapshot.operationId;
+      _sampleScratch.requestToken = _jobSnapshot.requestToken;
+      _sampleScratch.configurationGeneration = _configurationGeneration;
+      _sampleScratch.validChannels =
+          CHANNEL_SHUNT_VOLTAGE_VALID | CHANNEL_BUS_VOLTAGE_VALID |
+          CHANNEL_TEMPERATURE_VALID | CHANNEL_CURRENT_VALID |
+          CHANNEL_POWER_VALID;
+      return _finishJob(Status::Ok(), JobState::SUCCEEDED,
+                        JobEffect::CONFIRMED, nowMs);
+
+    case JobPhase::RESET_WRITE:
+      _jobTouchedRegisterMask |= (1ULL << cmd::REG_CONFIG);
+      st = writeReg16(cmd::REG_CONFIG, cmd::CONFIG_RST);
+      if (!st.ok()) return _failJob(st, true, nowMs);
+      _jobHadSuccessfulWrite = true;
+      _hardwareState = HardwareState::RESYNC_REQUIRED;
+      _jobWaitStartMs = nowMs;
+      _setJobPhase(JobPhase::RESET_WAIT);
+      return Status{Err::IN_PROGRESS, 0, "Reset startup wait in progress"};
+
+    case JobPhase::RESET_VERIFY_CLEAR:
+      st = readReg16(cmd::REG_CONFIG, raw16);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      if ((raw16 & (cmd::CONFIG_RST | cmd::CONFIG_RSTACC)) != 0) {
+        return _failJob(Status::Error(Err::CONFIG_MISMATCH,
+                                      "Reset bits did not self-clear", raw16),
+                        false, nowMs);
+      }
+      _setJobPhase(JobPhase::READ_MANUFACTURER);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::ACCUMULATOR_WRITE:
+      _jobTouchedRegisterMask |= (1ULL << cmd::REG_CONFIG);
+      st = writeReg16(cmd::REG_CONFIG,
+                      static_cast<uint16_t>(_buildConfig() | cmd::CONFIG_RSTACC));
+      if (!st.ok()) return _failJob(st, true, nowMs);
+      _jobHadSuccessfulWrite = true;
+      _accumulationReady = false;
+      _setJobPhase(JobPhase::ACCUMULATOR_VERIFY);
+      return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+
+    case JobPhase::ACCUMULATOR_VERIFY:
+      st = readReg16(cmd::REG_CONFIG, raw16);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      st = _verifyRegister(cmd::REG_CONFIG, raw16, _buildConfig(),
+          cmd::MASK_CONFIG_CONVDLY | cmd::CONFIG_TEMPCOMP |
+          cmd::CONFIG_ADCRANGE | cmd::CONFIG_RST | cmd::CONFIG_RSTACC);
+      if (!st.ok()) return _failJob(st, false, nowMs);
+      _accumulatorGeneration = _configurationGeneration;
+      _accumulatorResetAtMs = nowMs;
+      _accumulationReady = true;
+      return _finishJob(Status::Ok(), JobState::SUCCEEDED,
+                        JobEffect::CONFIRMED, nowMs);
+
+    case JobPhase::SAMPLE_WAIT:
+    case JobPhase::RESET_WAIT:
+    case JobPhase::IDLE:
+      break;
+  }
+  return _failJob(Status::Error(Err::INVALID_CONFIG, "Invalid job phase"),
+                  false, nowMs);
+}
+
+Status INA228::pollJob(uint32_t nowMs, uint8_t maxTransfers) {
+  if (!_cooperativeJobActive()) {
+    return Status::Error(Err::INVALID_PARAM, "No active job to poll");
+  }
+  if (_jobPollActive) {
+    return Status::Error(Err::BUSY, "Job poll re-entry is not allowed");
+  }
+  _jobPollActive = true;
+
+  if (_jobPhase == JobPhase::SAMPLE_WAIT) {
+    const uint32_t conversionUs =
+        (static_cast<uint32_t>(convTimeUs(_config.vbusConvTime)) +
+         convTimeUs(_config.vshuntConvTime) +
+         convTimeUs(_config.vtempConvTime)) * avgCount(_config.averaging) +
+        static_cast<uint32_t>(_config.convDelayMs2) * 2000U +
+        cmd::SHUTDOWN_WAKEUP_US;
+    const uint32_t waitMs = (conversionUs + 999U) / 1000U;
+    if ((nowMs - _jobWaitStartMs) >= waitMs) {
+      _setJobPhase(JobPhase::SAMPLE_DIAG);
+    }
+  } else if (_jobPhase == JobPhase::RESET_WAIT &&
+             (nowMs - _jobWaitStartMs) >= RESET_STARTUP_MS) {
+    _setJobPhase(JobPhase::RESET_VERIFY_CLEAR);
+  }
+
+  if (maxTransfers == 0) {
+    _jobPollActive = false;
+    return Status{Err::IN_PROGRESS, 0, "Job in progress; no transfer budget"};
+  }
+
+  uint8_t used = 0;
+  while (used < maxTransfers && _cooperativeJobActive()) {
+    if (_jobPhase == JobPhase::SAMPLE_WAIT) {
+      const uint32_t conversionUs =
+          (static_cast<uint32_t>(convTimeUs(_config.vbusConvTime)) +
+           convTimeUs(_config.vshuntConvTime) +
+           convTimeUs(_config.vtempConvTime)) * avgCount(_config.averaging) +
+          static_cast<uint32_t>(_config.convDelayMs2) * 2000U +
+          cmd::SHUTDOWN_WAKEUP_US;
+      const uint32_t waitMs = (conversionUs + 999U) / 1000U;
+      if ((nowMs - _jobWaitStartMs) < waitMs) {
+        _jobPollActive = false;
+        return Status{Err::IN_PROGRESS, 0, "Conversion wait in progress"};
+      }
+      _setJobPhase(JobPhase::SAMPLE_DIAG);
+      continue;
+    }
+    if (_jobPhase == JobPhase::RESET_WAIT) {
+      if ((nowMs - _jobWaitStartMs) < RESET_STARTUP_MS) {
+        _jobPollActive = false;
+        return Status{Err::IN_PROGRESS, 0, "Reset startup wait in progress"};
+      }
+      _setJobPhase(JobPhase::RESET_VERIFY_CLEAR);
+      continue;
+    }
+
+    Status st = _pollJobTransfer(nowMs);
+    ++used;
+    if (!_cooperativeJobActive()) {
+      _jobPollActive = false;
+      return st;
+    }
+  }
+  _jobPollActive = false;
+  return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+}
+
+void INA228::_invalidateAccumulatorEpoch() {
+  _accumulationReady = false;
+  _accumulatorGeneration = 0;
+  _accumulatorResetAtMs = 0;
+}
+
+Status INA228::begin(const Config& config) {
+  // Legacy synchronous convenience: drive the same verified initialization
+  // engine with its finite 14-transfer maximum. External bus owners should use
+  // bind()/startInitialize()/pollJob() to retain scheduling authority.
+  {
+    Status staged = bind(config);
+    if (!staged.ok()) return staged;
+    uint32_t operationId = 0;
+    staged = startInitialize(0, operationId);
+    if (!staged.ok()) return staged;
+    staged = pollJob(_nowMs(), 14);
+    if (staged.inProgress()) {
+      (void)cancelJob();
+      JobResult cancelled{};
+      (void)takeJobResult(operationId, cancelled);
+      return Status::Error(Err::INVALID_CONFIG,
+                           "Initialization exceeded declared transfer bound");
+    }
+    JobResult result{};
+    Status taken = takeJobResult(operationId, result);
+    return taken.ok() ? staged : taken;
+  }
+
 }
 
 void INA228::tick(uint32_t nowMs) {
@@ -436,8 +1325,12 @@ void INA228::tick(uint32_t nowMs) {
 }
 
 void INA228::end() {
+  _bound = false;
   _initialized = false;
   _driverState = DriverState::UNINIT;
+  _hardwareState = HardwareState::UNBOUND;
+  _deviceIdentity = DeviceIdentity{};
+  _deviceIdentityValid = false;
   _trigPending = false;
   _trigStartMs = 0;
   _accumulationReady = false;
@@ -445,13 +1338,20 @@ void INA228::end() {
   _shuntCal = 0;
   _calibrationClamped = false;
   _maxCurrentExceedsShuntRange = false;
+  _calibrationPlan = CalibrationPlan{};
+  _usesFixedCalibration = false;
   _hardwareDirty = false;
   _dirtyRegisterMask = 0;
   _hardwareDirtyCause = Status::Ok();
   _thresholdsDirty = false;
   _diagAlertConfigBits = 0;
   _diagAlertSnapshot = DiagAlertSnapshot{};
-  _clearAsyncJob();
+  _diagnosticEvents = DiagnosticEvents{};
+  _configurationGeneration = 0;
+  _accumulatorGeneration = 0;
+  _accumulatorResetAtMs = 0;
+  _clearCooperativeState();
+  _config = Config{};
 }
 
 // ===========================================================================
@@ -459,8 +1359,11 @@ void INA228::end() {
 // ===========================================================================
 
 Status INA228::probe() {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  if (!_bound) {
+    return Status::Error(Err::NOT_BOUND, "bind() has not completed");
+  }
+  if (!_hardwareAccessAllowed()) {
+    return Status::Error(Err::BUSY, "Cooperative job owns hardware access");
   }
 
   uint16_t mfgId = 0;
@@ -468,59 +1371,44 @@ Status INA228::probe() {
   if (!st.ok()) {
     return mapPresenceReadFailure(st, "Device not responding");
   }
-  if (mfgId != cmd::MANUFACTURER_ID) {
-    return Status::Error(Err::DEVICE_ID_MISMATCH, "Manufacturer ID mismatch",
-                        static_cast<int32_t>(mfgId));
-  }
-
   uint16_t devId = 0;
   st = _readReg16Raw(cmd::REG_DEVICE_ID, devId);
   if (!st.ok()) {
     return mapPresenceReadFailure(st, "Device ID read failed");
   }
-  if (devId != cmd::DEVICE_ID) {
-    return Status::Error(Err::DEVICE_ID_MISMATCH, "Device ID mismatch",
-                        static_cast<int32_t>(devId));
+  DeviceIdentity identity{};
+  st = parseDeviceIdentity(mfgId, devId, identity);
+  if (!st.ok()) return st;
+  if ((_config.supportedRevisionMask &
+       (static_cast<uint16_t>(1U) << identity.revision)) == 0) {
+    return Status::Error(Err::UNSUPPORTED_REVISION,
+                         "Unsupported INA228 revision", identity.revision);
   }
-
   return Status::Ok();
 }
 
 Status INA228::recover() {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
-
-  const bool startedOffline = _driverState == DriverState::OFFLINE;
-  const DiagAlertSnapshot previousDiagSnapshot = _diagAlertSnapshot;
-  ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
-  Status result = [this]() -> Status {
-    _markAccumulationInvalid();
-    _diagAlertSnapshot = DiagAlertSnapshot{};
-    Status st = _verifyIdentityAndMemstat(true);
-    if (!st.ok()) return st;
-
-    _trigPending = false;
-    _trigStartMs = 0;
-
-    st = _resyncCachedHardware();
-    if (!st.ok()) {
-      return st;
+  // Legacy bounded convenience over the verified reinitialization job.
+  {
+    if (!_bound) {
+      return Status::Error(Err::NOT_BOUND, "bind() has not completed");
     }
-    _clearHardwareDirty();
-    if (isTriggeredMode(_config.mode)) {
-      _markTriggeredConversionStarted(_nowMs());
+    uint32_t operationId = 0;
+    Status staged = startReinitialize(0, operationId);
+    if (!staged.ok()) return staged;
+    staged = pollJob(_nowMs(), 14);
+    if (staged.inProgress()) {
+      (void)cancelJob();
+      JobResult cancelled{};
+      (void)takeJobResult(operationId, cancelled);
+      return Status::Error(Err::INVALID_CONFIG,
+                           "Reinitialization exceeded declared transfer bound");
     }
+    JobResult result{};
+    Status taken = takeJobResult(operationId, result);
+    return taken.ok() ? staged : taken;
+  }
 
-    return Status::Ok();
-  }();
-  if (!result.ok() && !_diagAlertSnapshot.valid) {
-    _diagAlertSnapshot = previousDiagSnapshot;
-  }
-  if (startedOffline && !result.ok() && !result.inProgress()) {
-    _reassertOfflineLatch();
-  }
-  return result;
 }
 
 Status INA228::getSettings(SettingsSnapshot& out) const {
@@ -543,7 +1431,8 @@ Status INA228::getSettings(SettingsSnapshot& out) const {
   out.convDelayMs2 = _config.convDelayMs2;
   out.currentLsb = _currentLsb;
   out.shuntCal = _shuntCal;
-  out.calibrated = _currentLsb > 0.0f && _shuntCal > 0 && !_hardwareDirty;
+  out.calibrated = _currentLsb > 0.0f && _shuntCal > 0 && !_hardwareDirty &&
+                   _hardwareState == HardwareState::SYNCHRONIZED;
   out.calibrationClamped = _calibrationClamped;
   out.maxCurrentExceedsShuntRange = _maxCurrentExceedsShuntRange;
   out.hardwareDirty = _hardwareDirty;
@@ -720,131 +1609,41 @@ Status INA228::readRawSample(RawSample& out) {
 
 Status INA228::readPowerSampleRawStep(RawSample& rawOut, IntegerSample& integerOut,
                                       uint8_t maxInstructions) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
-  if (maxInstructions == 0) {
-    return Status::Error(Err::INVALID_PARAM, "maxInstructions must be > 0");
-  }
-  if (_asyncJob != AsyncJob::NONE && _asyncJob != AsyncJob::POWER_SAMPLE) {
-    return Status::Error(Err::BUSY, "Another fixed-step job is active");
-  }
-
-  if (_asyncJob == AsyncJob::NONE) {
-    Status clean = _ensureHardwareClean();
-    if (!clean.ok()) return clean;
-    Status calStatus = _ensureCalibrated();
-    if (!calStatus.ok()) return calStatus;
-    if (_trigPending && !_triggerDeadlineElapsed(_nowMs())) {
-      return Status::Error(Err::MEASUREMENT_NOT_READY,
-                           "Triggered conversion not ready");
+  // Deprecated compatibility surface over the unified triggered sample job.
+  // It needs a time hook because this signature cannot accept caller time.
+  {
+    if (maxInstructions == 0) {
+      return Status::Error(Err::INVALID_PARAM, "Instruction budget must be > 0");
     }
-
-    _powerSampleRawScratch = RawSample{};
-    _powerSampleIntegerScratch = IntegerSample{};
-    _powerSampleStep = _trigPending ? PowerSampleStep::DIAG_READY
-                                    : PowerSampleStep::VSHUNT;
-    _asyncJob = AsyncJob::POWER_SAMPLE;
-  }
-
-  uint8_t used = 0;
-  while (used < maxInstructions) {
-    uint32_t raw24 = 0;
-    uint16_t raw16 = 0;
-    Status st = Status::Ok();
-
-    switch (_powerSampleStep) {
-      case PowerSampleStep::DIAG_READY: {
-        uint16_t diag = 0;
-        st = _readDiagAlertTracked(diag);
-        ++used;
-        if (!st.ok()) {
-          _clearAsyncJob();
-          return st;
-        }
-        _powerSampleRawScratch.diagAlertValid = true;
-        _powerSampleRawScratch.diagAlertRaw = diag;
-        _powerSampleRawScratch.mathOverflow = (diag & cmd::DIAG_MATHOF) != 0;
-        if ((diag & cmd::DIAG_CNVRF) == 0) {
-          _clearAsyncJob();
-          return Status::Error(Err::MEASUREMENT_NOT_READY,
-                               "Triggered conversion not ready");
-        }
-        _powerSampleStep = PowerSampleStep::VSHUNT;
-        break;
+    if (_config.nowMs == nullptr) {
+      return Status::Error(Err::INVALID_CONFIG,
+                           "Use startInstantaneousSample/pollJob without a time hook");
+    }
+    uint32_t operationId = 0;
+    if (!_cooperativeJobActive()) {
+      Status started = startInstantaneousSample(0, operationId);
+      if (!started.ok()) return started;
+    } else {
+      if (_jobSnapshot.kind != JobKind::INSTANTANEOUS_SAMPLE) {
+        return Status::Error(Err::BUSY, "Another cooperative job is active");
       }
-
-      case PowerSampleStep::VSHUNT:
-        st = readReg24(cmd::REG_VSHUNT, raw24);
-        ++used;
-        if (!st.ok()) {
-          _clearAsyncJob();
-          return st;
-        }
-        _powerSampleRawScratch.vshunt = _signExtend20(raw24);
-        _powerSampleStep = PowerSampleStep::VBUS;
-        break;
-
-      case PowerSampleStep::VBUS:
-        st = readReg24(cmd::REG_VBUS, raw24);
-        ++used;
-        if (!st.ok()) {
-          _clearAsyncJob();
-          return st;
-        }
-        _powerSampleRawScratch.vbus = raw24 >> 4;
-        _powerSampleStep = PowerSampleStep::DIETEMP;
-        break;
-
-      case PowerSampleStep::DIETEMP:
-        st = readReg16(cmd::REG_DIETEMP, raw16);
-        ++used;
-        if (!st.ok()) {
-          _clearAsyncJob();
-          return st;
-        }
-        _powerSampleRawScratch.dietemp = static_cast<int16_t>(raw16);
-        _powerSampleStep = PowerSampleStep::CURRENT;
-        break;
-
-      case PowerSampleStep::CURRENT:
-        st = readReg24(cmd::REG_CURRENT, raw24);
-        ++used;
-        if (!st.ok()) {
-          _clearAsyncJob();
-          return st;
-        }
-        _powerSampleRawScratch.current = _signExtend20(raw24);
-        _powerSampleStep = PowerSampleStep::POWER;
-        break;
-
-      case PowerSampleStep::POWER:
-        st = readReg24(cmd::REG_POWER, raw24);
-        ++used;
-        if (!st.ok()) {
-          _clearAsyncJob();
-          return st;
-        }
-        _powerSampleRawScratch.power = raw24;
-        st = _fillPowerSampleUnits(_powerSampleRawScratch,
-                                   _powerSampleIntegerScratch);
-        if (!st.ok()) {
-          _clearAsyncJob();
-          return st;
-        }
-        rawOut = _powerSampleRawScratch;
-        integerOut = _powerSampleIntegerScratch;
-        _clearAsyncJob();
-        return Status::Ok();
-
-      case PowerSampleStep::IDLE:
-      default:
-        _clearAsyncJob();
-        return Status::Error(Err::BUSY, "No power sample job active");
+      operationId = _jobSnapshot.operationId;
     }
+    Status polled = pollJob(_nowMs(), maxInstructions);
+    if (polled.inProgress()) return polled;
+    JobResult result{};
+    Status taken = takeJobResult(operationId, result);
+    if (!taken.ok()) return taken;
+    if (!polled.ok()) return polled;
+    if (!result.hasInstantaneousSample) {
+      return Status::Error(Err::RESULT_NOT_AVAILABLE,
+                           "Sample job completed without a sample");
+    }
+    rawOut = result.instantaneousSample.raw;
+    integerOut = result.instantaneousSample.values;
+    return Status::Ok();
   }
 
-  return Status{Err::IN_PROGRESS, 0, "Power sample read in progress"};
 }
 
 Status INA228::readIntegerSample(IntegerSample& out) {
@@ -1129,8 +1928,8 @@ Status INA228::pollMeasurementReady(uint32_t nowMs, uint8_t maxInstructions,
   if (maxInstructions == 0) {
     return Status::Error(Err::INVALID_PARAM, "maxInstructions must be > 0");
   }
-  if (_asyncJob != AsyncJob::NONE) {
-    return Status::Error(Err::BUSY, "Another fixed-step job is active");
+  if (_cooperativeJobActive()) {
+    return Status::Error(Err::BUSY, "Another cooperative job is active");
   }
   Status allowed = _ensureNormalI2cAllowed();
   if (!allowed.ok()) return allowed;
@@ -1176,7 +1975,7 @@ Status INA228::setMode(Mode mode) {
   }
 
   _config.mode = mode;
-  _markAccumulationInvalid();
+  _invalidateAccumulatorEpoch();
   if (isTriggeredMode(mode)) {
     _markTriggeredConversionStarted(_nowMs());
     return Status{Err::IN_PROGRESS, 0, "Conversion started"};
@@ -1213,14 +2012,14 @@ Status INA228::triggerConversion(Mode mode) {
   }
 
   _config.mode = mode;
-  _markAccumulationInvalid();
+  _invalidateAccumulatorEpoch();
   _markTriggeredConversionStarted(_nowMs());
   return Status{Err::IN_PROGRESS, 0, "Conversion started"};
 }
 
 Status INA228::startTriggeredMeasurement(Mode mode) {
-  if (_asyncJob != AsyncJob::NONE) {
-    return Status::Error(Err::BUSY, "Another fixed-step job is active");
+  if (_cooperativeJobActive()) {
+    return Status::Error(Err::BUSY, "Another cooperative job is active");
   }
   return triggerConversion(mode);
 }
@@ -1244,7 +2043,7 @@ Status INA228::setVbusConvTime(ConvTime ct) {
   } else if (isTriggeredMode(_config.mode)) {
     _markTriggeredConversionStarted(_nowMs());
   } else {
-    _markAccumulationInvalid();
+    _invalidateAccumulatorEpoch();
   }
   return st;
 }
@@ -1268,7 +2067,7 @@ Status INA228::setVshuntConvTime(ConvTime ct) {
   } else if (isTriggeredMode(_config.mode)) {
     _markTriggeredConversionStarted(_nowMs());
   } else {
-    _markAccumulationInvalid();
+    _invalidateAccumulatorEpoch();
   }
   return st;
 }
@@ -1292,7 +2091,7 @@ Status INA228::setTempConvTime(ConvTime ct) {
   } else if (isTriggeredMode(_config.mode)) {
     _markTriggeredConversionStarted(_nowMs());
   } else {
-    _markAccumulationInvalid();
+    _invalidateAccumulatorEpoch();
   }
   return st;
 }
@@ -1316,7 +2115,7 @@ Status INA228::setAveraging(Averaging avg) {
   } else if (isTriggeredMode(_config.mode)) {
     _markTriggeredConversionStarted(_nowMs());
   } else {
-    _markAccumulationInvalid();
+    _invalidateAccumulatorEpoch();
   }
   return st;
 }
@@ -1336,13 +2135,28 @@ Status INA228::setAdcRange(AdcRange range) {
   const uint16_t oldShuntCal = _shuntCal;
   const bool oldClamped = _calibrationClamped;
   const bool oldMaxCurrentExceedsRange = _maxCurrentExceedsShuntRange;
+  const CalibrationPlan oldPlan = _calibrationPlan;
   const uint16_t oldConfigReg = _buildConfig();
 
   uint16_t newShuntCal = 0;
   float newCurrentLsb = 0.0f;
   bool newClamped = false;
   bool newMaxCurrentExceedsRange = false;
-  if (_config.shuntResistanceOhm > 0.0f && _config.maxExpectedCurrentA > 0.0f) {
+  CalibrationPlan newPlan = oldPlan;
+  if (_usesFixedCalibration) {
+    Status planStatus = calculateCalibration(_config.calibration, range, newPlan);
+    if (!planStatus.ok()) return planStatus;
+    newShuntCal = newPlan.shuntCal;
+    const double fixedShuntOhms =
+        static_cast<double>(_config.calibration.shuntMicroOhms) * 1.0e-6;
+    const double rangeMultiplier =
+        range == AdcRange::MV_40_96 ? 4.0 : 1.0;
+    newCurrentLsb = static_cast<float>(static_cast<double>(newPlan.shuntCal) /
+        (cmd::SHUNT_CAL_FACTOR * fixedShuntOhms * rangeMultiplier));
+    newClamped = newPlan.clamped;
+    newMaxCurrentExceedsRange = newPlan.maxCurrentExceedsShuntRange;
+  } else if (_config.shuntResistanceOhm > 0.0f &&
+             _config.maxExpectedCurrentA > 0.0f) {
     Status st = computeCalibration(_config.shuntResistanceOhm,
                                    _config.maxExpectedCurrentA,
                                    range,
@@ -1353,6 +2167,25 @@ Status INA228::setAdcRange(AdcRange range) {
     if (!st.ok()) {
       return st;
     }
+    if (newClamped || newMaxCurrentExceedsRange) {
+      return Status::Error(Err::INVALID_CONFIG,
+                           newClamped ? "SHUNT_CAL would clamp" :
+                                        "Maximum current exceeds shunt range");
+    }
+    newPlan.shuntCal = newShuntCal;
+    newPlan.selectedCurrentLsbNanoAmps = static_cast<uint32_t>(std::round(
+        static_cast<double>(_config.maxExpectedCurrentA) * 1.0e9 / 524288.0));
+    newPlan.effectiveCurrentLsbNanoAmps = static_cast<uint32_t>(std::round(
+        static_cast<double>(newCurrentLsb) * 1.0e9));
+    newPlan.representableCurrentMilliAmps = static_cast<uint32_t>(
+        (static_cast<uint64_t>(newPlan.effectiveCurrentLsbNanoAmps) * 524287ULL) /
+        1000000ULL);
+    newPlan.shuntFullScaleMicrovolts =
+        range == AdcRange::MV_40_96 ? 40960U : 163840U;
+    newPlan.quantized = newPlan.selectedCurrentLsbNanoAmps !=
+                        newPlan.effectiveCurrentLsbNanoAmps;
+    newPlan.clamped = newClamped;
+    newPlan.maxCurrentExceedsShuntRange = newMaxCurrentExceedsRange;
   }
 
   _config.adcRange = range;
@@ -1373,6 +2206,7 @@ Status INA228::setAdcRange(AdcRange range) {
     _shuntCal = oldShuntCal;
     _calibrationClamped = oldClamped;
     _maxCurrentExceedsShuntRange = oldMaxCurrentExceedsRange;
+    _calibrationPlan = oldPlan;
     _markHardwareDirty(cmd::REG_SHUNT_CAL, st);
     if (!rollback.ok()) {
       _markHardwareDirty(cmd::REG_CONFIG, rollback);
@@ -1384,10 +2218,13 @@ Status INA228::setAdcRange(AdcRange range) {
     _shuntCal = newShuntCal;
     _calibrationClamped = newClamped;
     _maxCurrentExceedsShuntRange = newMaxCurrentExceedsRange;
+    _calibrationPlan = newPlan;
     _clearHardwareDirty();
-    _markAccumulationInvalid();
     if (range != oldRange) {
       _markThresholdsDirty();
+      ++_configurationGeneration;
+      if (_configurationGeneration == 0) ++_configurationGeneration;
+      _invalidateAccumulatorEpoch();
     }
   }
   return st;
@@ -1399,6 +2236,10 @@ Status INA228::setCalibration(float shuntOhm, float maxCurrentA) {
   }
   Status clean = _ensureHardwareClean();
   if (!clean.ok()) return clean;
+  if (_usesFixedCalibration) {
+    return Status::Error(Err::INVALID_CONFIG,
+                         "Rebind to change a fixed-unit calibration contract");
+  }
   Status st = validatePositiveFinite(shuntOhm, "Shunt must be finite and > 0");
   if (!st.ok()) {
     return st;
@@ -1428,9 +2269,27 @@ Status INA228::setCalibration(float shuntOhm, float maxCurrentA) {
       _markHardwareDirty(cmd::REG_SHUNT_CAL);
     }
   } else {
+    _calibrationPlan.shuntCal = _shuntCal;
+    _calibrationPlan.selectedCurrentLsbNanoAmps = static_cast<uint32_t>(
+        std::round(static_cast<double>(maxCurrentA) * 1.0e9 / 524288.0));
+    _calibrationPlan.effectiveCurrentLsbNanoAmps = static_cast<uint32_t>(
+        std::round(static_cast<double>(_currentLsb) * 1.0e9));
+    _calibrationPlan.representableCurrentMilliAmps = static_cast<uint32_t>(
+        (static_cast<uint64_t>(_calibrationPlan.effectiveCurrentLsbNanoAmps) *
+         524287ULL) / 1000000ULL);
+    _calibrationPlan.shuntFullScaleMicrovolts =
+        _config.adcRange == AdcRange::MV_40_96 ? 40960U : 163840U;
+    _calibrationPlan.quantized =
+        _calibrationPlan.selectedCurrentLsbNanoAmps !=
+        _calibrationPlan.effectiveCurrentLsbNanoAmps;
+    _calibrationPlan.clamped = _calibrationClamped;
+    _calibrationPlan.maxCurrentExceedsShuntRange =
+        _maxCurrentExceedsShuntRange;
     _clearHardwareDirty();
-    _markAccumulationInvalid();
     _markThresholdsDirty();
+    ++_configurationGeneration;
+    if (_configurationGeneration == 0) ++_configurationGeneration;
+    _invalidateAccumulatorEpoch();
   }
   return st;
 }
@@ -1452,6 +2311,8 @@ Status INA228::setShuntTempCoeff(uint16_t ppmPerC) {
   if (!st.ok()) {
     _config.shuntTempCoeffPpmC = old;
     _markHardwareDirty(cmd::REG_SHUNT_TEMPCO, st);
+  } else {
+    _invalidateAccumulatorEpoch();
   }
   return st;
 }
@@ -1469,6 +2330,8 @@ Status INA228::setTempCompensation(bool enable) {
   if (!st.ok()) {
     _config.tempCompEnabled = old;
     _markHardwareDirty(cmd::REG_CONFIG, st);
+  } else {
+    _invalidateAccumulatorEpoch();
   }
   return st;
 }
@@ -1487,83 +2350,29 @@ Status INA228::setConversionDelay(uint8_t steps2ms) {
     _config.convDelayMs2 = old;
     _markHardwareDirty(cmd::REG_CONFIG, st);
   } else {
-    _markAccumulationInvalid();
+    _invalidateAccumulatorEpoch();
   }
   return st;
 }
 
 Status INA228::startApplyCalibration() {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
-  if (_asyncJob != AsyncJob::NONE) {
-    return Status::Error(Err::BUSY, "Another fixed-step job is active");
-  }
+  uint32_t operationId = 0;
+  return startReinitialize(0, operationId);
 
-  _asyncJob = AsyncJob::APPLY_CALIBRATION;
-  _applyStep = ApplyStep::ADC_SHUTDOWN;
-  return Status{Err::IN_PROGRESS, 0, "Apply calibration job started"};
 }
 
 Status INA228::pollApplyCalibration(uint32_t nowMs, uint8_t maxInstructions) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  if (!_cooperativeJobActive() ||
+      _jobSnapshot.kind != JobKind::REINITIALIZE) {
+    return Status::Error(Err::INVALID_PARAM, "No config replay job active");
   }
-  if (maxInstructions == 0) {
-    return Status::Error(Err::INVALID_PARAM, "maxInstructions must be > 0");
-  }
-  if (_asyncJob != AsyncJob::APPLY_CALIBRATION) {
-    return Status::Error(Err::BUSY, "No apply calibration job active");
-  }
+  const uint32_t operationId = _jobSnapshot.operationId;
+  Status polled = pollJob(nowMs, maxInstructions);
+  if (polled.inProgress()) return polled;
+  JobResult result{};
+  Status taken = takeJobResult(operationId, result);
+  return taken.ok() ? polled : taken;
 
-  uint8_t used = 0;
-  while (used < maxInstructions) {
-    const ApplyStep current = _applyStep;
-    Status st = _writeApplyStep(current);
-    ++used;
-    if (!st.ok()) {
-      if (current != ApplyStep::ADC_CONFIG) {
-        _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
-      }
-      _clearAsyncJob();
-      return st;
-    }
-
-    switch (current) {
-      case ApplyStep::ADC_SHUTDOWN:
-        _applyStep = ApplyStep::CONFIG;
-        break;
-      case ApplyStep::CONFIG:
-        _applyStep = ApplyStep::DIAG_ALRT;
-        break;
-      case ApplyStep::DIAG_ALRT:
-        _applyStep = ApplyStep::TEMPCO;
-        break;
-      case ApplyStep::TEMPCO:
-        _applyStep = ApplyStep::SHUNT_CAL;
-        break;
-      case ApplyStep::SHUNT_CAL:
-        _applyStep = ApplyStep::ADC_CONFIG;
-        break;
-      case ApplyStep::ADC_CONFIG:
-        _clearHardwareDirty();
-        if (isTriggeredMode(_config.mode)) {
-          _markTriggeredConversionStarted(nowMs);
-        } else {
-          _completeTriggeredConversion();
-          _markAccumulationInvalid();
-        }
-        _clearAsyncJob();
-        return Status::Ok();
-      case ApplyStep::IDLE:
-      case ApplyStep::DONE:
-      default:
-        _clearAsyncJob();
-        return Status::Error(Err::BUSY, "No apply calibration job active");
-    }
-  }
-
-  return Status{Err::IN_PROGRESS, 0, "Apply calibration job in progress"};
 }
 
 // ===========================================================================
@@ -1608,7 +2417,9 @@ Status INA228::setAlertLatch(bool latch) {
   } else {
     diag &= ~cmd::DIAG_ALATCH;
   }
-  return _writeDiagAlertConfig(diag);
+  Status st = _writeDiagAlertConfig(diag);
+  if (st.ok()) _config.alerts.latched = latch;
+  return st;
 }
 
 Status INA228::setConversionReadyAlert(bool enable) {
@@ -1624,7 +2435,9 @@ Status INA228::setConversionReadyAlert(bool enable) {
   } else {
     diag &= ~cmd::DIAG_CNVR;
   }
-  return _writeDiagAlertConfig(diag);
+  Status st = _writeDiagAlertConfig(diag);
+  if (st.ok()) _config.alerts.conversionReady = enable;
+  return st;
 }
 
 Status INA228::setSlowAlert(bool enable) {
@@ -1640,7 +2453,9 @@ Status INA228::setSlowAlert(bool enable) {
   } else {
     diag &= ~cmd::DIAG_SLOWALERT;
   }
-  return _writeDiagAlertConfig(diag);
+  Status st = _writeDiagAlertConfig(diag);
+  if (st.ok()) _config.alerts.slowAlert = enable;
+  return st;
 }
 
 Status INA228::setAlertPolarity(bool activeHigh) {
@@ -1656,7 +2471,9 @@ Status INA228::setAlertPolarity(bool activeHigh) {
   } else {
     diag &= ~cmd::DIAG_APOL;
   }
-  return _writeDiagAlertConfig(diag);
+  Status st = _writeDiagAlertConfig(diag);
+  if (st.ok()) _config.alerts.activeHigh = activeHigh;
+  return st;
 }
 
 Status INA228::setShuntOvervoltageThreshold(float voltageV) {
@@ -1776,330 +2593,41 @@ Status INA228::setPowerOverlimitThreshold(float powerW) {
 // ===========================================================================
 
 Status INA228::softReset() {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
+  return Status::Error(Err::INVALID_CONFIG,
+                       "Use startReset()/pollJob() for bounded startup wait");
 
-  const bool startedOffline = _driverState == DriverState::OFFLINE;
-  ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
-  Status st = writeReg16(cmd::REG_CONFIG, cmd::CONFIG_RST);
-  if (!st.ok()) {
-    _markConfigReplayDirty(st);
-    _markCalibrationDirty(st);
-    _markThresholdsDirty();
-    if (startedOffline) {
-      _reassertOfflineLatch();
-    }
-    return st;
-  }
-  _markAccumulationInvalid();
-  _diagAlertSnapshot = DiagAlertSnapshot{};
-  _trigPending = false;
-  _trigStartMs = 0;
-  const Status resetPending =
-      Status::Error(Err::HARDWARE_DIRTY, "Software reset replay pending");
-  _markConfigReplayDirty(resetPending);
-  _markCalibrationDirty(resetPending);
-  _markThresholdsDirty();
-
-  st = _verifyResetComplete();
-  if (!st.ok()) {
-    if (startedOffline) {
-      _reassertOfflineLatch();
-    }
-    return st;
-  }
-
-  st = _verifyIdentityAndMemstat(true);
-  if (!st.ok()) {
-    if (startedOffline) {
-      _reassertOfflineLatch();
-    }
-    return st;
-  }
-
-  st = _resyncCachedHardware();
-  if (st.ok() && isTriggeredMode(_config.mode)) {
-    _clearHardwareDirty();
-    _markTriggeredConversionStarted(_nowMs());
-  } else if (st.ok()) {
-    _clearHardwareDirty();
-    _markAccumulationInvalid();
-  }
-  if (startedOffline && !st.ok() && !st.inProgress()) {
-    _reassertOfflineLatch();
-  }
-  return st;
 }
 
 Status INA228::startResetJob() {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
-  if (_asyncJob != AsyncJob::NONE) {
-    return Status::Error(Err::BUSY, "Another fixed-step job is active");
-  }
+  uint32_t operationId = 0;
+  return startReset(0, operationId);
 
-  _asyncJob = AsyncJob::RESET;
-  _resetStep = ResetStep::WRITE_RESET;
-  _resetStartMs = 0;
-  _resetVerifyAttempts = 0;
-  _resetStartedOffline = _driverState == DriverState::OFFLINE;
-  _resetDesiredDiagConfig = _diagAlertConfigBits;
-  return Status{Err::IN_PROGRESS, 0, "Reset job started"};
 }
 
 Status INA228::pollResetJob(uint32_t nowMs, uint8_t maxInstructions) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  if (!_cooperativeJobActive() || _jobSnapshot.kind != JobKind::RESET) {
+    return Status::Error(Err::INVALID_PARAM, "No reset job active");
   }
-  if (maxInstructions == 0) {
-    return Status::Error(Err::INVALID_PARAM, "maxInstructions must be > 0");
-  }
-  if (_asyncJob != AsyncJob::RESET) {
-    return Status::Error(Err::BUSY, "No reset job active");
-  }
+  const uint32_t operationId = _jobSnapshot.operationId;
+  Status polled = pollJob(nowMs, maxInstructions);
+  if (polled.inProgress()) return polled;
+  JobResult result{};
+  Status taken = takeJobResult(operationId, result);
+  return taken.ok() ? polled : taken;
 
-  ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
-  auto failResetJob = [this](const Status& failure) {
-    if (_resetStartedOffline && !failure.inProgress()) {
-      _reassertOfflineLatch();
-    }
-    _clearAsyncJob();
-    return failure;
-  };
-
-  uint8_t used = 0;
-  while (used < maxInstructions) {
-    Status st = Status::Ok();
-
-    switch (_resetStep) {
-      case ResetStep::WRITE_RESET:
-        st = writeReg16(cmd::REG_CONFIG, cmd::CONFIG_RST);
-        ++used;
-        if (!st.ok()) {
-          _markConfigReplayDirty(st);
-          _markCalibrationDirty(st);
-          _markThresholdsDirty();
-          return failResetJob(st);
-        }
-        _markAccumulationInvalid();
-        _diagAlertSnapshot = DiagAlertSnapshot{};
-        _trigPending = false;
-        _trigStartMs = 0;
-        {
-          const Status resetPending =
-              Status::Error(Err::HARDWARE_DIRTY, "Software reset replay pending");
-          _markConfigReplayDirty(resetPending);
-          _markCalibrationDirty(resetPending);
-        }
-        _markThresholdsDirty();
-        _resetStartMs = nowMs;
-        _resetVerifyAttempts = 0;
-        _resetStep = ResetStep::WAIT_STARTUP;
-        break;
-
-      case ResetStep::WAIT_STARTUP:
-        if ((nowMs - _resetStartMs) < RESET_STARTUP_MS) {
-          return Status{Err::IN_PROGRESS, 0, "Reset startup wait in progress"};
-        }
-        _resetStep = ResetStep::VERIFY_CONFIG;
-        break;
-
-      case ResetStep::VERIFY_CONFIG: {
-        uint16_t cfg = 0;
-        st = readReg16(cmd::REG_CONFIG, cfg);
-        ++used;
-        if (!st.ok()) {
-          return failResetJob(st);
-        }
-        if ((cfg & (cmd::CONFIG_RST | cmd::CONFIG_RSTACC)) == 0) {
-          _resetStep = ResetStep::READ_MANUFACTURER;
-        } else {
-          ++_resetVerifyAttempts;
-          if (_resetVerifyAttempts >= RESET_VERIFY_ATTEMPTS) {
-            st = _recordFailure(
-                Status::Error(Err::TIMEOUT, "CONFIG reset bits did not clear",
-                              static_cast<int32_t>(cfg)));
-            return failResetJob(st);
-          }
-        }
-        break;
-      }
-
-      case ResetStep::READ_MANUFACTURER: {
-        uint16_t mfgId = 0;
-        st = readReg16(cmd::REG_MANUFACTURER_ID, mfgId);
-        ++used;
-        if (!st.ok()) {
-          return failResetJob(st);
-        }
-        if (mfgId != cmd::MANUFACTURER_ID) {
-          st = _recordFailure(
-              Status::Error(Err::DEVICE_ID_MISMATCH,
-                            "Manufacturer ID mismatch",
-                            static_cast<int32_t>(mfgId)));
-          return failResetJob(st);
-        }
-        _resetStep = ResetStep::READ_DEVICE;
-        break;
-      }
-
-      case ResetStep::READ_DEVICE: {
-        uint16_t devId = 0;
-        st = readReg16(cmd::REG_DEVICE_ID, devId);
-        ++used;
-        if (!st.ok()) {
-          return failResetJob(st);
-        }
-        if (devId != cmd::DEVICE_ID) {
-          st = _recordFailure(
-              Status::Error(Err::DEVICE_ID_MISMATCH, "Device ID mismatch",
-                            static_cast<int32_t>(devId)));
-          return failResetJob(st);
-        }
-        _resetStep = ResetStep::READ_DIAG;
-        break;
-      }
-
-      case ResetStep::READ_DIAG: {
-        uint16_t diagAlrt = 0;
-        st = _readDiagAlertTracked(diagAlrt);
-        _diagAlertConfigBits = _resetDesiredDiagConfig;
-        ++used;
-        if (!st.ok()) {
-          return failResetJob(st);
-        }
-        if ((diagAlrt & cmd::DIAG_MEMSTAT) == 0) {
-          st = _recordFailure(
-              Status::Error(Err::MEMORY_ERROR,
-                            "NV trim memory checksum error"));
-          return failResetJob(st);
-        }
-        _resetStep = ResetStep::APPLY_ADC_SHUTDOWN;
-        break;
-      }
-
-      case ResetStep::APPLY_ADC_SHUTDOWN:
-      case ResetStep::APPLY_CONFIG:
-      case ResetStep::APPLY_DIAG_ALRT:
-      case ResetStep::APPLY_TEMPCO:
-      case ResetStep::APPLY_SHUNT_CAL:
-      case ResetStep::APPLY_ADC_CONFIG: {
-        ApplyStep applyStep = ApplyStep::IDLE;
-        switch (_resetStep) {
-          case ResetStep::APPLY_ADC_SHUTDOWN:
-            applyStep = ApplyStep::ADC_SHUTDOWN;
-            break;
-          case ResetStep::APPLY_CONFIG:
-            applyStep = ApplyStep::CONFIG;
-            break;
-          case ResetStep::APPLY_DIAG_ALRT:
-            applyStep = ApplyStep::DIAG_ALRT;
-            break;
-          case ResetStep::APPLY_TEMPCO:
-            applyStep = ApplyStep::TEMPCO;
-            break;
-          case ResetStep::APPLY_SHUNT_CAL:
-            applyStep = ApplyStep::SHUNT_CAL;
-            break;
-          case ResetStep::APPLY_ADC_CONFIG:
-            applyStep = ApplyStep::ADC_CONFIG;
-            break;
-          default:
-            break;
-        }
-
-        st = _writeApplyStep(applyStep);
-        ++used;
-        if (!st.ok()) {
-          return failResetJob(st);
-        }
-
-        switch (_resetStep) {
-          case ResetStep::APPLY_ADC_SHUTDOWN:
-            _resetStep = ResetStep::APPLY_CONFIG;
-            break;
-          case ResetStep::APPLY_CONFIG:
-            _resetStep = ResetStep::APPLY_DIAG_ALRT;
-            break;
-          case ResetStep::APPLY_DIAG_ALRT:
-            _resetStep = ResetStep::APPLY_TEMPCO;
-            break;
-          case ResetStep::APPLY_TEMPCO:
-            _resetStep = ResetStep::APPLY_SHUNT_CAL;
-            break;
-          case ResetStep::APPLY_SHUNT_CAL:
-            _resetStep = ResetStep::APPLY_ADC_CONFIG;
-            break;
-          case ResetStep::APPLY_ADC_CONFIG:
-            _clearHardwareDirty();
-            if (isTriggeredMode(_config.mode)) {
-              _markTriggeredConversionStarted(nowMs);
-            } else {
-              _markAccumulationInvalid();
-            }
-            _clearAsyncJob();
-            return Status::Ok();
-          default:
-            break;
-        }
-        break;
-      }
-
-      case ResetStep::IDLE:
-      case ResetStep::DONE:
-      default:
-        _clearAsyncJob();
-        return Status::Error(Err::BUSY, "No reset job active");
-    }
-  }
-
-  return Status{Err::IN_PROGRESS, 0, "Reset job in progress"};
 }
 
 Status INA228::resetAccumulators() {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
-  Status clean = _ensureHardwareClean();
-  if (!clean.ok()) return clean;
-
-  uint16_t cfg = _buildConfig();
-  Status st = writeReg16(cmd::REG_CONFIG, cfg | cmd::CONFIG_RSTACC);
-  if (!st.ok()) {
-    if (st.code != Err::BUSY &&
-        st.code != Err::INVALID_CONFIG &&
-        st.code != Err::INVALID_PARAM &&
-        st.code != Err::NOT_INITIALIZED) {
-      _markAccumulationInvalid();
-      _markHardwareDirty(cmd::REG_CONFIG, st);
-    }
-    return st;
+  {
+    uint32_t operationId = 0;
+    Status staged = startAccumulatorReset(0, operationId);
+    if (!staged.ok()) return staged;
+    staged = pollJob(_nowMs(), 2);
+    JobResult result{};
+    Status taken = takeJobResult(operationId, result);
+    return taken.ok() ? staged : taken;
   }
 
-  _markAccumulationInvalid();
-  st = writeReg16(cmd::REG_CONFIG, cfg);
-  if (!st.ok()) {
-    _markHardwareDirty(cmd::REG_CONFIG, st);
-    return st;
-  }
-
-  uint16_t readback = 0;
-  st = readReg16(cmd::REG_CONFIG, readback);
-  if (!st.ok()) {
-    _markHardwareDirty(cmd::REG_CONFIG, st);
-    return st;
-  }
-  if ((readback & (cmd::CONFIG_RST | cmd::CONFIG_RSTACC)) != 0) {
-    st = _recordFailure(
-        Status::Error(Err::TIMEOUT, "CONFIG reset bits did not clear",
-                      static_cast<int32_t>(readback)));
-    _markHardwareDirty(cmd::REG_CONFIG, st);
-  } else {
-    _clearCapturedAccumulatorEvidence();
-  }
-  return st;
 }
 
 Status INA228::readManufacturerId(uint16_t& id) {
@@ -2152,6 +2680,9 @@ uint32_t INA228::estimateConversionTimeMs() const {
 
 Status INA228::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
                                 uint8_t* rxBuf, size_t rxLen) {
+  if (!_hardwareAccessAllowed()) {
+    return Status::Error(Err::BUSY, "Cooperative job owns hardware access");
+  }
   if (txBuf == nullptr || txLen == 0 || (rxLen > 0 && rxBuf == nullptr)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
   }
@@ -2163,6 +2694,9 @@ Status INA228::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
 }
 
 Status INA228::_i2cWriteRaw(const uint8_t* buf, size_t len) {
+  if (!_hardwareAccessAllowed()) {
+    return Status::Error(Err::BUSY, "Cooperative job owns hardware access");
+  }
   if (buf == nullptr || len == 0) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
   }
@@ -2280,6 +2814,9 @@ Status INA228::writeRegister16(uint8_t reg, uint16_t value) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (!_hardwareAccessAllowed()) {
+    return Status::Error(Err::BUSY, "Cooperative job owns hardware access");
+  }
   Status st = writeReg16(reg, value);
   if (!st.ok() &&
       (reg == cmd::REG_DIAG_ALRT || reg == cmd::REG_CONFIG ||
@@ -2288,6 +2825,10 @@ Status INA228::writeRegister16(uint8_t reg, uint16_t value) {
     _markHardwareDirty(reg, st);
   } else if (st.ok() && reg == cmd::REG_DIAG_ALRT) {
     _diagAlertConfigBits = value & cmd::DIAG_CONFIG_MASK;
+    _config.alerts.latched = (value & cmd::DIAG_ALATCH) != 0;
+    _config.alerts.conversionReady = (value & cmd::DIAG_CNVR) != 0;
+    _config.alerts.slowAlert = (value & cmd::DIAG_SLOWALERT) != 0;
+    _config.alerts.activeHigh = (value & cmd::DIAG_APOL) != 0;
   } else if (st.ok() && reg == cmd::REG_CONFIG &&
              ((value & cmd::CONFIG_RST) != 0)) {
     _markAccumulationInvalid();
@@ -2326,15 +2867,13 @@ Status INA228::_readDiagAlertTracked(uint16_t& raw) {
   return st;
 }
 
-Status INA228::_readDiagAlertRaw(uint16_t& raw) {
-  Status st = _readReg16Raw(cmd::REG_DIAG_ALRT, raw);
-  if (st.ok()) {
-    _captureDiagAlert(raw);
-  }
-  return st;
-}
 
 void INA228::_captureDiagAlert(uint16_t raw) {
+  _captureDiagAlert(raw, _nowMs());
+}
+
+void INA228::_captureDiagAlert(uint16_t raw, uint32_t observedAtMs) {
+  const bool hadSnapshot = _diagAlertSnapshot.valid;
   const uint16_t preservedEvidence =
       _diagAlertSnapshot.valid ? (_diagAlertSnapshot.raw & DIAG_EVIDENCE_MASK) : 0;
   const uint16_t combinedRaw =
@@ -2343,9 +2882,28 @@ void INA228::_captureDiagAlert(uint16_t raw) {
   _diagAlertSnapshot.valid = true;
   _diagAlertSnapshot.raw = combinedRaw;
   parseDiagAlert(combinedRaw, _diagAlertSnapshot.diag);
-  _diagAlertSnapshot.capturedMs = _nowMs();
-  _diagAlertConfigBits = raw & cmd::DIAG_CONFIG_MASK;
-  if (((raw & cmd::DIAG_CNVRF) != 0) && _modeSupportsAnyAccumulation()) {
+  const uint16_t observedEvents = raw & DIAG_EVIDENCE_MASK;
+  if (!hadSnapshot || observedEvents != 0) {
+    _diagAlertSnapshot.capturedMs = observedAtMs;
+  }
+  _diagnosticEvents.valid = true;
+  _diagnosticEvents.latestRaw = raw;
+  const uint16_t newlyObserved = static_cast<uint16_t>(
+      observedEvents & ~_diagnosticEvents.stickyEvents);
+  _diagnosticEvents.newlyObservedEvents = newlyObserved;
+  _diagnosticEvents.stickyEvents |= observedEvents;
+  if (observedEvents != 0) {
+    _diagnosticEvents.observedAtMs = observedAtMs;
+    for (uint8_t bit = 0; bit < 16; ++bit) {
+      const uint16_t bitMask = static_cast<uint16_t>(1U) << bit;
+      if ((newlyObserved & bitMask) != 0) {
+        _diagnosticEvents.firstObservedAtMs[bit] = observedAtMs;
+      }
+    }
+  }
+  if (((raw & cmd::DIAG_CNVRF) != 0) && _modeSupportsAnyAccumulation() &&
+      _accumulatorGeneration != 0 &&
+      _accumulatorGeneration == _configurationGeneration) {
     _accumulationReady = true;
   }
   if (_trigPending && ((raw & cmd::DIAG_CNVRF) != 0)) {
@@ -2400,7 +2958,8 @@ Status INA228::_updateHealth(const Status& st) {
     _consecutiveFailures++;
   }
 
-  if (_consecutiveFailures >= _config.offlineThreshold) {
+  if (_config.healthPolicy == HealthPolicy::LATCH_OFFLINE &&
+      _consecutiveFailures >= _config.offlineThreshold) {
     _driverState = DriverState::OFFLINE;
   } else {
     _driverState = DriverState::DEGRADED;
@@ -2409,48 +2968,14 @@ Status INA228::_updateHealth(const Status& st) {
   return st;
 }
 
-Status INA228::_recordFailure(const Status& st) {
-  if (st.ok() || st.inProgress() ||
-      st.code == Err::INVALID_CONFIG ||
-      st.code == Err::INVALID_PARAM ||
-      st.code == Err::NOT_INITIALIZED) {
-    return st;
-  }
 
-  const uint32_t now = _nowMs();
-  const uint32_t maxU32 = std::numeric_limits<uint32_t>::max();
-  const uint8_t maxU8 = std::numeric_limits<uint8_t>::max();
-
-  _lastError = st;
-  _lastErrorMs = now;
-  if (_totalFailures < maxU32) {
-    _totalFailures++;
-  }
-  if (_consecutiveFailures < maxU8) {
-    _consecutiveFailures++;
-  }
-
-  if (_initialized) {
-    if (_consecutiveFailures >= _config.offlineThreshold) {
-      _driverState = DriverState::OFFLINE;
-    } else {
-      _driverState = DriverState::DEGRADED;
-    }
-  }
-
-  return st;
-}
-
-void INA228::_reassertOfflineLatch() {
-  _driverState = DriverState::OFFLINE;
-  const uint8_t threshold = _config.offlineThreshold == 0 ? 1 : _config.offlineThreshold;
-  if (_consecutiveFailures < threshold) {
-    _consecutiveFailures = threshold;
-  }
-}
 
 Status INA228::_ensureNormalI2cAllowed() const {
-  if (_initialized && _driverState == DriverState::OFFLINE && !_allowOfflineI2c) {
+  if (!_hardwareAccessAllowed()) {
+    return Status::Error(Err::BUSY, "Cooperative job owns hardware access");
+  }
+  if (_config.healthPolicy == HealthPolicy::LATCH_OFFLINE && _initialized &&
+      _driverState == DriverState::OFFLINE && !_jobPollActive) {
     return Status::Error(Err::BUSY, "Driver is offline; call recover()");
   }
   return Status::Ok();
@@ -2486,6 +3011,13 @@ Status INA228::_ensureMeasurementReadyForRead() {
 }
 
 Status INA228::_ensureHardwareClean() const {
+  if (!_hardwareAccessAllowed()) {
+    return Status::Error(Err::BUSY, "Cooperative job owns hardware access");
+  }
+  if (_hardwareState != HardwareState::SYNCHRONIZED) {
+    return Status::Error(Err::HARDWARE_STATE_UNKNOWN,
+                         "Hardware state is not verified");
+  }
   if (_hardwareDirty) {
     return Status::Error(Err::HARDWARE_DIRTY,
                          "Hardware config may not match cache; call recover()",
@@ -2505,168 +3037,15 @@ Status INA228::_ensureCalibrated() const {
   return Status::Ok();
 }
 
-Status INA228::_verifyResetComplete() {
-  uint16_t cfg = 0;
-  for (uint8_t attempt = 0; attempt < RESET_VERIFY_ATTEMPTS; ++attempt) {
-    Status st = readReg16(cmd::REG_CONFIG, cfg);
-    if (!st.ok()) {
-      return st;
-    }
-    if ((cfg & (cmd::CONFIG_RST | cmd::CONFIG_RSTACC)) == 0) {
-      return Status::Ok();
-    }
-  }
-  return _recordFailure(
-      Status::Error(Err::TIMEOUT, "CONFIG reset bits did not clear",
-                    static_cast<int32_t>(cfg)));
-}
 
-Status INA228::_verifyIdentityAndMemstat(bool preserveAlertConfig) {
-  const uint16_t desiredDiagConfig = _diagAlertConfigBits;
 
-  uint16_t mfgId = 0;
-  Status st = readReg16(cmd::REG_MANUFACTURER_ID, mfgId);
-  if (!st.ok()) {
-    return st;
-  }
-  if (mfgId != cmd::MANUFACTURER_ID) {
-    return _recordFailure(
-        Status::Error(Err::DEVICE_ID_MISMATCH, "Manufacturer ID mismatch",
-                      static_cast<int32_t>(mfgId)));
-  }
 
-  uint16_t devId = 0;
-  st = readReg16(cmd::REG_DEVICE_ID, devId);
-  if (!st.ok()) {
-    return st;
-  }
-  if (devId != cmd::DEVICE_ID) {
-    return _recordFailure(
-        Status::Error(Err::DEVICE_ID_MISMATCH, "Device ID mismatch",
-                      static_cast<int32_t>(devId)));
-  }
-
-  uint16_t diagAlrt = 0;
-  st = _readDiagAlertTracked(diagAlrt);
-  if (preserveAlertConfig) {
-    _diagAlertConfigBits = desiredDiagConfig;
-  }
-  if (!st.ok()) {
-    return st;
-  }
-  if ((diagAlrt & cmd::DIAG_MEMSTAT) == 0) {
-    return _recordFailure(
-        Status::Error(Err::MEMORY_ERROR, "NV trim memory checksum error"));
-  }
-  return Status::Ok();
-}
-
-Status INA228::_resyncCachedHardware() {
-  uint16_t shutdownAdc = _buildAdcConfig();
-  shutdownAdc = static_cast<uint16_t>(
-      (shutdownAdc & ~cmd::MASK_ADC_MODE) |
-      (static_cast<uint16_t>(Mode::SHUTDOWN) << cmd::BIT_ADC_MODE));
-
-  Status st = writeReg16(cmd::REG_ADC_CONFIG, shutdownAdc);
-  if (!st.ok()) {
-    _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
-    return st;
-  }
-
-  st = _applyStaticConfig();
-  if (!st.ok()) {
-    _markConfigReplayDirty(st);
-    return st;
-  }
-
-  st = _applyCalibration();
-  if (!st.ok()) {
-    _markCalibrationDirty(st);
-    return st;
-  }
-
-  st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
-  if (!st.ok()) {
-    _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
-  }
-  return st;
-}
-
-Status INA228::_writeApplyStep(ApplyStep step) {
-  switch (step) {
-    case ApplyStep::ADC_SHUTDOWN: {
-      uint16_t shutdownAdc = _buildAdcConfig();
-      shutdownAdc = static_cast<uint16_t>(
-          (shutdownAdc & ~cmd::MASK_ADC_MODE) |
-          (static_cast<uint16_t>(Mode::SHUTDOWN) << cmd::BIT_ADC_MODE));
-      Status st = writeReg16(cmd::REG_ADC_CONFIG, shutdownAdc);
-      if (!st.ok()) {
-        _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
-      }
-      return st;
-    }
-
-    case ApplyStep::CONFIG: {
-      Status st = writeReg16(cmd::REG_CONFIG, _buildConfig());
-      if (!st.ok()) {
-        _markHardwareDirty(cmd::REG_CONFIG, st);
-      }
-      return st;
-    }
-
-    case ApplyStep::DIAG_ALRT:
-      return _writeDiagAlertConfig(_diagAlertConfigBits);
-
-    case ApplyStep::TEMPCO: {
-      const uint16_t tempco =
-          _config.shuntTempCoeffPpmC & cmd::MASK_SHUNT_TEMPCO;
-      Status st = writeReg16(cmd::REG_SHUNT_TEMPCO, tempco);
-      if (!st.ok()) {
-        _markHardwareDirty(cmd::REG_SHUNT_TEMPCO, st);
-      }
-      return st;
-    }
-
-    case ApplyStep::SHUNT_CAL: {
-      Status st = _applyCalibration();
-      if (!st.ok()) {
-        _markCalibrationDirty(st);
-      }
-      return st;
-    }
-
-    case ApplyStep::ADC_CONFIG: {
-      Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
-      if (!st.ok()) {
-        _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
-      }
-      return st;
-    }
-
-    case ApplyStep::IDLE:
-    case ApplyStep::DONE:
-    default:
-      return Status::Error(Err::BUSY, "No apply step active");
-  }
-}
 
 Status INA228::_fillPowerSampleUnits(const RawSample& raw,
                                      IntegerSample& out) const {
   return convertRawSample(raw, out);
 }
 
-void INA228::_clearAsyncJob() {
-  _asyncJob = AsyncJob::NONE;
-  _powerSampleStep = PowerSampleStep::IDLE;
-  _powerSampleRawScratch = RawSample{};
-  _powerSampleIntegerScratch = IntegerSample{};
-  _applyStep = ApplyStep::IDLE;
-  _resetStep = ResetStep::IDLE;
-  _resetStartMs = 0;
-  _resetVerifyAttempts = 0;
-  _resetStartedOffline = false;
-  _resetDesiredDiagConfig = 0;
-}
 
 bool INA228::_triggerDeadlineElapsed(uint32_t nowMs) const {
   return (nowMs - _trigStartMs) >= estimateConversionTimeMs();
@@ -2695,7 +3074,8 @@ Status INA228::_ensureEnergyAccumulatorReadable() const {
                          "Energy requires continuous shunt and bus conversion",
                          static_cast<int32_t>(_config.mode));
   }
-  if (!_accumulationReady) {
+  if (!_accumulationReady || _accumulatorGeneration == 0 ||
+      _accumulatorGeneration != _configurationGeneration) {
     return Status::Error(Err::ACCUMULATION_INVALID,
                          "Energy accumulation not ready");
   }
@@ -2708,7 +3088,8 @@ Status INA228::_ensureChargeAccumulatorReadable() const {
                          "Charge requires continuous shunt conversion",
                          static_cast<int32_t>(_config.mode));
   }
-  if (!_accumulationReady) {
+  if (!_accumulationReady || _accumulatorGeneration == 0 ||
+      _accumulatorGeneration != _configurationGeneration) {
     return Status::Error(Err::ACCUMULATION_INVALID,
                          "Charge accumulation not ready");
   }
@@ -2753,7 +3134,7 @@ Status INA228::_validateAccumulatorDiag(uint16_t raw, uint16_t overflowBit,
 }
 
 void INA228::_markTriggeredConversionStarted(uint32_t nowMs) {
-  _markAccumulationInvalid();
+  _invalidateAccumulatorEpoch();
   _trigPending = true;
   _trigStartMs = nowMs;
   _clearCapturedConversionReadyFlag();
@@ -2800,6 +3181,9 @@ void INA228::_markHardwareDirty(uint8_t reg, const Status& cause) {
                               : cause;
   }
   _hardwareDirty = true;
+  if (_bound) {
+    _hardwareState = HardwareState::RESYNC_REQUIRED;
+  }
   if (reg < 64) {
     _dirtyRegisterMask |= (uint64_t{1} << reg);
   }
@@ -2835,32 +3219,19 @@ bool INA228::_isThresholdRegister(uint8_t reg) const {
          reg == cmd::REG_PWR_LIMIT;
 }
 
-Status INA228::_applyConfig() {
-  Status st = _applyStaticConfig();
-  if (!st.ok()) {
-    return st;
-  }
 
-  return writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig());
-}
-
-Status INA228::_applyStaticConfig() {
-  // Write CONFIG register
-  Status st = writeReg16(cmd::REG_CONFIG, _buildConfig());
-  if (!st.ok()) return st;
-
-  st = _writeDiagAlertConfig(_diagAlertConfigBits);
-  if (!st.ok()) return st;
-
-  // Program the coefficient every time; TEMPCOMP only gates its use.
-  const uint16_t tempco = _config.shuntTempCoeffPpmC & cmd::MASK_SHUNT_TEMPCO;
-  st = writeReg16(cmd::REG_SHUNT_TEMPCO, tempco);
-  if (!st.ok()) return st;
-
-  return Status::Ok();
-}
 
 Status INA228::_applyCalibration() {
+  if (_usesFixedCalibration) {
+    Status st = writeReg16(cmd::REG_SHUNT_CAL, _calibrationPlan.shuntCal);
+    if (!st.ok()) return st;
+    _shuntCal = _calibrationPlan.shuntCal;
+    _currentLsb = _plannedCurrentLsbAmps();
+    _calibrationClamped = _calibrationPlan.clamped;
+    _maxCurrentExceedsShuntRange =
+        _calibrationPlan.maxCurrentExceedsShuntRange;
+    return Status::Ok();
+  }
   if (_config.shuntResistanceOhm <= 0.0f || _config.maxExpectedCurrentA <= 0.0f) {
     Status st = writeReg16(cmd::REG_SHUNT_CAL, 0);
     if (!st.ok()) {
@@ -2886,6 +3257,11 @@ Status INA228::_applyCalibration() {
                                  newMaxCurrentExceedsRange);
   if (!st.ok()) {
     return st;
+  }
+  if (newClamped || newMaxCurrentExceedsRange) {
+    return Status::Error(Err::INVALID_CONFIG,
+                         newClamped ? "SHUNT_CAL would clamp" :
+                                      "Maximum current exceeds shunt range");
   }
 
   st = writeReg16(cmd::REG_SHUNT_CAL, newShuntCal);

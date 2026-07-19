@@ -38,6 +38,9 @@ static constexpr uint8_t REG_DEVICE_ID       = 0x3F; ///< Device ID (16-bit, R, 
 
 static constexpr uint16_t MANUFACTURER_ID    = 0x5449; ///< "TI" in ASCII
 static constexpr uint16_t DEVICE_ID          = 0x2281; ///< DIEID=0x228, REV_ID=0x1
+static constexpr uint16_t DEVICE_DIE_ID      = 0x0228; ///< DEVICE_ID bits 15:4
+static constexpr uint16_t DEVICE_DIE_ID_MASK = 0xFFF0; ///< DEVICE_ID DIEID field
+static constexpr uint16_t DEVICE_REV_ID_MASK = 0x000F; ///< DEVICE_ID REV_ID field
 
 // ============================================================================
 // CONFIG Register (0x00) Bit Definitions

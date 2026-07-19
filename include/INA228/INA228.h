@@ -142,6 +142,131 @@ struct DiagAlertSnapshot {
   uint32_t capturedMs = 0;  ///< Timestamp from Config::nowMs, or 0 if unavailable
 };
 
+/// @brief Deterministic fixed-unit SHUNT_CAL plan.
+struct CalibrationPlan {
+  uint16_t shuntCal = 0;
+  uint32_t selectedCurrentLsbNanoAmps = 0;
+  uint32_t effectiveCurrentLsbNanoAmps = 0;
+  uint32_t representableCurrentMilliAmps = 0;
+  uint32_t shuntFullScaleMicrovolts = 0;
+  bool quantized = false;
+  bool clamped = false;
+  bool maxCurrentExceedsShuntRange = false;
+  bool maxCurrentExceedsCurrentRegister = false;
+};
+
+/// @brief Parsed DEVICE_ID identity fields.
+struct DeviceIdentity {
+  uint16_t manufacturerId = 0;
+  uint16_t dieId = 0;
+  uint8_t revision = 0;
+};
+
+/// @brief Verification relationship between desired cache and hardware.
+enum class HardwareState : uint8_t {
+  UNBOUND,
+  UNKNOWN,
+  SYNCHRONIZED,
+  RESYNC_REQUIRED
+};
+
+/// @brief One coherent cooperative hardware operation at a time.
+enum class JobKind : uint8_t {
+  NONE,
+  INITIALIZE,
+  REINITIALIZE,
+  VERIFY_CONFIGURATION,
+  INSTANTANEOUS_SAMPLE,
+  RESET,
+  ACCUMULATOR_RESET
+};
+
+/// @brief Observable lifecycle of the most recent cooperative operation.
+enum class JobState : uint8_t {
+  IDLE,
+  ACTIVE,
+  SUCCEEDED,
+  FAILED,
+  CANCELLED,
+  TIMED_OUT
+};
+
+/// @brief What is known about hardware effects at a terminal boundary.
+enum class JobEffect : uint8_t {
+  NONE,          ///< No unresolved mutation/evidence loss; successful read effects were captured
+  CONFIRMED,     ///< Desired state was verified by readback
+  PARTIAL,       ///< A prior write succeeded but the operation did not verify
+  INDETERMINATE  ///< A failed side-effecting transfer may have changed hardware/evidence
+};
+
+enum class OperationClass : uint8_t {
+  STEADY_STATE,
+  MULTI_STEP_RUNTIME,
+  MAINTENANCE
+};
+
+/// @brief Declared worst-case work for one job; retries are always zero.
+struct JobLimits {
+  OperationClass operationClass = OperationClass::MULTI_STEP_RUNTIME;
+  uint16_t maxTransfers = 0;
+  uint32_t maxWaitMicroseconds = 0;
+  uint8_t maxRetries = 0;
+};
+
+/// @brief Fixed diagnostic event cache; acknowledgement is bus-silent.
+struct DiagnosticEvents {
+  bool valid = false;
+  uint16_t latestRaw = 0;
+  uint16_t newlyObservedEvents = 0;
+  uint16_t stickyEvents = 0;
+  uint32_t observedAtMs = 0;
+  uint32_t firstObservedAtMs[16] = {};
+};
+
+enum ChannelFlag : uint16_t {
+  CHANNEL_SHUNT_VOLTAGE_VALID = 1U << 0,
+  CHANNEL_BUS_VOLTAGE_VALID   = 1U << 1,
+  CHANNEL_TEMPERATURE_VALID   = 1U << 2,
+  CHANNEL_CURRENT_VALID       = 1U << 3,
+  CHANNEL_POWER_VALID         = 1U << 4
+};
+
+/// @brief Atomically committed result of one triggered conversion sequence.
+struct InstantaneousSample {
+  uint32_t operationId = 0;
+  uint32_t requestToken = 0;
+  uint32_t configurationGeneration = 0;
+  uint32_t capturedAtMs = 0;
+  uint16_t validChannels = 0;
+  RawSample raw{};
+  IntegerSample values{};
+  DiagnosticEvents diagnostics{};
+};
+
+/// @brief Cache-only cooperative job state.
+struct JobSnapshot {
+  JobKind kind = JobKind::NONE;
+  JobState state = JobState::IDLE;
+  JobEffect effect = JobEffect::NONE;
+  uint32_t operationId = 0;
+  uint32_t requestToken = 0;
+  uint32_t startConfigurationGeneration = 0;
+  uint32_t configurationGeneration = 0;
+  uint32_t startedAtMs = 0;
+  uint32_t finishedAtMs = 0;
+  uint16_t phase = 0;
+  uint16_t transfersCompleted = 0;
+  bool resultAvailable = false;
+  Status status{};
+};
+
+/// @brief Exactly-once terminal result returned by takeJobResult().
+struct JobResult {
+  JobSnapshot job{};
+  bool hasInstantaneousSample = false;
+  InstantaneousSample instantaneousSample{};
+};
+
 /// @brief Managed synchronous INA228 driver.
 ///
 /// Instances are not thread-safe or ISR-safe. Applications must serialize API
@@ -168,6 +293,73 @@ public:
   // =========================================================================
   // Lifecycle
   // =========================================================================
+
+  /// Validate and retain desired configuration without touching I2C.
+  /// Rebinding is rejected while a job or unconsumed result exists.
+  Status bind(const Config& config);
+
+  /// Start staged identity/configuration/calibration initialization.
+  Status startInitialize(uint32_t requestToken, uint32_t& operationId);
+
+  /// Start the same verified sequence after invalidation or reappearance.
+  Status startReinitialize(uint32_t requestToken, uint32_t& operationId);
+
+  /// Start a read-only verification of cached identity and writable registers.
+  Status startVerifyConfiguration(uint32_t requestToken, uint32_t& operationId);
+
+  /// Start one trigger/wait/diagnostic/five-channel/restore operation.
+  Status startInstantaneousSample(uint32_t requestToken, uint32_t& operationId);
+
+  /// Start staged software reset followed by full verified initialization.
+  Status startReset(uint32_t requestToken, uint32_t& operationId);
+
+  /// Start staged accumulator reset and readback verification.
+  Status startAccumulatorReset(uint32_t requestToken, uint32_t& operationId);
+
+  /// Advance the active job with at most @p maxTransfers transport callbacks.
+  /// A zero budget is valid and can advance an elapsed wait gate without I2C.
+  /// There are no driver retries.
+  Status pollJob(uint32_t nowMs, uint8_t maxTransfers);
+
+  /// Cancel the active job with no I2C. Partial writes require resync.
+  Status cancelJob();
+
+  /// Cancel as an owner deadline expiry with no I2C.
+  Status timeoutJob();
+
+  /// Return the current job snapshot without I2C.
+  Status getJobState(JobSnapshot& out) const;
+
+  /// Consume one terminal result exactly once and without I2C.
+  Status takeJobResult(uint32_t expectedOperationId, JobResult& out);
+
+  /// Mark cached hardware verification invalid without I2C.
+  Status invalidateHardwareState(const Status& cause);
+
+  HardwareState hardwareState() const { return _hardwareState; }
+
+  /// Return verified identity without I2C.
+  Status getDeviceIdentity(DeviceIdentity& out) const;
+
+  /// Return the selected/effective fixed-unit calibration plan without I2C.
+  Status getCalibrationPlan(CalibrationPlan& out) const;
+
+  /// Return diagnostic event lifecycle state without I2C.
+  Status getDiagnosticEvents(DiagnosticEvents& out) const;
+
+  /// Acknowledge retained event bits without reading DIAG_ALRT.
+  Status acknowledgeDiagnosticEvents(uint16_t mask);
+
+  /// Pure fixed-unit calibration planner; performs no I2C.
+  static Status calculateCalibration(const CalibrationConfig& config,
+                                     AdcRange range, CalibrationPlan& out);
+
+  /// Pure DEVICE_ID parser; revision policy is applied during initialization.
+  static Status parseDeviceIdentity(uint16_t manufacturerId, uint16_t deviceId,
+                                    DeviceIdentity& out);
+
+  /// Return exact transfer/wait/retry bounds for the current desired profile.
+  Status getJobLimits(JobKind kind, JobLimits& out) const;
 
   /// Initialize the driver with configuration
   /// @param config Configuration including transport callbacks and calibration
@@ -341,13 +533,15 @@ public:
   Status pollMeasurementReady(uint32_t nowMs, uint8_t maxInstructions,
                               bool& ready);
 
-  /// Read the TunnelMonitor power sample as a fixed-step job.
+  /// Legacy fixed-step instantaneous-sample convenience.
   ///
   /// Each call consumes at most maxInstructions backend transfers. A 16-bit or
   /// 24-bit register read is one instruction. The steady continuous-mode path
   /// reads VSHUNT, VBUS, DIETEMP, CURRENT, and POWER only; ENERGY and CHARGE
   /// are intentionally excluded. Outputs are committed only when OK is
   /// returned and remain unchanged while IN_PROGRESS is returned.
+  /// @deprecated Prefer startInstantaneousSample(), pollJob(), and
+  /// takeJobResult() so the owner supplies time, cancellation, and identity.
   Status readPowerSampleRawStep(RawSample& rawOut, IntegerSample& integerOut,
                                 uint8_t maxInstructions);
 
@@ -602,15 +796,13 @@ public:
   // Device Control
   // =========================================================================
 
-  /// Software reset (equivalent to POR).
+  /// Legacy synchronous software-reset entry point.
   ///
-  /// This is bounded and contains no platform delay. The driver writes RST,
-  /// verifies finite readback of CONFIG.RST/RSTACC clear plus identity and
-  /// MEMSTAT, then replays cached configuration/calibration. MEMSTAT
-  /// verification reads DIAG_ALRT and can consume live status even though the
-  /// raw value is preserved. If reset or replay
-  /// cannot be verified, SettingsSnapshot::hardwareDirty remains true and typed
-  /// converted reads fail until recover() or another successful softReset().
+  /// This entry point is deliberately restricted because a correct reset has
+  /// an owner-visible startup wait. It is bus-silent and returns
+  /// Err::INVALID_CONFIG. Use startReset(), pollJob(), and takeJobResult() for
+  /// bounded reset, readback verification, and configuration replay.
+  /// @deprecated Use the cooperative reset job.
   Status softReset();
 
   /// Start software reset as a fixed-step job.
@@ -623,16 +815,17 @@ public:
   /// Poll a software reset job.
   ///
   /// Delay gates consume zero instructions. Every register read or write
-  /// consumes one instruction, and maxInstructions must be at least one.
+  /// consumes one instruction. A zero budget is valid and bus-silent.
   Status pollResetJob(uint32_t nowMs, uint8_t maxInstructions);
 
   /// Reset energy and charge accumulators.
   ///
-  /// This clears the device's accumulated ENERGY and CHARGE registers and
-  /// explicitly writes CONFIG again with RSTACC clear because self-clear is not
-  /// assumed. The driver verifies CONFIG.RSTACC is clear and
-  /// invalidates driver-side accumulator readiness until a continuous CNVRF is
-  /// observed again.
+  /// This bounded synchronous convenience drives the same two-transfer
+  /// cooperative operation: one CONFIG.RSTACC write and one readback verifying
+  /// that RSTACC self-cleared. Successful verification establishes a new zero
+  /// accumulator epoch immediately for the current configuration generation.
+  /// Use startAccumulatorReset()/pollJob()/takeJobResult() when the owner must
+  /// limit work to one callback per poll.
   Status resetAccumulators();
 
   /// Read manufacturer ID (expect 0x5449)
@@ -668,7 +861,8 @@ public:
   ///
   /// Diagnostic/service access only. Raw writes bypass typed cache/calibration
   /// helpers and can make cached driver state differ from hardware; use
-  /// recover(), softReset(), or begin() to resynchronize after manual writes.
+  /// invalidateHardwareState() and a verified reinitialization to resynchronize
+  /// after manual writes.
   Status writeRegister16(uint8_t reg, uint16_t value);
 
   // =========================================================================
@@ -689,49 +883,39 @@ public:
   float currentLsb() const { return _currentLsb; }
 
 private:
-  enum class AsyncJob : uint8_t {
-    NONE,
-    POWER_SAMPLE,
-    APPLY_CALIBRATION,
-    RESET
-  };
-
-  enum class PowerSampleStep : uint8_t {
+  enum class JobPhase : uint16_t {
     IDLE,
-    DIAG_READY,
-    VSHUNT,
-    VBUS,
-    DIETEMP,
-    CURRENT,
-    POWER
-  };
-
-  enum class ApplyStep : uint8_t {
-    IDLE,
-    ADC_SHUTDOWN,
-    CONFIG,
-    DIAG_ALRT,
-    TEMPCO,
-    SHUNT_CAL,
-    ADC_CONFIG,
-    DONE
-  };
-
-  enum class ResetStep : uint8_t {
-    IDLE,
-    WRITE_RESET,
-    WAIT_STARTUP,
-    VERIFY_CONFIG,
     READ_MANUFACTURER,
     READ_DEVICE,
     READ_DIAG,
-    APPLY_ADC_SHUTDOWN,
-    APPLY_CONFIG,
-    APPLY_DIAG_ALRT,
-    APPLY_TEMPCO,
-    APPLY_SHUNT_CAL,
-    APPLY_ADC_CONFIG,
-    DONE
+    WRITE_ADC_SHUTDOWN,
+    WRITE_CONFIG,
+    WRITE_DIAG,
+    WRITE_TEMPCO,
+    WRITE_SHUNT_CAL,
+    WRITE_ADC_CONFIG,
+    VERIFY_CONFIG,
+    VERIFY_ADC_CONFIG,
+    VERIFY_SHUNT_CAL,
+    VERIFY_DIAG,
+    VERIFY_TEMPCO,
+    SAMPLE_VERIFY_CONFIG,
+    SAMPLE_VERIFY_SHUNT_CAL,
+    SAMPLE_TRIGGER,
+    SAMPLE_WAIT,
+    SAMPLE_DIAG,
+    SAMPLE_VSHUNT,
+    SAMPLE_VBUS,
+    SAMPLE_DIETEMP,
+    SAMPLE_CURRENT,
+    SAMPLE_POWER,
+    SAMPLE_RESTORE_ADC,
+    SAMPLE_VERIFY_ADC,
+    RESET_WRITE,
+    RESET_WAIT,
+    RESET_VERIFY_CLEAR,
+    ACCUMULATOR_WRITE,
+    ACCUMULATOR_VERIFY
   };
 
   // =========================================================================
@@ -775,10 +959,9 @@ private:
   Status _readDiagAlertTracked(uint16_t& raw);
 
   /// Read DIAG_ALRT through raw transport and preserve diagnostic evidence.
-  Status _readDiagAlertRaw(uint16_t& raw);
-
   /// Parse and store a DIAG_ALRT value without touching I2C.
   void _captureDiagAlert(uint16_t raw);
+  void _captureDiagAlert(uint16_t raw, uint32_t observedAtMs);
 
   /// Write cached DIAG_ALRT alert configuration bits without reading live flags.
   Status _writeDiagAlertConfig(uint16_t configBits);
@@ -792,9 +975,6 @@ private:
   Status _updateHealth(const Status& st);
 
   /// Record non-transport semantic failures that make recovery unsuccessful.
-  Status _recordFailure(const Status& st);
-  void _reassertOfflineLatch();
-
   /// Reject normal public I2C while the driver is latched OFFLINE.
   Status _ensureNormalI2cAllowed() const;
 
@@ -802,12 +982,7 @@ private:
   // Internal Helpers
   // =========================================================================
 
-  Status _applyConfig();
-  Status _applyStaticConfig();
   Status _applyCalibration();
-  Status _resyncCachedHardware();
-  Status _verifyResetComplete();
-  Status _verifyIdentityAndMemstat(bool preserveAlertConfig);
   Status _ensureHardwareClean() const;
   Status _ensureCalibrated() const;
   Status _ensureMeasurementReadyForRead();
@@ -834,9 +1009,27 @@ private:
   void _clearHardwareDirty();
   void _markThresholdsDirty();
   bool _isThresholdRegister(uint8_t reg) const;
-  Status _writeApplyStep(ApplyStep step);
   Status _fillPowerSampleUnits(const RawSample& raw, IntegerSample& out) const;
-  void _clearAsyncJob();
+  Status _validateBinding(const Config& config, CalibrationPlan& plan,
+                          bool& usesFixedCalibration) const;
+  Status _startJob(JobKind kind, JobPhase firstPhase, uint32_t requestToken,
+                   uint32_t& operationId);
+  Status _pollJobTransfer(uint32_t nowMs);
+  Status _finishJob(const Status& status, JobState state, JobEffect effect,
+                    uint32_t nowMs);
+  Status _failJob(const Status& status, bool failedWrite, uint32_t nowMs);
+  Status _cancelJob(const Status& status, JobState state);
+  void _setJobPhase(JobPhase phase);
+  uint32_t _nextOperationIdValue();
+  uint16_t _desiredDiagConfigBits() const;
+  uint16_t _triggeredAllAdcConfig() const;
+  float _plannedCurrentLsbAmps() const;
+  Status _verifyRegister(uint8_t reg, uint16_t actual, uint16_t expected,
+                         uint16_t mask) const;
+  bool _cooperativeJobActive() const;
+  bool _hardwareAccessAllowed() const;
+  void _clearCooperativeState();
+  void _invalidateAccumulatorEpoch();
 
   /// Build ADC_CONFIG register value from current config
   uint16_t _buildAdcConfig() const;
@@ -855,8 +1048,12 @@ private:
   // =========================================================================
 
   Config _config;
+  bool _bound = false;
   bool _initialized = false;
   DriverState _driverState = DriverState::UNINIT;
+  HardwareState _hardwareState = HardwareState::UNBOUND;
+  DeviceIdentity _deviceIdentity{};
+  bool _deviceIdentityValid = false;
 
   // Health counters
   uint32_t _lastOkMs = 0;
@@ -865,13 +1062,14 @@ private:
   uint8_t _consecutiveFailures = 0;
   uint32_t _totalFailures = 0;
   uint32_t _totalSuccess = 0;
-  bool _allowOfflineI2c = false;
 
   // Calibration state
   float _currentLsb = 0.0f;  ///< Amps per LSB (0 = uncalibrated)
   uint16_t _shuntCal = 0;    ///< Computed SHUNT_CAL register value
   bool _calibrationClamped = false;
   bool _maxCurrentExceedsShuntRange = false;
+  CalibrationPlan _calibrationPlan{};
+  bool _usesFixedCalibration = false;
   bool _hardwareDirty = false;
   uint64_t _dirtyRegisterMask = 0;
   Status _hardwareDirtyCause = Status::Ok();
@@ -883,22 +1081,31 @@ private:
 
   // Accumulator validity tracking
   bool _accumulationReady = false;
+  uint32_t _configurationGeneration = 0;
+  uint32_t _accumulatorGeneration = 0;
+  uint32_t _accumulatorResetAtMs = 0;
 
   // DIAG_ALRT cache and preserved evidence
   uint16_t _diagAlertConfigBits = 0;
   DiagAlertSnapshot _diagAlertSnapshot{};
+  DiagnosticEvents _diagnosticEvents{};
 
-  // Fixed-step job state
-  AsyncJob _asyncJob = AsyncJob::NONE;
-  PowerSampleStep _powerSampleStep = PowerSampleStep::IDLE;
-  RawSample _powerSampleRawScratch{};
-  IntegerSample _powerSampleIntegerScratch{};
-  ApplyStep _applyStep = ApplyStep::IDLE;
-  ResetStep _resetStep = ResetStep::IDLE;
-  uint32_t _resetStartMs = 0;
-  uint8_t _resetVerifyAttempts = 0;
-  bool _resetStartedOffline = false;
-  uint16_t _resetDesiredDiagConfig = 0;
+  // Unified cooperative operation state. All fields are fixed-size; terminal
+  // results remain available until explicitly consumed exactly once.
+  JobSnapshot _jobSnapshot{};
+  JobPhase _jobPhase = JobPhase::IDLE;
+  JobResult _terminalResult{};
+  bool _terminalResultAvailable = false;
+  uint32_t _nextOperationId = 1;
+  bool _jobPollActive = false;
+  bool _jobHadSuccessfulWrite = false;
+  uint64_t _jobTouchedRegisterMask = 0;
+  DeviceIdentity _jobIdentityScratch{};
+  InstantaneousSample _sampleScratch{};
+  uint16_t _jobReadback = 0;
+  uint32_t _jobWaitStartMs = 0;
+  Status _jobDeferredStatus = Status::Ok();
+
 };
 
 } // namespace INA228

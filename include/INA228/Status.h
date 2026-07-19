@@ -33,7 +33,17 @@ enum class Err : uint8_t {
   ACCUMULATION_INVALID,      ///< ENERGY/CHARGE is not valid in the current state
   ACCUMULATION_OVERFLOW,     ///< ENERGY/CHARGE overflow evidence was observed
   HARDWARE_DIRTY,            ///< Cached config may not match device registers
-  I2C_NACK_UNKNOWN_PHASE     ///< I2C NACK with platform-unreported phase
+  I2C_NACK_UNKNOWN_PHASE,    ///< I2C NACK with platform-unreported phase
+
+  // Cooperative operation and verification details (append-only)
+  NOT_BOUND,                 ///< No zero-I2C configuration binding exists
+  CANCELLED,                 ///< Operation was cancelled by its owner
+  HARDWARE_STATE_UNKNOWN,    ///< Hardware is not verified against desired state
+  CONFIG_MISMATCH,           ///< Register readback did not match desired state
+  RESULT_NOT_AVAILABLE,      ///< No unconsumed terminal result is available
+  STALE_RESULT,              ///< Requested operation ID does not match the result
+  UNSUPPORTED_REVISION,      ///< INA228 die matched, but revision is unsupported
+  OPERATION_TIMEOUT          ///< External owner cancelled at its operation deadline
 };
 
 /// @brief Static string name for an error code.
@@ -59,6 +69,14 @@ constexpr const char* errName(Err err) {
          err == Err::ACCUMULATION_OVERFLOW ? "ACCUMULATION_OVERFLOW" :
          err == Err::HARDWARE_DIRTY ? "HARDWARE_DIRTY" :
          err == Err::I2C_NACK_UNKNOWN_PHASE ? "I2C_NACK_UNKNOWN_PHASE" :
+         err == Err::NOT_BOUND ? "NOT_BOUND" :
+         err == Err::CANCELLED ? "CANCELLED" :
+         err == Err::HARDWARE_STATE_UNKNOWN ? "HARDWARE_STATE_UNKNOWN" :
+         err == Err::CONFIG_MISMATCH ? "CONFIG_MISMATCH" :
+         err == Err::RESULT_NOT_AVAILABLE ? "RESULT_NOT_AVAILABLE" :
+         err == Err::STALE_RESULT ? "STALE_RESULT" :
+         err == Err::UNSUPPORTED_REVISION ? "UNSUPPORTED_REVISION" :
+         err == Err::OPERATION_TIMEOUT ? "OPERATION_TIMEOUT" :
          "UNKNOWN";
 }
 
