@@ -1,77 +1,155 @@
-# ESP-IDF Integration
-
-The repository root can be used as an ESP-IDF component. The diagnostic example
-in `examples/esp_idf/basic` is a native ESP-IDF application, not an Arduino
-wrapper.
+# Native ESP-IDF integration
 
 ## Boundary
 
-- Core files in `include/INA228/` and `src/` are framework-neutral.
-- The driver receives all I2C access through `Config::i2cWrite` and
-  `Config::i2cWriteRead`.
-- `Config::nowMs` is optional; when omitted, health timestamps use `0`.
-- The ESP-IDF example owns bus setup, device handles, console input, timing,
-  timeout mapping, and recovery commands.
-- The example is single-owner diagnostic glue. Shared-bus or multitask
-  applications need their own bus manager, locking, timeout policy, stable
-  handle lifetime, and recovery policy.
+INA228 is a framework-neutral component. An ESP-IDF application owns the
+`i2c_master_bus_handle_t`, device handles, pins, clock, serialization, callback
+timeout, job deadline, retry, health, and bus-recovery policy. The library stores
+only the callback functions and opaque user pointer.
 
-Forbidden in the pure ESP-IDF example path: `Arduino.h`, `Wire.h`, `String`,
-`Serial`, `TwoWire`, Arduino compatibility facades, and Arduino example sources.
+The native example under `examples/esp_idf/basic` uses `app_main`,
+`driver/i2c_master.h`, `esp_timer`, FreeRTOS task delays, fixed command buffers,
+and a native callback adapter. It contains no Arduino compatibility layer.
 
-## Component Use
+## Component use
 
-Add this repository as an extra component directory or use the component manager
-metadata in `idf_component.yml`. `include/INA228/Version.h` is generated from
-`library.json` and committed, so a clean ESP-IDF checkout can include the
-library without running PlatformIO first.
+Add this repository as an ESP-IDF component or use `idf_component.yml`. The core
+requires C++17. The example CMake project builds the library sources and public
+headers directly so CI can validate both ESP32-S2 and ESP32-S3.
 
-## Transport Status Mapping
+The callback adapter should retain the IDF handles in application-owned context:
 
-The example adapter preserves raw `esp_err_t` values in `Status::detail`.
+```cpp
+struct Ina228TransportContext {
+  i2c_master_bus_handle_t bus;
+  i2c_master_dev_handle_t device;
+};
 
-| ESP-IDF result | INA228 status | Notes |
-| --- | --- | --- |
-| `ESP_OK` | `OK` | Transaction succeeded. |
-| `ESP_ERR_TIMEOUT` | `I2C_TIMEOUT` | Timeout remains distinguishable. |
-| Probe `ESP_ERR_INVALID_RESPONSE` / `ESP_ERR_NOT_FOUND` | `I2C_NACK_ADDR` | Address phase is known for probe. |
-| Transfer `ESP_ERR_INVALID_RESPONSE` | `I2C_NACK_ADDR` only after a confirming probe; otherwise `I2C_ERROR` | Transaction API does not expose address vs data phase. |
-| `ESP_ERR_INVALID_ARG` | `INVALID_PARAM` | Adapter/API argument failure. |
-| `ESP_ERR_INVALID_STATE` | `I2C_BUS` | Driver or bus state fault. |
-| Other `esp_err_t` | `I2C_BUS` | Conservative fallback with raw detail. |
+INA228::Status writeRead(uint8_t address,
+                         const uint8_t* tx, size_t txLength,
+                         uint8_t* rx, size_t rxLength,
+                         uint32_t timeoutMs, void* user);
+```
 
-## Local Checks
+Do not expose `esp_err_t` or an IDF handle through a public INA228 type. Do not
+reconfigure or recover the bus inside a driver callback. A callback is one
+physical transfer attempt and must honor `timeoutMs`.
 
-CI uses ESP-IDF v6.0.1. Local builds should use ESP-IDF v6.0.x, with v6.0.1
-preferred when reproducing CI.
+## Fixed-unit configuration
 
-Run from the repository root:
+```cpp
+INA228::Config config;
+config.i2cWrite = write;
+config.i2cWriteRead = writeRead;
+config.i2cUser = &transport;
+config.nowMs = monotonicMilliseconds;
+config.timeUser = nullptr;
+config.i2cAddress = 0x41;
+config.i2cTimeoutMs = 20;
+config.mode = INA228::Mode::CONT_ALL;
+config.healthPolicy = INA228::HealthPolicy::PASSIVE;
 
-```bash
+config.calibration.shuntMicroOhms = 25000;
+config.calibration.mode = INA228::CalibrationMode::FROM_MAXIMUM_CURRENT;
+config.calibration.maxCurrentMilliAmps = 2500;
+
+config.alerts.latched = false;
+config.alerts.conversionReady = false;
+config.alerts.slowAlert = false;
+config.alerts.activeHigh = false;
+```
+
+The values above illustrate the current TunnelMonitor electrical limits; they
+are not universal defaults. Select and validate the calibration against the
+actual shunt, ADC range, maximum current, and desired current LSB.
+
+## External owner lifecycle
+
+Use the cooperative API from the one task that owns the I2C bus:
+
+```cpp
+INA228::Status status = monitor.bind(config); // validates, zero I2C
+uint32_t operationId = 0;
+if (status.ok()) {
+  status = monitor.startInitialize(requestToken, operationId); // zero I2C
+}
+
+// One owner activation, at most one callback.
+if (status.ok() || status.inProgress()) {
+  status = monitor.pollJob(nowMs, 1);
+}
+
+// A zero budget is valid and bus-silent; it can advance an elapsed wait gate.
+status = monitor.pollJob(nowMs, 0);
+```
+
+The owner must maintain an operation deadline independently of the library.
+Before starting, use `getJobLimits()` to ensure the configured conversion wait
+plus callback/scheduling allowance fits that deadline. Progress does not renew
+the deadline. On expiry call `timeoutJob()`; on cancellation call `cancelJob()`.
+Both are idempotent and perform no I2C.
+
+After terminal state, call `takeJobResult(expectedOperationId, result)` once.
+A successful take reports delivery, not necessarily job success. Inspect
+`result.job.state`, `result.job.status`, and `result.job.effect`. If effect is
+`PARTIAL` or `INDETERMINATE`, do not publish the measurement or blindly retry a
+side-effecting transfer. `INDETERMINATE` also covers a destructive
+`DIAG_ALRT` read that may have consumed evidence before its callback failed.
+Reconcile through `invalidateHardwareState()` and verified
+reinitialization/readback under application policy.
+
+For normal measurement use `startInstantaneousSample()`. The returned sample is
+atomic and contains request/operation identity, configuration generation,
+valid-channel flags, fixed-unit values, raw data, and correlated diagnostics.
+Do not publish a partial or stale result.
+
+## Status mapping
+
+Map IDF failures as precisely as the active API permits:
+
+| IDF result/context | INA228 status |
+|---|---|
+| success | `OK` |
+| definite address NACK | `I2C_NACK_ADDR` |
+| definite data NACK | `I2C_NACK_DATA` |
+| NACK with phase unavailable | `I2C_NACK_UNKNOWN_PHASE` |
+| transfer timeout | `I2C_TIMEOUT` |
+| arbitration/bus error | `I2C_BUS` |
+| other transport failure | `I2C_ERROR` with `esp_err_t` in `detail` |
+
+Do not map all `ESP_FAIL` values to address NACK unless the adapter has definite
+phase information. Initialization maps only definite address NACK during
+identity access to device-not-found semantics; timeout and bus faults remain
+distinguishable.
+
+## Removal, recovery, and retries
+
+The INA228 core does not call an IDF bus-recovery API. On removal, a bus fault,
+or suspected device reset:
+
+1. stop publishing the affected result;
+2. cancel/timeout and consume any active inner job;
+3. perform application-owned bus recovery if policy permits;
+4. call `invalidateHardwareState(cause)` without I2C;
+5. start reinitialization and advance it under the original/new owner deadline.
+
+Read retry policy belongs to the application. A callback invoked for a write is
+one attempt; if it fails ambiguously, preserve the `INDETERMINATE` effect and
+reconcile rather than retrying blindly.
+
+## Local checks
+
+CI currently builds with ESP-IDF v6.0.1. Confirm the locally selected toolchain
+before comparing results:
+
+```sh
 idf.py --version
 python tools/check_idf_example_contract.py
-python tools/check_core_timing_guard.py
+python tools/check_owner_contract.py
 idf.py -C examples/esp_idf/basic set-target esp32s3 build
 idf.py -C examples/esp_idf/basic set-target esp32s2 build
 ```
 
-ESP-IDF build output is written under:
-
-```text
-examples/esp_idf/basic/build/
-```
-
-Do not commit generated ESP-IDF build artifacts.
-
-`tools/check_idf_example_contract.py` is a static contract check for the
-example structure and Arduino-free boundary. It is useful, but it is not a
-substitute for a real `idf.py` build log.
-
-## CI
-
-GitHub Actions job `esp-idf-basic` builds `examples/esp_idf/basic` for
-`esp32s3` and `esp32s2` with `espressif/esp-idf-ci-action@v1` and ESP-IDF
-v6.0.1. Configured CI is not proof by itself; reviewed workflow logs or local
-`idf.py` output are required before claiming ESP-IDF build verification.
-
-These build checks are not hardware validation.
+Build output is created under `examples/esp_idf/basic/build/`. CI performs both
+native ESP-IDF builds and the static contract check. A successful build proves
+framework and target compilation only; it is not hardware validation.

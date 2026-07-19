@@ -75,15 +75,15 @@ Run each item for Arduino and ESP-IDF targets where hardware is available:
 
 | Area | Commands/procedure | Expected evidence |
 | --- | --- | --- |
-| Address and identity | `scan`, `scanina`, `addr`, `init`, `probe`, `mfgid`, `devid` | Correct address handling, `0x5449`, `0x2281`, precise transport errors. |
+| Address and identity | `scan`, `scanina`, `addr`, `init`, `probe`, `mfgid`, `devid` | Correct address handling, manufacturer `0x5449`, DIEID `0x228`, separately recorded revision, precise transport errors. |
 | MEMSTAT and DIAG_ALRT | `diag`, `diagraw`, `selftest` | MEMSTAT healthy and destructive/status-clearing behavior visible. |
 | Voltage/current scaling | `cal`, `cfg`, `vbus`, `vshunt`, `current`, `power`, `read`, `raw` | Values agree with reference equipment within recorded tolerances. |
 | ADCRANGE | `adcrange 0`, `adcrange 1`, repeated calibration/readback | Scaling remains coherent and no dirty state remains after success. |
 | Triggered freshness | `trigger`, repeated `ready`, `read` | Not-ready before CNVRF and fresh data after completion. |
-| Fixed-step transfer budgets | `ready_step`, `sample_step`, `apply_step`, `reset_step`, `xfer_reset`, `xfer_assert`, `xfer_stats`, or `tools/run_i2c_hil.py --suite transfer --require-framed` | Deterministic zero-budget and sample-step paths touch only the documented number of example transport callbacks; paths where the example loop can call `tick()` between serial commands must record `xfer_stats` and explain any background readiness reads. |
+| Cooperative transfer budgets | `sample_step`, `apply_step`, `reset_step`, `xfer_reset`, `xfer_assert`, `xfer_stats`, or `tools/run_i2c_hil.py --suite transfer --require-framed` | A zero budget is accepted and bus-silent; positive budgets never exceed the requested callback count; wait gates consume zero callbacks; terminal result is delivered once. |
 | Continuous accumulation | `mode 15`, `rstacc`, `ready`, `energy`, `charge`, `read` | Accumulation valid only after continuous CNVRF and no overflow is hidden. |
 | Alerts | threshold commands, `limits`, `diag`, `diagraw`, ALERT pin capture | Alert polarity/latch and threshold flags match controlled crossings. |
-| Reset/recovery | `rstacc`, `reset`, `probe`, `recover`, fault injection if safe | Dirty/recovery behavior is explicit and bounded. |
+| Reset/recovery | `rstacc`, `reset_start`/`reset_step`, `probe`, `recover`, fault injection if safe | Reset startup wait is bus-silent; invalidation/reinitialization is bounded; partial/indeterminate effects require reconciliation. |
 | Stress/soak | `stress`, `stress_mix`, repeated reads over time | No unbounded waits; all faults and recoveries are logged. |
 
 Mark unsupported fault-injection tests as `N/A` only when the fixture limitation

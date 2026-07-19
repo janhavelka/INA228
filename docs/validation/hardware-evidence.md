@@ -7,6 +7,9 @@ ESP32-S3/COM21 fixture, were produced from dirty worktrees, and did not include
 fault injection, ALERT-pin capture, controlled MCU reset, or INA228 power-cycle
 control.
 
+All entries below predate the v3 cooperative owner contract. They are historical
+v2 evidence only and must not be cited as v3 hardware validation.
+
 Fixture: `INA228_0x41_low_voltage_no_fault_injection`.
 
 | Run | Commit | Duration | PASS | FAIL | UNKNOWN | NOT RUN | Notes |

@@ -78,7 +78,10 @@ members.
 ## Identity And Reset
 
 - `MANUFACTURER_ID` is expected to read `0x5449`.
-- `DEVICE_ID` is expected to read `0x2281`.
+- `DEVICE_ID[15:4]` is DIEID and must equal `0x228`; `DEVICE_ID[3:0]` is
+  revision. The commonly documented reset value `0x2281` therefore describes
+  DIEID `0x228`, revision 1, rather than one indivisible product constant.
+- The driver parses revision separately and applies `Config::supportedRevisionMask`.
 - `DIAG_ALRT.MEMSTAT` reports nonvolatile trim memory health.
 - Power-on reset loads documented register defaults.
 - Software reset uses `CONFIG.RST`; the bit self-clears after reset.
@@ -109,7 +112,7 @@ members.
 | `0x10` | `TEMP_LIMIT` | 16 | `0x7FFF` | Signed temperature threshold. |
 | `0x11` | `PWR_LIMIT` | 16 | `0xFFFF` | Unsigned power threshold. |
 | `0x3E` | `MANUFACTURER_ID` | 16 | `0x5449` | Identity check. |
-| `0x3F` | `DEVICE_ID` | 16 | `0x2281` | Identity check. |
+| `0x3F` | `DEVICE_ID` | 16 | `0x2281` | DIEID in bits 15:4, revision in bits 3:0. |
 
 Reserved bits documented as read-zero include `CONFIG[3:0]`, `SHUNT_CAL[15]`,
 `SHUNT_TEMPCO[15:14]`, result-register low nibbles for 20-bit values,
@@ -147,6 +150,8 @@ addresses.
 - Continuous modes update measurement registers repeatedly.
 - In triggered mode, wait for the computed deadline and confirm `CNVRF` before
   treating a sample as fresh.
+- The cooperative instantaneous-sample job owns its triggered transition. Its
+  bound base profile must be continuous or shutdown, not a triggered mode.
 
 ## Alert And Diagnostic Notes
 
@@ -171,17 +176,26 @@ addresses.
 
 ## Driver Implications
 
-- A practical initialization order is: verify address/identity/MEMSTAT, program
-  `CONFIG`, compute and write `SHUNT_CAL`, program thresholds/`DIAG_ALRT`, then
-  program `ADC_CONFIG` last.
+- The production cooperative initialization order is: verify
+  manufacturer/DIEID/revision/MEMSTAT, enter deterministic shutdown, program
+  `CONFIG`, deterministic writable `DIAG_ALRT`, `SHUNT_TEMPCO`, `SHUNT_CAL`, and
+  `ADC_CONFIG`, then read back all critical writable state before declaring
+  hardware synchronized.
 - Preserve signedness exactly: `VSHUNT`, `CURRENT`, `CHARGE`, and `DIETEMP` are
   signed; `VBUS`, `POWER`, and `ENERGY` are unsigned.
 - Treat `SHUNT_CAL`, `ADCRANGE`, shunt resistance, maximum expected current, and
   `CURRENT_LSB` as one calibration contract.
+- Prefer fixed-unit calibration input and inspect the planner's selected versus
+  effective LSB, quantization, clamping, current-register range, and
+  shunt-voltage range. Unsafe plans fail unless explicitly authorized.
 - If `SHUNT_CAL` is zero, `CURRENT` reads zero and current-derived `POWER`,
   `ENERGY`, and `CHARGE` are not useful for converted values.
 - Avoid read-modify-write on `DIAG_ALRT`; write cached alert configuration bits
   deliberately and read live status only through documented APIs.
+- A triggered conversion or a change to range, calibration, conversion
+  mode/timing, or temperature compensation creates a new accumulation epoch.
+  Energy/charge conversion remains invalid until a verified accumulator-reset
+  sequence establishes coherent scale and mode assumptions.
 - High-voltage capability is an IC input rating. Board design, isolation,
   fusing, shunt dissipation, grounding, and operator safety remain system
   responsibilities.

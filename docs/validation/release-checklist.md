@@ -22,6 +22,7 @@ python tools/run_i2c_hil.py --parser-self-test
 python tools/run_i2c_hil.py --dry-run --suite targeted
 python tools/run_i2c_hil.py --dry-run --suite transfer
 python tools/check_core_timing_guard.py
+python tools/check_owner_contract.py
 python tools/check_cli_contract.py
 python tools/check_idf_example_contract.py
 python scripts/generate_version.py check
@@ -29,6 +30,7 @@ python -m platformio test -e native
 python -m platformio run -e esp32s3dev
 python -m platformio run -e esp32s2dev
 python -m platformio pkg pack
+git diff --check
 ```
 
 Remove any generated `INA228-*.tar.gz` artifact after package validation.
@@ -46,6 +48,7 @@ Before merging or tagging, verify a completed CI run for the final branch or PR:
 
 - Native tests pass.
 - Guard scripts pass.
+- Effective Arduino compile commands use GNU++17 and do not retain GNU++11.
 - HIL runner `py_compile` and parser self-test pass.
 - PlatformIO ESP32-S3 build passes.
 - PlatformIO ESP32-S2 build passes.
