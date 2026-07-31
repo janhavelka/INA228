@@ -190,7 +190,7 @@ jobs:
             docs/integration/esp-idf.md \
             docs/reference/ina228-device-reference.md \
             docs/validation/validation-status.md \
-            docs/validation/pioarduino-55.03.311-migration.md \
+            docs/validation/hardware-validation-procedure.md \
             src/INA228.cpp; do
             grep -Fx "$path" package-contents.log
           done

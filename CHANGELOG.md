@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consolidated release HIL guidance on one framed exhaustive suite, tightened
   report taxonomy and evidence claims, and completed installation, package,
   Doxygen, and release-checklist documentation.
+- Removed completed implementation-audit and migration-review documents after
+  preserving their durable release and validation conclusions here.
 - Simplified release metadata generation so `library.json` synchronizes only
   this library's `Version.h`, ESP-IDF component version, and Doxygen version.
 - Removed unused example helper layers, no-op transport/address helpers,

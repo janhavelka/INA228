@@ -20,7 +20,7 @@ release qualification.
 | Arduino ESP32-S3 built | PlatformIO `esp32s3dev` build passed locally in 7.397 s on the current cleanup worktree on 2026-07-31. Firmware used 24,872 bytes RAM and 396,356 bytes application flash. |
 | Arduino ESP32-S2 built | PlatformIO `esp32s2dev` build passed locally in 6.557 s on the current cleanup worktree on 2026-07-31. Firmware used 51,844 bytes RAM and 406,385 bytes application flash. |
 | C++17 configuration | PlatformIO removes framework GNU++11 and applies GNU++17; both target builds passed without the earlier inline-variable language-version warning. |
-| Package validation | PlatformIO Core 6.1.19 exported a 35-file package from the current cleanup worktree on 2026-07-31. Required public/CMake/ESP-IDF files and linked root-README guides were present, repo-only/heavy paths were absent, and the exported source compiled standalone under C++17; no package artifact was written into the repository. |
+| Package validation | PlatformIO Core 6.1.19 exported the library package from the current cleanup worktree on 2026-07-31. Required public/CMake/ESP-IDF files and linked root-README guides were present, repo-only/heavy paths were absent, and the exported source compiled standalone under C++17; no package artifact was written into the repository. |
 | API documentation | Doxygen 1.13.2 generated the configured documentation from the current cleanup worktree with warnings treated as errors on 2026-07-31; generated output was then removed. |
 | ESP-IDF configured | CI uses ESP-IDF v6.0.1 to build the native example for ESP32-S2/S3. |
 | ESP-IDF locally built | Not run: `idf.py` is not installed in the current shell. Reviewed CI logs for a final commit are still required. |

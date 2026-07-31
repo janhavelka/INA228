@@ -282,9 +282,8 @@ python scripts/generate_version.py check
 
 The native ESP-IDF example is built by CI for ESP32-S2 and ESP32-S3. Physical
 hardware validation is separate from native tests and build validation; see the
-validation documents for dated evidence and remaining gates. The current
-framework delta and compatibility audit are recorded in the
-[PIOArduino 55.03.311 migration review](docs/validation/pioarduino-55.03.311-migration.md).
+validation documents for dated evidence and remaining gates. Framework and
+toolchain changes are recorded in the changelog and validation status.
 
 ## Versioning
 

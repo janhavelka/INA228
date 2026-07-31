@@ -28,16 +28,9 @@ evidence.
   - repeatable hardware/HIL procedure and required evidence.
 - [Release checklist](validation/release-checklist.md) - version, CI, package,
   documentation, and tag gates.
-- [PIOArduino 55.03.311 migration](validation/pioarduino-55.03.311-migration.md)
-  - framework/toolchain delta, compatibility decisions, and dated results.
 - [HIL command sequence](../tools/INA228_HIL_COMMAND_SEQUENCE.md) - manual
   cooperative transfer checks, suite composition, and the release command.
 - `validation/hardware/` - generated reports and serial transcripts for the
   exact dated fixtures described by each run.
-
-## Design audits
-
-- [TunnelMonitor-node suitability re-audit](TUNNELMONITOR_NODE_SUITABILITY_AUDIT.md)
-  - the v3 external-owner contract and remaining application integration gates.
 
 Generated Doxygen output belongs in `docs/doxygen/` and should not be committed.
