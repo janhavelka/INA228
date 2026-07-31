@@ -100,8 +100,10 @@ class SoakSummary:
 
 
 SMOKE_STEPS: tuple[Step, ...] = (
-    Step("version", ("INA228 library version",), "version"),
+    Step("version", ("Arduino-ESP32: 3.3.11", "ESP-IDF: v5.5.5",
+                     "INA228 library version"), "version and framework stack"),
     Step("scan", ("INA228 Address Probe", "Healthy INA228 devices"), "scan"),
+    Step("init", ("initialize", "OK"), "initialize discovered INA228"),
     Step("probe", ("Status: OK",), "probe"),
     Step("settings", ("Active Settings", "State:", "Address:"), "settings"),
     Step("drv", ("Driver Health", "State:", "Online:"), "health"),
@@ -121,6 +123,8 @@ FUNCTIONAL_STEPS: tuple[Step, ...] = (
     Step("temp", ("Temp",), "die temperature", "functional"),
     Step("current", ("Current",), "current", "functional"),
     Step("power", ("Power",), "power", "functional"),
+    Step("rstacc", ("accumulator reset", "OK"),
+         "establish valid accumulator epoch", "functional"),
     Step("energy", ("Energy",), "energy", "functional"),
     Step("charge", ("Charge",), "charge", "functional"),
     Step("read", ("Vbus", "Power", "Accum"), "aggregate read", "functional"),
@@ -143,57 +147,18 @@ FUNCTIONAL_STEPS: tuple[Step, ...] = (
     Step("reg16 0x3F", ("0x",), "device register raw16", "functional"),
     Step("reg24 0x05", ("0x",), "VBUS raw24", "functional"),
     Step("reg40 0x09", ("0x",), "ENERGY raw40", "functional"),
-    Step("rstacc", ("reset",), "accumulator reset", "functional"),
-    Step("recover", ("Invalidating cached hardware state", "frame_status=OK"),
+    Step("recover", ("Invalidating cached hardware state", "Status: OK"),
          "owner invalidation and verified reinitialization", "functional"),
     Step("selftest", ("INA228 selftest",), "self-test", "functional"),
-    Step("stress 50", ("Stress Summary", "Errors:"), "short stress", "functional"),
-    Step("stress_mix 50", ("stress_mix summary", "fail="), "short mixed stress", "functional"),
-)
-
-
-EXHAUSTIVE_STEPS: tuple[Step, ...] = (
-    Step("integer", ("Integer Sample", "Bus:", "Current:", "Power:"),
-         "fixed-unit integer sample", "exhaustive"),
-    Step("diagsnap", ("DIAG_ALRT Snapshot", "cache-only"),
-         "cache-only diagnostic snapshot", "exhaustive"),
-    Step("ready_step 0", ("INVALID_PARAM",),
-         "readiness zero-budget rejection", "exhaustive", expect_failure=True),
-    Step("ready_step 1", ("pollMeasurementReady",),
-         "readiness single-instruction poll", "exhaustive"),
-    Step("sample_step 0", ("INVALID_PARAM",),
-         "power sample zero-budget rejection", "exhaustive", expect_failure=True),
-    Step("sample_step 1", ("readPowerSampleRawStep", "IN_PROGRESS"),
-         "power sample budget one", "exhaustive"),
-    Step("sample_step 2", ("readPowerSampleRawStep",),
-         "power sample budget two", "exhaustive"),
-    Step("sample_step 5", ("Power Sample Step Result",),
-         "power sample full budget", "exhaustive"),
-    Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
-         "calibration job start", "exhaustive", accept_busy_after_empty_retry=True),
-    Step("apply_step 0", ("INVALID_PARAM",),
-         "calibration job zero-budget rejection", "exhaustive", expect_failure=True),
-    Step("apply_step 1", ("pollConfigReplayJob", "IN_PROGRESS"),
-         "calibration job budget one", "exhaustive"),
-    Step("apply_step 6", ("pollConfigReplayJob", "OK"),
-         "calibration job full budget", "exhaustive",
-         accept_no_job_after_empty_retry=True),
-    Step("reset_start", ("startResetJob", "IN_PROGRESS"),
-         "reset job start", "exhaustive", accept_busy_after_empty_retry=True),
-    Step("reset_step 0", ("INVALID_PARAM",),
-         "reset job zero-budget rejection", "exhaustive", expect_failure=True),
-    Step("reset_step 1", ("pollResetJob", "IN_PROGRESS"),
-         "reset job budget one", "exhaustive", pause_after_s=0.05),
-    Step("reset_step 16", ("pollResetJob", "OK"),
-         "reset job completion budget", "exhaustive",
-         accept_no_job_after_empty_retry=True),
-    Step("mode 15", ("setMode", "OK"),
-         "restore continuous-all mode after reset job", "exhaustive"),
+    Step("stress 1000", ("Stress Summary", "Errors: 0"),
+         "1000-sample measurement stress", "functional"),
+    Step("stress_mix 1000", ("stress_mix summary", "fail=0"),
+         "1000-operation mixed API stress", "functional"),
 )
 
 
 def targeted_steps() -> tuple[Step, ...]:
-    """Boundary-heavy HIL pass for chip/library features without a long soak."""
+    """Synchronous feature sweep compatible with the v3 owner contract."""
     steps: list[Step] = [
         Step("verbose 0", ("Verbose mode",), "reduce CLI chatter", "targeted"),
         Step("help", ("mode [0..15]", "sample_step <budget>", "limits"),
@@ -240,8 +205,11 @@ def targeted_steps() -> tuple[Step, ...]:
     ])
 
     steps.extend([
-        Step("adcrange 1", ("setAdcRange", "OK"), "switch low shunt range", "targeted"),
-        Step("integer", ("Integer Sample", "Shunt:"), "integer sample after low range", "targeted"),
+        Step("adcrange 1", ("setAdcRange", "INVALID_CONFIG"),
+             "reject low range incompatible with the bound 10 A profile", "targeted",
+             expect_failure=True),
+        Step("integer", ("Cooperative Instantaneous Sample", "Shunt:"),
+             "sample after rejected range mutation", "targeted"),
         Step("adcrange 0", ("setAdcRange", "OK"), "restore default shunt range", "targeted"),
         Step("adcrange", ("ADC range:",), "query ADC range", "targeted"),
         Step("delay 0", ("setConversionDelay", "OK"), "conversion delay min", "targeted"),
@@ -257,8 +225,9 @@ def targeted_steps() -> tuple[Step, ...]:
         Step("tempcomp 1", ("setTempCompensation", "OK"), "enable temp compensation", "targeted"),
         Step("tempcomp", ("Temperature compensation:",), "query temp compensation", "targeted"),
         Step("tempcomp 0", ("setTempCompensation", "OK"), "restore temp compensation", "targeted"),
-        Step("cal 0.015 10", ("setCalibration", "OK"),
-             "reapply nominal calibration", "targeted"),
+        Step("cal 0.015 10", ("setCalibration", "INVALID_CONFIG"),
+             "reject mutation of the bound fixed-unit calibration contract", "targeted",
+             expect_failure=True),
         Step("cal", ("Calibration:", "CURRENT_LSB"), "query calibration", "targeted"),
     ])
 
@@ -304,72 +273,20 @@ def targeted_steps() -> tuple[Step, ...]:
         Step("ready_step 0", ("INVALID_PARAM",),
              "ready zero-budget rejection", "targeted", expect_failure=True),
         Step("ready_step 1", ("pollMeasurementReady",),
-             "ready budget one", "targeted"),
-        Step("ready_step 2", ("pollMeasurementReady",),
-             "ready budget two", "targeted"),
-        Step("ready_step 255", ("pollMeasurementReady",),
-             "ready max budget", "targeted"),
-        Step("sample_step 0", ("INVALID_PARAM",),
-             "sample zero-budget rejection", "targeted", expect_failure=True),
-        Step("sample_step 1", ("readPowerSampleRawStep",),
-             "sample budget one", "targeted"),
-        Step("sample_step 2", ("readPowerSampleRawStep",),
-             "sample budget two", "targeted"),
-        Step("sample_step 3", ("readPowerSampleRawStep",),
-             "sample budget three", "targeted"),
-        Step("sample_step 4", ("readPowerSampleRawStep",),
-             "sample budget four", "targeted"),
-        Step("sample_step 5", ("Power Sample Step Result",),
-             "sample full budget", "targeted"),
-        Step("sample_step 255", ("Power Sample Step Result",),
-             "sample max budget", "targeted"),
-        Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
-             "calibration job start", "targeted", accept_busy_after_empty_retry=True),
-        Step("apply_step 0", ("INVALID_PARAM",),
-             "calibration zero-budget rejection", "targeted", expect_failure=True),
-        Step("apply_step 1", ("pollConfigReplayJob",),
-             "calibration budget one", "targeted"),
-        Step("apply_step 2", ("pollConfigReplayJob",),
-             "calibration budget two", "targeted"),
-        Step("apply_step 3", ("pollConfigReplayJob",),
-             "calibration budget three", "targeted"),
-        Step("apply_step 6", ("BUSY",),
-             "post-completion calibration poll reports BUSY", "targeted",
-             expect_failure=True),
-        Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
-             "calibration full-budget restart", "targeted",
-             accept_busy_after_empty_retry=True),
-        Step("apply_step 6", ("pollConfigReplayJob", "OK"),
-             "calibration full-budget completion", "targeted",
-             accept_no_job_after_empty_retry=True),
-        Step("reset_start", ("startResetJob", "IN_PROGRESS"),
-             "reset job start", "targeted", accept_busy_after_empty_retry=True),
-        Step("reset_step 0", ("INVALID_PARAM",),
-             "reset zero-budget rejection", "targeted", expect_failure=True),
-        Step("reset_step 1", ("pollResetJob", "IN_PROGRESS"),
-             "reset budget one", "targeted", pause_after_s=0.05),
-        Step("reset_step 1", ("pollResetJob",),
-             "reset budget one repeated", "targeted", pause_after_s=0.05),
-        Step("reset_step 2", ("pollResetJob",),
-             "reset budget two", "targeted", pause_after_s=0.05),
-        Step("reset_step 16", ("pollResetJob", "OK"),
-             "reset completion budget", "targeted",
-             accept_no_job_after_empty_retry=True),
+             "ready single-transfer budget", "targeted"),
     ])
 
     for trigger_mode in range(1, 8):
         steps.extend([
             Step(f"trigger {trigger_mode}", ("triggerConversion",),
                  f"trigger mode {trigger_mode}", "targeted", pause_after_s=0.02),
-            Step("ready_step 1", ("pollMeasurementReady",),
+            Step("ready", ("Conversion ready",),
                  f"ready poll after trigger {trigger_mode}", "targeted"),
-            Step("sample_step 5", ("readPowerSampleRawStep",),
-                 f"sample after trigger {trigger_mode}", "targeted"),
         ])
 
     steps.extend([
         Step("mode 15", ("setMode", "OK"), "restore continuous mode after triggers", "targeted"),
-        Step("rstacc", ("resetAccumulators", "OK"), "reset accumulators", "targeted"),
+        Step("rstacc", ("accumulator reset", "OK"), "reset accumulators", "targeted"),
         Step("energy", ("Energy",), "read energy after accumulator reset", "targeted"),
         Step("charge", ("Charge",), "read charge after accumulator reset", "targeted"),
         Step("diagraw", ("DIAG_ALRT raw",), "raw diagnostics destructive read", "targeted"),
@@ -411,8 +328,8 @@ def targeted_steps() -> tuple[Step, ...]:
         Step("end", ("Device shut down",), "end driver", "targeted"),
         Step("vbus", ("NOT_INITIALIZED",),
              "read after end must fail visibly", "targeted", expect_failure=True),
-        Step("init 0x41", ("begin", "OK"), "reinitialize known device", "targeted"),
-        Step("recover", ("Attempting recovery", "frame_status=OK"),
+        Step("init", ("initialize", "OK"), "reinitialize configured device", "targeted"),
+        Step("recover", ("Invalidating cached hardware state", "Status: OK"),
              "manual recovery after reinit", "targeted"),
         Step("settings", ("Active Settings", "State:", "READY"), "final settings", "targeted"),
         Step("drv", ("Driver Health", "State: READY", "Consecutive failures: 0"),
@@ -423,166 +340,7 @@ def targeted_steps() -> tuple[Step, ...]:
     return tuple(steps)
 
 
-TARGETED_STEPS: tuple[Step, ...] = targeted_steps()
-
-TRANSFER_STEPS: tuple[Step, ...] = (
-    Step("verbose 0", ("Verbose mode",), "reduce CLI chatter", "transfer"),
-    Step("mode 15", ("setMode", "OK"), "continuous-all mode for stable reads", "transfer"),
-    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
-    Step("ready_step 0", ("INVALID_PARAM",),
-         "zero-budget readiness is bus-silent", "transfer", expect_failure=True),
-    Step("xfer_assert 0 0 0", ("XFER_ASSERT PASS",),
-         "ready_step 0 transfer count", "transfer"),
-    Step("trigger 7", ("triggerConversion",), "start triggered conversion for readiness poll",
-         "transfer", pause_after_s=0.05),
-    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
-    Step("ready_step 1", ("pollMeasurementReady",),
-         "single-instruction readiness poll", "transfer"),
-    Step("xfer_stats", ("XFER_STATS",),
-         "ready_step 1 transfer count snapshot", "transfer"),
-    Step("mode 15", ("setMode", "OK"), "restore continuous mode", "transfer"),
-    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
-    Step("sample_step 0", ("INVALID_PARAM",),
-         "zero-budget sample is bus-silent", "transfer", expect_failure=True),
-    Step("xfer_assert 0 0 0", ("XFER_ASSERT PASS",),
-         "sample_step 0 transfer count", "transfer"),
-    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
-    Step("sample_step 1", ("readPowerSampleRawStep", "IN_PROGRESS"),
-         "fresh sample job budget one", "transfer"),
-    Step("xfer_assert 1 0 1", ("XFER_ASSERT PASS",),
-         "sample_step 1 transfer count", "transfer"),
-    Step("sample_step 255", ("Power Sample Step Result",),
-         "finish partial sample job", "transfer"),
-    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
-    Step("sample_step 2", ("readPowerSampleRawStep",),
-         "fresh sample job budget two", "transfer"),
-    Step("xfer_assert 2 0 2", ("XFER_ASSERT PASS",),
-         "sample_step 2 transfer count", "transfer"),
-    Step("sample_step 255", ("Power Sample Step Result",),
-         "finish partial sample job", "transfer"),
-    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
-    Step("sample_step 5", ("Power Sample Step Result",),
-         "fresh sample job full budget", "transfer"),
-    Step("xfer_assert 5 0 5", ("XFER_ASSERT PASS",),
-         "sample_step 5 transfer count", "transfer"),
-    Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
-         "config replay job start", "transfer", accept_busy_after_empty_retry=True),
-    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
-    Step("apply_step 0", ("INVALID_PARAM",),
-         "zero-budget config replay is bus-silent", "transfer", expect_failure=True),
-    Step("xfer_assert 0 0 0", ("XFER_ASSERT PASS",),
-         "apply_step 0 transfer count", "transfer"),
-    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
-    Step("apply_step 1", ("pollConfigReplayJob", "IN_PROGRESS"),
-         "config replay budget one", "transfer"),
-    Step("xfer_assert 0 1 1", ("XFER_ASSERT PASS",),
-         "apply_step 1 transfer count", "transfer"),
-    Step("apply_step 6", ("pollConfigReplayJob", "OK"),
-         "finish partial config replay", "transfer", accept_no_job_after_empty_retry=True),
-    Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
-         "config replay full-budget restart", "transfer",
-         accept_busy_after_empty_retry=True),
-    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
-    Step("apply_step 6", ("pollConfigReplayJob", "OK"),
-         "config replay full budget", "transfer", accept_no_job_after_empty_retry=True),
-    Step("xfer_stats", ("XFER_STATS",),
-         "apply_step 6 transfer count snapshot", "transfer"),
-    Step("reset_start", ("startResetJob", "IN_PROGRESS"),
-         "reset job start", "transfer", accept_busy_after_empty_retry=True),
-    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
-    Step("reset_step 0", ("INVALID_PARAM",),
-         "zero-budget reset is bus-silent", "transfer", expect_failure=True),
-    Step("xfer_assert 0 0 0", ("XFER_ASSERT PASS",),
-         "reset_step 0 transfer count", "transfer"),
-    Step("xfer_reset", ("XFER_RESET",), "reset transfer counters", "transfer"),
-    Step("reset_step 1", ("pollResetJob", "IN_PROGRESS"),
-         "reset job budget one", "transfer", pause_after_s=0.05),
-    Step("xfer_stats", ("XFER_STATS",),
-         "reset_step 1 transfer count snapshot", "transfer"),
-    Step("reset_step 16", ("pollResetJob", "OK"),
-         "finish reset job", "transfer", accept_no_job_after_empty_retry=True),
-    Step("mode 15", ("setMode", "OK"), "restore continuous mode after reset", "transfer"),
-    Step("drv", ("Driver Health", "State: READY"), "final health", "transfer"),
-)
-
-
-TARGETED_SOAK_STEPS: tuple[Step, ...] = (
-    Step("ready_step 0", ("INVALID_PARAM",),
-         "targeted soak ready zero-budget rejection", "soak", expect_failure=True),
-    Step("ready_step 1", ("pollMeasurementReady",),
-         "targeted soak ready budget one", "soak"),
-    Step("ready_step 2", ("pollMeasurementReady",),
-         "targeted soak ready budget two", "soak"),
-    Step("ready_step 255", ("pollMeasurementReady",),
-         "targeted soak ready max budget", "soak"),
-    Step("sample_step 0", ("INVALID_PARAM",),
-         "targeted soak sample zero-budget rejection", "soak", expect_failure=True),
-    Step("sample_step 1", ("readPowerSampleRawStep",),
-         "targeted soak sample budget one", "soak"),
-    Step("sample_step 2", ("readPowerSampleRawStep",),
-         "targeted soak sample budget two", "soak"),
-    Step("sample_step 3", ("readPowerSampleRawStep",),
-         "targeted soak sample budget three", "soak"),
-    Step("sample_step 4", ("readPowerSampleRawStep",),
-         "targeted soak sample budget four", "soak"),
-    Step("sample_step 5", ("Power Sample Step Result",),
-         "targeted soak sample full budget", "soak"),
-    Step("sample_step 255", ("Power Sample Step Result",),
-         "targeted soak sample max budget", "soak"),
-    Step("apply_start", ("startConfigReplayJob", "IN_PROGRESS"),
-         "targeted soak apply start", "soak", accept_busy_after_empty_retry=True),
-    Step("apply_step 0", ("INVALID_PARAM",),
-         "targeted soak apply zero-budget rejection", "soak", expect_failure=True),
-    Step("apply_step 1", ("pollConfigReplayJob",),
-         "targeted soak apply budget one", "soak"),
-    Step("apply_step 2", ("pollConfigReplayJob",),
-         "targeted soak apply budget two", "soak"),
-    Step("apply_step 6", ("pollConfigReplayJob", "OK"),
-         "targeted soak apply completion", "soak", accept_no_job_after_empty_retry=True),
-    Step("reset_start", ("startResetJob", "IN_PROGRESS"),
-         "targeted soak reset start", "soak", accept_busy_after_empty_retry=True),
-    Step("reset_step 0", ("INVALID_PARAM",),
-         "targeted soak reset zero-budget rejection", "soak", expect_failure=True),
-    Step("reset_step 1", ("pollResetJob", "IN_PROGRESS"),
-         "targeted soak reset budget one", "soak", pause_after_s=0.05),
-    Step("reset_step 1", ("pollResetJob",),
-         "targeted soak reset budget one repeated", "soak", pause_after_s=0.05),
-    Step("reset_step 16", ("pollResetJob", "OK"),
-         "targeted soak reset completion", "soak", accept_no_job_after_empty_retry=True),
-    Step("mode 15", ("setMode", "OK"),
-         "targeted soak restore continuous mode", "soak"),
-    Step("trigger 1", ("triggerConversion",),
-         "targeted soak trigger bus", "soak", pause_after_s=0.02),
-    Step("ready_step 1", ("pollMeasurementReady",),
-         "targeted soak ready after trigger", "soak"),
-    Step("sample_step 5", ("readPowerSampleRawStep",),
-         "targeted soak sample after trigger", "soak"),
-    Step("trigger 7", ("triggerConversion",),
-         "targeted soak trigger all", "soak", pause_after_s=0.02),
-    Step("ready_step 2", ("pollMeasurementReady",),
-         "targeted soak ready after all trigger", "soak"),
-    Step("sample_step 5", ("readPowerSampleRawStep",),
-         "targeted soak sample after all trigger", "soak"),
-    Step("mode 15", ("setMode", "OK"),
-         "targeted soak restore continuous mode after trigger", "soak"),
-    Step("adcrange 1", ("setAdcRange", "OK"),
-         "targeted soak switch low range", "soak"),
-    Step("integer", ("Integer Sample",),
-         "targeted soak integer sample low range", "soak"),
-    Step("adcrange 0", ("setAdcRange", "OK"),
-         "targeted soak restore range", "soak"),
-    Step("diagraw", ("DIAG_ALRT raw",),
-         "targeted soak raw diagnostics", "soak"),
-    Step("diagsnap", ("DIAG_ALRT Snapshot",),
-         "targeted soak diagnostic snapshot", "soak"),
-    Step("drv", ("Driver Health", "State: READY"),
-         "targeted soak health check", "soak"),
-    Step("recover", ("Attempting recovery", "frame_status=OK"),
-         "targeted soak manual recovery", "soak"),
-    Step("read", ("Vbus", "Power"),
-         "targeted soak aggregate read", "soak"),
-)
-
+FEATURE_SWEEP_STEPS: tuple[Step, ...] = targeted_steps()
 
 SOAK_STEPS: tuple[Step, ...] = (
     Step("vbus", ("Vbus",), "soak bus voltage", "soak"),
@@ -600,7 +358,7 @@ SOAK_STEPS: tuple[Step, ...] = (
     Step("diagsnap", ("DIAG_ALRT Snapshot",), "soak diagnostic snapshot", "soak"),
     Step("diagraw", ("DIAG_ALRT raw",), "soak raw diagnostics", "soak"),
     Step("probe", ("Status: OK",), "soak probe", "soak"),
-    Step("recover", ("Invalidating cached hardware state", "frame_status=OK"),
+    Step("recover", ("Invalidating cached hardware state", "Status: OK"),
          "soak verified reinitialization", "soak"),
     Step("stress 50", ("Stress Summary", "Errors:"), "soak stress", "soak"),
     Step("stress_mix 50", ("stress_mix summary", "fail="), "soak mixed stress", "soak"),
@@ -817,9 +575,10 @@ def selected_steps(suite: str) -> tuple[Step, ...]:
     if suite == "functional":
         return SMOKE_STEPS + FUNCTIONAL_STEPS
     if suite == "exhaustive":
-        return SMOKE_STEPS + FUNCTIONAL_STEPS + V3_TARGETED_STEPS
+        return (SMOKE_STEPS + FUNCTIONAL_STEPS + FEATURE_SWEEP_STEPS
+                + V3_TARGETED_STEPS + V3_TRANSFER_STEPS)
     if suite == "targeted":
-        return SMOKE_STEPS + V3_TARGETED_STEPS
+        return SMOKE_STEPS + FEATURE_SWEEP_STEPS + V3_TARGETED_STEPS
     if suite == "transfer":
         return SMOKE_STEPS + V3_TRANSFER_STEPS
     raise ValueError(f"unsupported suite: {suite}")
@@ -1419,7 +1178,19 @@ def run_serial(args: argparse.Namespace) -> int:
     transcript_path = pathlib.Path(args.transcript) if args.transcript else None
     report_path = pathlib.Path(args.report) if args.report else None
 
-    with serial.Serial(args.port, args.baud, timeout=0.05) as serial_port:
+    serial_port = serial.Serial()
+    try:
+        serial_port.dtr = False
+        serial_port.rts = False
+    except (AttributeError, OSError):
+        pass
+    serial_port.port = args.port
+    serial_port.baudrate = args.baud
+    serial_port.timeout = 0.05
+    serial_port.write_timeout = 2.0
+    serial_port.open()
+
+    with serial_port:
         time.sleep(args.boot_settle_s)
         boot_output = read_response(serial_port, args.boot_capture_s, args.idle_s,
                                     args.prompt_token)
@@ -1562,4 +1333,6 @@ def main(argv: Sequence[str]) -> int:
 
 
 if __name__ == "__main__":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")
     sys.exit(main(sys.argv[1:]))

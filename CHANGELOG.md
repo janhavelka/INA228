@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Pinned Arduino builds to PIOArduino `55.03.311` (Arduino-ESP32 `3.3.11`,
+  ESP-IDF `5.5.5`) and declared the tested ESP32-S3 QIO/QSPI PSRAM layout.
+- Updated the ESP32-S2 post-upload reset spelling for esptool 5 and removed the
+  obsolete classic-ESP32 PSRAM cache workaround from the ESP32-S3 flags.
+- Added Arduino core, ESP-IDF, MCU, flash, and PSRAM details to the diagnostic
+  CLI version output.
+- Reconciled the HIL runner with the v3 cooperative-owner contract and restored
+  comprehensive mode, timing, averaging, alert, raw-width, validation, job,
+  transfer-budget, and stress coverage to the exhaustive suite.
+
+### Fixed
+
+- Maximum-current-derived calibration now divides by the signed 20-bit positive
+  limit and rounds `SHUNT_CAL` upward. This prevents register quantization from
+  reducing the representable current below the requested maximum; the documented
+  15 mOhm/10 A example profile is covered by a native regression test.
+
+### Validation
+
+- On 2026-07-31, native tests passed 101/101 and Arduino ESP32-S2/S3 builds
+  passed with PIOArduino `55.03.311`, GCC `14.2.0`, and esptool `5.3.0`.
+- A low-voltage ESP32-S3/INA228 run from the dirty migration worktree passed
+  851 executable exhaustive/benchmark checks with zero FAIL/UNKNOWN results,
+  including 1,000 measurement samples and 1,000 mixed operations. A separate
+  60-second shakedown passed 5,932 soak commands with zero FAIL/UNKNOWN results.
+  This is implementation evidence, not clean-commit release qualification.
+
 ## [3.0.0] - 2026-07-19
 
 This breaking release adds a bounded, fixed-memory cooperative operation model

@@ -265,7 +265,7 @@ Status INA228::calculateCalibration(const CalibrationConfig& config,
   if (config.mode == CalibrationMode::FROM_MAXIMUM_CURRENT) {
     const uint64_t numerator =
         static_cast<uint64_t>(config.maxCurrentMilliAmps) * 1000000ULL;
-    selectedNanoAmps = (numerator + 524287ULL) / 524288ULL;
+    selectedNanoAmps = (numerator + 524286ULL) / 524287ULL;
   } else {
     selectedNanoAmps = config.currentLsbNanoAmps;
   }
@@ -295,7 +295,10 @@ Status INA228::calculateCalibration(const CalibrationConfig& config,
     plan.clamped = true;
     requestedCal = cmd::MASK_SHUNT_CAL;
   }
-  const uint32_t rounded = static_cast<uint32_t>(std::round(requestedCal));
+  const uint32_t rounded = static_cast<uint32_t>(
+      config.mode == CalibrationMode::FROM_MAXIMUM_CURRENT
+          ? std::ceil(requestedCal)
+          : std::round(requestedCal));
   if (rounded == 0) {
     return Status::Error(Err::INVALID_PARAM, "Calibration underflows SHUNT_CAL");
   }

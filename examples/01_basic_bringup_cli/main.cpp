@@ -640,6 +640,14 @@ void printDriverHealth() {
 void printVersionInfo() {
   Serial.println("=== Version Info ===");
   Serial.printf("  Example firmware build: %s %s\n", __DATE__, __TIME__);
+  Serial.printf("  MCU: %s rev %u, flash %lu bytes, PSRAM %s (%lu bytes)\n",
+                ESP.getChipModel(),
+                static_cast<unsigned int>(ESP.getChipRevision()),
+                static_cast<unsigned long>(ESP.getFlashChipSize()),
+                psramFound() ? "ready" : "not available",
+                static_cast<unsigned long>(ESP.getPsramSize()));
+  Serial.printf("  Arduino-ESP32: %s\n", ESP.getCoreVersion());
+  Serial.printf("  ESP-IDF: %s\n", ESP.getSdkVersion());
   Serial.printf("  INA228 library version: %s\n", INA228::VERSION);
   Serial.printf("  INA228 library full: %s\n", INA228::VERSION_FULL);
   Serial.printf("  INA228 library build: %s\n", INA228::BUILD_TIMESTAMP);

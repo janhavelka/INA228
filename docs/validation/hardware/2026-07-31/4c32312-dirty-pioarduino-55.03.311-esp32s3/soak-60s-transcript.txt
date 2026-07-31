@@ -1,0 +1,2816 @@
+### smoke: version
+verdict=PASS elapsed_s=0.000
+=== Version Info ===
+  Example firmware build: Jul 31 2026 13:06:21
+  MCU: ESP32-S3 rev 1, flash 4194304 bytes, PSRAM ready (2097152 bytes)
+  Arduino-ESP32: 3.3.11
+  ESP-IDF: v5.5.5
+  INA228 library version: 3.0.0
+  INA228 library full: 3.0.0 (4c32312, 2026-07-31 13:06:19, dirty)
+  INA228 library build: 2026-07-31 13:06:19
+  INA228 library commit: 4c32312 (dirty)
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### smoke: scan
+verdict=PASS elapsed_s=0.125
+[I] Scanning I2C bus (timeout=50ms)...
+[I]      0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+00:                         -- -- -- -- -- -- -- -- 
+10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+20: 20 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+40: 40 41 -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+50: 50 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+60: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+70: -- -- -- -- -- -- -- --                         
+[I] Scan complete. Found 4 device(s).
+[I] Common addresses: 0x40-0x4F=INA228, 0x48-0x4B=ADS1115, 0x51=RV3032, 0x76/0x77=BME280
+=== INA228 Address Probe (0x40-0x4F) ===
+Note: INA228 probes read DIAG_ALRT for MEMSTAT and can clear CNVRF/latched diagnostic evidence.
+  0x40: device ID mismatch (DEV=0x3220)
+  0x41: INA228 (MFG=0x5449 DEV=0x2281 MEMSTAT=OK)
+  0x42: --
+  0x43: --
+  0x44: --
+  0x45: --
+  0x46: --
+  0x47: --
+  0x48: --
+  0x49: --
+  0x4A: --
+  0x4B: --
+  0x4C: --
+  0x4D: --
+  0x4E: --
+  0x4F: --
+  Healthy INA228 devices: 1
+[runner] frame_status=OK frame_elapsed_ms=123
+
+### smoke: init
+verdict=PASS elapsed_s=0.016
+[I] bind + initialize(0x41): OK
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### smoke: probe
+verdict=PASS elapsed_s=0.000
+[I] Probing address 0x41 (raw, no health tracking; reads DIAG_ALRT)...
+[W] DIAG_ALRT reads can clear CNVRF and latched evidence.
+  Status: OK (code=0, detail=0)
+  Message: OK
+  Address: 0x41
+  Manufacturer ID: 0x5449
+  Device ID: 0x2281
+  DIAG_ALRT: 0x0003
+  MEMSTAT: OK
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### smoke: settings
+verdict=PASS elapsed_s=0.016
+=== Active Settings ===
+  Initialized:      yes
+  State:            READY
+  Address:          0x41
+  I2C timeout:      50 ms
+  Offline threshold:5
+  nowMs hook:       yes
+  Mode:             CONT_ALL (15)
+  VBUSCT/VSHCT/VTCT:1052us / 1052us / 1052us
+  Averaging:        1 samples
+  ADC range:        +/-163.84mV
+  Conversion delay: 0 x 2 ms (0 ms)
+  Temp compensation:no  tempco=0 ppm/degC
+  Calibration:      Rshunt=0.000000 ohm  MaxCurrent=0.000000 A
+  Calibration state:calibrated=yes clamped=no rangeExceeded=no
+  Hardware dirty:   no mask=0x0000000000000000
+  Dirty cause:      OK detail=0
+  Thresholds dirty: no
+  Triggered state:  pending=no start=0 ms
+  Est. conv time:   3156 us
+  CURRENT_LSB:      0.000019079 A
+  SHUNT_CAL:        0x0EA7
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### smoke: drv
+verdict=PASS elapsed_s=0.000
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 0
+  Total failures: 0
+  Success rate: 0.0%
+  Last OK: never
+  Last error: never
+  Mode: CONT_ALL
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### smoke: diagraw
+verdict=PASS elapsed_s=0.000
+[I] DIAG_ALRT raw: 0x0003
+[W] DIAG_ALRT reads are destructive/status-clearing.
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### smoke: raw
+verdict=PASS elapsed_s=0.000
+=== Raw Registers ===
+  Vshunt: 3575 (0x000DF7)
+  Vbus:   61394 (0x00EFD2)
+  Temp:   3972 (0x0F84)
+  Current:3903 (0x000F3F)
+  Power:  14625 (0x003921)
+  Energy: 21210
+  Charge: 91795
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+  DIAG_ALRT snapshot before accumulator reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: read
+verdict=PASS elapsed_s=0.000
+[I] Reading all measurements:
+  Vbus:    11.9918 V
+  Vshunt:  0.0011809 V
+  Temp:    31.05 C
+  Current: 0.078718 A
+  Power:   0.943916 W
+  Energy:  0.000000000 J
+  Charge:  0.000000000 C
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: stress 50
+verdict=PASS elapsed_s=0.078
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: 50
+  Errors: 0
+  Duration: 76 ms
+  Rate: 657.89 samples/s
+  Vbus V:    min=11.9904 avg=11.9918 max=11.9939
+  Current A: min=0.075780 avg=0.076597 max=0.080531
+  Power W:   min=0.819615 avg=0.916353 max=0.965834
+[runner] frame_status=OK frame_elapsed_ms=77
+
+### soak: raw
+verdict=PASS elapsed_s=0.000
+=== Raw Registers ===
+  Vshunt: 3717 (0x000E85)
+  Vbus:   61408 (0x00EFE0)
+  Temp:   3972 (0x0F84)
+  Current:4058 (0x000FDA)
+  Power:  15209 (0x003B69)
+  Energy: 21817
+  Charge: 94391
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+  DIAG_ALRT snapshot before accumulator reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: recover
+verdict=PASS elapsed_s=0.016
+[I] Invalidating cached hardware state and reinitializing...
+  Status: OK (code=0, detail=0)
+  Message: OK
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 2698
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 18 ms ago (at 217673 ms)
+  Last error: never
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: integer
+verdict=PASS elapsed_s=0.016
+=== Cooperative Instantaneous Sample ===
+  Operation: 371 request: 371 generation: 8
+  Bus:     11993 mV
+  Shunt:   895 uV
+  Temp:    31063 mdegC
+  Current: 60 mA
+  Power:   715 mW
+  DIAG_ALRT snapshot before current/power reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: probe
+verdict=PASS elapsed_s=0.000
+[I] Probing address 0x41 (raw, no health tracking; reads DIAG_ALRT)...
+[W] DIAG_ALRT reads can clear CNVRF and latched evidence.
+  Status: OK (code=0, detail=0)
+  Message: OK
+  Address: 0x41
+  Manufacturer ID: 0x5449
+  Device ID: 0x2281
+  DIAG_ALRT: 0x0003
+  MEMSTAT: OK
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: power
+verdict=PASS elapsed_s=0.000
+[I] Power: 0.993734 W
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagraw
+verdict=PASS elapsed_s=0.000
+[I] DIAG_ALRT raw: 0x0003
+[W] DIAG_ALRT reads are destructive/status-clearing.
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: current
+verdict=PASS elapsed_s=0.000
+[I] Current: 0.087036 A
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagsnap
+verdict=PASS elapsed_s=0.000
+=== DIAG_ALRT Snapshot ===
+  Note: cache-only; this command does not touch I2C.
+  Valid:      yes
+  Raw:        0x0003
+  Captured:   219215 ms
+  MEMSTAT:    yes
+  CNVRF:      yes
+  ENERGYOF:   no
+  CHARGEOF:   no
+  MATHOF:     no
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: temp
+verdict=PASS elapsed_s=0.000
+[I] Temp: 31.05 C
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: drv
+verdict=PASS elapsed_s=0.000
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 9069
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 4 ms ago (at 219732 ms)
+  Last error: never
+  Mode: CONT_ALL
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vshunt
+verdict=PASS elapsed_s=0.000
+[I] Vshunt: 0.0012213 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: settings
+verdict=PASS elapsed_s=0.000
+=== Active Settings ===
+  Initialized:      yes
+  State:            READY
+  Address:          0x41
+  I2C timeout:      50 ms
+  Offline threshold:5
+  nowMs hook:       yes
+  Mode:             CONT_ALL (15)
+  VBUSCT/VSHCT/VTCT:1052us / 1052us / 1052us
+  Averaging:        1 samples
+  ADC range:        +/-163.84mV
+  Conversion delay: 0 x 2 ms (0 ms)
+  Temp compensation:no  tempco=0 ppm/degC
+  Calibration:      Rshunt=0.000000 ohm  MaxCurrent=0.000000 A
+  Calibration state:calibrated=yes clamped=no rangeExceeded=no
+  Hardware dirty:   no mask=0x0000000000000000
+  Dirty cause:      OK detail=0
+  Thresholds dirty: no
+  Triggered state:  pending=no start=0 ms
+  Est. conv time:   3156 us
+  CURRENT_LSB:      0.000019079 A
+  SHUNT_CAL:        0x0EA7
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vbus
+verdict=PASS elapsed_s=0.000
+[I] Vbus: 11.9922 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: ready
+verdict=PASS elapsed_s=0.000
+[I] Conversion ready: yes
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: stress_mix 50
+verdict=PASS elapsed_s=0.031
+=== stress_mix summary ===
+  Total: ok=50 fail=0 (100.00%)
+  Duration: 32 ms
+  Rate: 1562.50 ops/s
+  measure    ok=8 fail=0
+  vbus       ok=7 fail=0
+  current    ok=7 fail=0
+  temp       ok=7 fail=0
+  diag       ok=7 fail=0
+  mfgid      ok=7 fail=0
+  devid      ok=7 fail=0
+  Health delta: success +147, failures +0
+[runner] frame_status=OK frame_elapsed_ms=32
+
+### soak: read
+verdict=PASS elapsed_s=0.015
+[I] Reading all measurements:
+  Vbus:    11.9914 V
+  Vshunt:  0.0011847 V
+  Temp:    31.03 C
+  Current: 0.078966 A
+  Power:   0.946908 W
+  Energy:  0.000000000 J
+  Charge:  0.000000000 C
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: stress 50
+verdict=PASS elapsed_s=0.079
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: 50
+  Errors: 0
+  Duration: 76 ms
+  Rate: 657.89 samples/s
+  Vbus V:    min=11.9896 avg=11.9915 max=11.9928
+  Current A: min=0.076047 avg=0.076570 max=0.080302
+  Power W:   min=0.815464 avg=0.916049 max=0.962903
+[runner] frame_status=OK frame_elapsed_ms=77
+
+### soak: raw
+verdict=PASS elapsed_s=0.000
+=== Raw Registers ===
+  Vshunt: 3691 (0x000E6B)
+  Vbus:   61403 (0x00EFDB)
+  Temp:   3971 (0x0F83)
+  Current:4030 (0x000FBE)
+  Power:  15103 (0x003AFF)
+  Energy: 25514
+  Charge: 110292
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+  DIAG_ALRT snapshot before accumulator reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: recover
+verdict=PASS elapsed_s=0.016
+[I] Invalidating cached hardware state and reinitializing...
+  Status: OK (code=0, detail=0)
+  Message: OK
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 15973
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 19 ms ago (at 221979 ms)
+  Last error: never
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: integer
+verdict=PASS elapsed_s=0.016
+=== Cooperative Instantaneous Sample ===
+  Operation: 421 request: 421 generation: 33
+  Bus:     11993 mV
+  Shunt:   899 uV
+  Temp:    31031 mdegC
+  Current: 60 mA
+  Power:   718 mW
+  DIAG_ALRT snapshot before current/power reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: probe
+verdict=PASS elapsed_s=0.016
+[I] Probing address 0x41 (raw, no health tracking; reads DIAG_ALRT)...
+[W] DIAG_ALRT reads can clear CNVRF and latched evidence.
+  Status: OK (code=0, detail=0)
+  Message: OK
+  Address: 0x41
+  Manufacturer ID: 0x5449
+  Device ID: 0x2281
+  DIAG_ALRT: 0x0003
+  MEMSTAT: OK
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: power
+verdict=PASS elapsed_s=0.016
+[I] Power: 1.004540 W
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagraw
+verdict=PASS elapsed_s=0.016
+[I] DIAG_ALRT raw: 0x0003
+[W] DIAG_ALRT reads are destructive/status-clearing.
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: current
+verdict=PASS elapsed_s=0.000
+[I] Current: 0.097320 A
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagsnap
+verdict=PASS elapsed_s=0.000
+=== DIAG_ALRT Snapshot ===
+  Note: cache-only; this command does not touch I2C.
+  Valid:      yes
+  Raw:        0x0003
+  Captured:   223524 ms
+  MEMSTAT:    yes
+  CNVRF:      yes
+  ENERGYOF:   no
+  CHARGEOF:   no
+  MATHOF:     no
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: temp
+verdict=PASS elapsed_s=0.016
+[I] Temp: 31.01 C
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: drv
+verdict=PASS elapsed_s=0.016
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 22344
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 3 ms ago (at 224042 ms)
+  Last error: never
+  Mode: CONT_ALL
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: vshunt
+verdict=PASS elapsed_s=0.015
+[I] Vshunt: 0.0011756 V
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: settings
+verdict=PASS elapsed_s=0.016
+=== Active Settings ===
+  Initialized:      yes
+  State:            READY
+  Address:          0x41
+  I2C timeout:      50 ms
+  Offline threshold:5
+  nowMs hook:       yes
+  Mode:             CONT_ALL (15)
+  VBUSCT/VSHCT/VTCT:1052us / 1052us / 1052us
+  Averaging:        1 samples
+  ADC range:        +/-163.84mV
+  Conversion delay: 0 x 2 ms (0 ms)
+  Temp compensation:no  tempco=0 ppm/degC
+  Calibration:      Rshunt=0.000000 ohm  MaxCurrent=0.000000 A
+  Calibration state:calibrated=yes clamped=no rangeExceeded=no
+  Hardware dirty:   no mask=0x0000000000000000
+  Dirty cause:      OK detail=0
+  Thresholds dirty: no
+  Triggered state:  pending=no start=0 ms
+  Est. conv time:   3156 us
+  CURRENT_LSB:      0.000019079 A
+  SHUNT_CAL:        0x0EA7
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vbus
+verdict=PASS elapsed_s=0.000
+[I] Vbus: 11.9912 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: ready
+verdict=PASS elapsed_s=0.000
+[I] Conversion ready: yes
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: stress_mix 50
+verdict=PASS elapsed_s=0.031
+=== stress_mix summary ===
+  Total: ok=50 fail=0 (100.00%)
+  Duration: 32 ms
+  Rate: 1562.50 ops/s
+  measure    ok=8 fail=0
+  vbus       ok=7 fail=0
+  current    ok=7 fail=0
+  temp       ok=7 fail=0
+  diag       ok=7 fail=0
+  mfgid      ok=7 fail=0
+  devid      ok=7 fail=0
+  Health delta: success +147, failures +0
+[runner] frame_status=OK frame_elapsed_ms=32
+
+### soak: read
+verdict=PASS elapsed_s=0.000
+[I] Reading all measurements:
+  Vbus:    11.9916 V
+  Vshunt:  0.0011812 V
+  Temp:    30.98 C
+  Current: 0.078737 A
+  Power:   0.944160 W
+  Energy:  0.000000000 J
+  Charge:  0.000000000 C
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: stress 50
+verdict=PASS elapsed_s=0.078
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: 50
+  Errors: 0
+  Duration: 76 ms
+  Rate: 657.89 samples/s
+  Vbus V:    min=11.9904 avg=11.9920 max=11.9934
+  Current A: min=0.076009 avg=0.076591 max=0.080378
+  Power W:   min=0.818333 avg=0.916378 max=0.963880
+[runner] frame_status=OK frame_elapsed_ms=77
+
+### soak: raw
+verdict=PASS elapsed_s=0.000
+=== Raw Registers ===
+  Vshunt: 3689 (0x000E69)
+  Vbus:   61401 (0x00EFD9)
+  Temp:   3968 (0x0F80)
+  Current:4028 (0x000FBC)
+  Power:  15095 (0x003AF7)
+  Energy: 29211
+  Charge: 126175
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+  DIAG_ALRT snapshot before accumulator reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: recover
+verdict=PASS elapsed_s=0.016
+[I] Invalidating cached hardware state and reinitializing...
+  Status: OK (code=0, detail=0)
+  Message: OK
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 29248
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 19 ms ago (at 226285 ms)
+  Last error: never
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: integer
+verdict=PASS elapsed_s=0.015
+=== Cooperative Instantaneous Sample ===
+  Operation: 471 request: 471 generation: 58
+  Bus:     11995 mV
+  Shunt:   943 uV
+  Temp:    31008 mdegC
+  Current: 63 mA
+  Power:   754 mW
+  DIAG_ALRT snapshot before current/power reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: probe
+verdict=PASS elapsed_s=0.000
+[I] Probing address 0x41 (raw, no health tracking; reads DIAG_ALRT)...
+[W] DIAG_ALRT reads can clear CNVRF and latched evidence.
+  Status: OK (code=0, detail=0)
+  Message: OK
+  Address: 0x41
+  Manufacturer ID: 0x5449
+  Device ID: 0x2281
+  DIAG_ALRT: 0x0003
+  MEMSTAT: OK
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: power
+verdict=PASS elapsed_s=0.000
+[I] Power: 0.973953 W
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagraw
+verdict=PASS elapsed_s=0.000
+[I] DIAG_ALRT raw: 0x0003
+[W] DIAG_ALRT reads are destructive/status-clearing.
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: current
+verdict=PASS elapsed_s=0.000
+[I] Current: 0.090852 A
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagsnap
+verdict=PASS elapsed_s=0.000
+=== DIAG_ALRT Snapshot ===
+  Note: cache-only; this command does not touch I2C.
+  Valid:      yes
+  Raw:        0x0003
+  Captured:   227824 ms
+  MEMSTAT:    yes
+  CNVRF:      yes
+  ENERGYOF:   no
+  CHARGEOF:   no
+  MATHOF:     no
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: temp
+verdict=PASS elapsed_s=0.000
+[I] Temp: 31.00 C
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: drv
+verdict=PASS elapsed_s=0.000
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 35619
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 4 ms ago (at 228340 ms)
+  Last error: never
+  Mode: CONT_ALL
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: vshunt
+verdict=PASS elapsed_s=0.000
+[I] Vshunt: 0.0011763 V
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: settings
+verdict=PASS elapsed_s=0.000
+=== Active Settings ===
+  Initialized:      yes
+  State:            READY
+  Address:          0x41
+  I2C timeout:      50 ms
+  Offline threshold:5
+  nowMs hook:       yes
+  Mode:             CONT_ALL (15)
+  VBUSCT/VSHCT/VTCT:1052us / 1052us / 1052us
+  Averaging:        1 samples
+  ADC range:        +/-163.84mV
+  Conversion delay: 0 x 2 ms (0 ms)
+  Temp compensation:no  tempco=0 ppm/degC
+  Calibration:      Rshunt=0.000000 ohm  MaxCurrent=0.000000 A
+  Calibration state:calibrated=yes clamped=no rangeExceeded=no
+  Hardware dirty:   no mask=0x0000000000000000
+  Dirty cause:      OK detail=0
+  Thresholds dirty: no
+  Triggered state:  pending=no start=0 ms
+  Est. conv time:   3156 us
+  CURRENT_LSB:      0.000019079 A
+  SHUNT_CAL:        0x0EA7
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vbus
+verdict=PASS elapsed_s=0.016
+[I] Vbus: 11.9910 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: ready
+verdict=PASS elapsed_s=0.000
+[I] Conversion ready: yes
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: stress_mix 50
+verdict=PASS elapsed_s=0.032
+=== stress_mix summary ===
+  Total: ok=50 fail=0 (100.00%)
+  Duration: 32 ms
+  Rate: 1562.50 ops/s
+  measure    ok=8 fail=0
+  vbus       ok=7 fail=0
+  current    ok=7 fail=0
+  temp       ok=7 fail=0
+  diag       ok=7 fail=0
+  mfgid      ok=7 fail=0
+  devid      ok=7 fail=0
+  Health delta: success +147, failures +0
+[runner] frame_status=OK frame_elapsed_ms=32
+
+### soak: read
+verdict=PASS elapsed_s=0.000
+[I] Reading all measurements:
+  Vbus:    11.9918 V
+  Vshunt:  0.0011816 V
+  Temp:    31.00 C
+  Current: 0.078756 A
+  Power:   0.944405 W
+  Energy:  0.000000000 J
+  Charge:  0.000000000 C
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: stress 50
+verdict=PASS elapsed_s=0.078
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: 50
+  Errors: 0
+  Duration: 76 ms
+  Rate: 657.89 samples/s
+  Vbus V:    min=11.9891 avg=11.9915 max=11.9932
+  Current A: min=0.075780 avg=0.076518 max=0.080416
+  Power W:   min=0.815647 avg=0.915444 max=0.964246
+[runner] frame_status=OK frame_elapsed_ms=77
+
+### soak: raw
+verdict=PASS elapsed_s=0.015
+=== Raw Registers ===
+  Vshunt: 3687 (0x000E67)
+  Vbus:   61404 (0x00EFDC)
+  Temp:   3968 (0x0F80)
+  Current:4026 (0x000FBA)
+  Power:  15088 (0x003AF0)
+  Energy: 32902
+  Charge: 142047
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+  DIAG_ALRT snapshot before accumulator reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: recover
+verdict=PASS elapsed_s=0.015
+[I] Invalidating cached hardware state and reinitializing...
+  Status: OK (code=0, detail=0)
+  Message: OK
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 42523
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 19 ms ago (at 230591 ms)
+  Last error: never
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: integer
+verdict=PASS elapsed_s=0.031
+=== Cooperative Instantaneous Sample ===
+  Operation: 521 request: 521 generation: 83
+  Bus:     11993 mV
+  Shunt:   1012 uV
+  Temp:    30992 mdegC
+  Current: 67 mA
+  Power:   809 mW
+  DIAG_ALRT snapshot before current/power reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: probe
+verdict=PASS elapsed_s=0.000
+[I] Probing address 0x41 (raw, no health tracking; reads DIAG_ALRT)...
+[W] DIAG_ALRT reads can clear CNVRF and latched evidence.
+  Status: OK (code=0, detail=0)
+  Message: OK
+  Address: 0x41
+  Manufacturer ID: 0x5449
+  Device ID: 0x2281
+  DIAG_ALRT: 0x0003
+  MEMSTAT: OK
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: power
+verdict=PASS elapsed_s=0.016
+[I] Power: 0.926211 W
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagraw
+verdict=PASS elapsed_s=0.016
+[I] DIAG_ALRT raw: 0x0003
+[W] DIAG_ALRT reads are destructive/status-clearing.
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: current
+verdict=PASS elapsed_s=0.016
+[I] Current: 0.067424 A
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagsnap
+verdict=PASS elapsed_s=0.000
+=== DIAG_ALRT Snapshot ===
+  Note: cache-only; this command does not touch I2C.
+  Valid:      yes
+  Raw:        0x0003
+  Captured:   232135 ms
+  MEMSTAT:    yes
+  CNVRF:      yes
+  ENERGYOF:   no
+  CHARGEOF:   no
+  MATHOF:     no
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: temp
+verdict=PASS elapsed_s=0.015
+[I] Temp: 31.00 C
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: drv
+verdict=PASS elapsed_s=0.000
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 48894
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 4 ms ago (at 232648 ms)
+  Last error: never
+  Mode: CONT_ALL
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vshunt
+verdict=PASS elapsed_s=0.000
+[I] Vshunt: 0.0012234 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: settings
+verdict=PASS elapsed_s=0.000
+=== Active Settings ===
+  Initialized:      yes
+  State:            READY
+  Address:          0x41
+  I2C timeout:      50 ms
+  Offline threshold:5
+  nowMs hook:       yes
+  Mode:             CONT_ALL (15)
+  VBUSCT/VSHCT/VTCT:1052us / 1052us / 1052us
+  Averaging:        1 samples
+  ADC range:        +/-163.84mV
+  Conversion delay: 0 x 2 ms (0 ms)
+  Temp compensation:no  tempco=0 ppm/degC
+  Calibration:      Rshunt=0.000000 ohm  MaxCurrent=0.000000 A
+  Calibration state:calibrated=yes clamped=no rangeExceeded=no
+  Hardware dirty:   no mask=0x0000000000000000
+  Dirty cause:      OK detail=0
+  Thresholds dirty: no
+  Triggered state:  pending=no start=0 ms
+  Est. conv time:   3156 us
+  CURRENT_LSB:      0.000019079 A
+  SHUNT_CAL:        0x0EA7
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vbus
+verdict=PASS elapsed_s=0.000
+[I] Vbus: 11.9916 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: ready
+verdict=PASS elapsed_s=0.000
+[I] Conversion ready: yes
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: stress_mix 50
+verdict=PASS elapsed_s=0.031
+=== stress_mix summary ===
+  Total: ok=50 fail=0 (100.00%)
+  Duration: 32 ms
+  Rate: 1562.50 ops/s
+  measure    ok=8 fail=0
+  vbus       ok=7 fail=0
+  current    ok=7 fail=0
+  temp       ok=7 fail=0
+  diag       ok=7 fail=0
+  mfgid      ok=7 fail=0
+  devid      ok=7 fail=0
+  Health delta: success +147, failures +0
+[runner] frame_status=OK frame_elapsed_ms=33
+
+### soak: read
+verdict=PASS elapsed_s=0.000
+[I] Reading all measurements:
+  Vbus:    11.9928 V
+  Vshunt:  0.0011769 V
+  Temp:    30.99 C
+  Current: 0.078451 A
+  Power:   0.940803 W
+  Energy:  0.000000000 J
+  Charge:  0.000000000 C
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: stress 50
+verdict=PASS elapsed_s=0.078
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: 50
+  Errors: 0
+  Duration: 77 ms
+  Rate: 649.35 samples/s
+  Vbus V:    min=11.9904 avg=11.9918 max=11.9932
+  Current A: min=0.068320 avg=0.076717 max=0.085281
+  Power W:   min=0.819249 avg=0.919930 max=1.022611
+[runner] frame_status=OK frame_elapsed_ms=78
+
+### soak: raw
+verdict=PASS elapsed_s=0.000
+=== Raw Registers ===
+  Vshunt: 3693 (0x000E6D)
+  Vbus:   61409 (0x00EFE1)
+  Temp:   3966 (0x0F7E)
+  Current:4032 (0x000FC0)
+  Power:  15112 (0x003B08)
+  Energy: 36583
+  Charge: 157924
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+  DIAG_ALRT snapshot before accumulator reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: recover
+verdict=PASS elapsed_s=0.015
+[I] Invalidating cached hardware state and reinitializing...
+  Status: OK (code=0, detail=0)
+  Message: OK
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 55798
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 19 ms ago (at 234893 ms)
+  Last error: never
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: integer
+verdict=PASS elapsed_s=0.016
+=== Cooperative Instantaneous Sample ===
+  Operation: 571 request: 571 generation: 108
+  Bus:     11992 mV
+  Shunt:   931 uV
+  Temp:    30977 mdegC
+  Current: 62 mA
+  Power:   744 mW
+  DIAG_ALRT snapshot before current/power reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: probe
+verdict=PASS elapsed_s=0.000
+[I] Probing address 0x41 (raw, no health tracking; reads DIAG_ALRT)...
+[W] DIAG_ALRT reads can clear CNVRF and latched evidence.
+  Status: OK (code=0, detail=0)
+  Message: OK
+  Address: 0x41
+  Manufacturer ID: 0x5449
+  Device ID: 0x2281
+  DIAG_ALRT: 0x0003
+  MEMSTAT: OK
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: power
+verdict=PASS elapsed_s=0.000
+[I] Power: 0.983661 W
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagraw
+verdict=PASS elapsed_s=0.000
+[I] DIAG_ALRT raw: 0x0003
+[W] DIAG_ALRT reads are destructive/status-clearing.
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: current
+verdict=PASS elapsed_s=0.000
+[I] Current: 0.077211 A
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagsnap
+verdict=PASS elapsed_s=0.000
+=== DIAG_ALRT Snapshot ===
+  Note: cache-only; this command does not touch I2C.
+  Valid:      yes
+  Raw:        0x0003
+  Captured:   236434 ms
+  MEMSTAT:    yes
+  CNVRF:      yes
+  ENERGYOF:   no
+  CHARGEOF:   no
+  MATHOF:     no
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: temp
+verdict=PASS elapsed_s=0.000
+[I] Temp: 30.97 C
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: drv
+verdict=PASS elapsed_s=0.000
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 62169
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 4 ms ago (at 236951 ms)
+  Last error: never
+  Mode: CONT_ALL
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: vshunt
+verdict=PASS elapsed_s=0.000
+[I] Vshunt: 0.0011766 V
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: settings
+verdict=PASS elapsed_s=0.000
+=== Active Settings ===
+  Initialized:      yes
+  State:            READY
+  Address:          0x41
+  I2C timeout:      50 ms
+  Offline threshold:5
+  nowMs hook:       yes
+  Mode:             CONT_ALL (15)
+  VBUSCT/VSHCT/VTCT:1052us / 1052us / 1052us
+  Averaging:        1 samples
+  ADC range:        +/-163.84mV
+  Conversion delay: 0 x 2 ms (0 ms)
+  Temp compensation:no  tempco=0 ppm/degC
+  Calibration:      Rshunt=0.000000 ohm  MaxCurrent=0.000000 A
+  Calibration state:calibrated=yes clamped=no rangeExceeded=no
+  Hardware dirty:   no mask=0x0000000000000000
+  Dirty cause:      OK detail=0
+  Thresholds dirty: no
+  Triggered state:  pending=no start=0 ms
+  Est. conv time:   3156 us
+  CURRENT_LSB:      0.000019079 A
+  SHUNT_CAL:        0x0EA7
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vbus
+verdict=PASS elapsed_s=0.000
+[I] Vbus: 11.9920 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: ready
+verdict=PASS elapsed_s=0.000
+[I] Conversion ready: yes
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: stress_mix 50
+verdict=PASS elapsed_s=0.047
+=== stress_mix summary ===
+  Total: ok=50 fail=0 (100.00%)
+  Duration: 32 ms
+  Rate: 1562.50 ops/s
+  measure    ok=8 fail=0
+  vbus       ok=7 fail=0
+  current    ok=7 fail=0
+  temp       ok=7 fail=0
+  diag       ok=7 fail=0
+  mfgid      ok=7 fail=0
+  devid      ok=7 fail=0
+  Health delta: success +147, failures +0
+[runner] frame_status=OK frame_elapsed_ms=32
+
+### soak: read
+verdict=PASS elapsed_s=0.000
+[I] Reading all measurements:
+  Vbus:    11.9908 V
+  Vshunt:  0.0011809 V
+  Temp:    30.98 C
+  Current: 0.078718 A
+  Power:   0.943855 W
+  Energy:  0.000000000 J
+  Charge:  0.000000000 C
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: stress 50
+verdict=PASS elapsed_s=0.078
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: 50
+  Errors: 0
+  Duration: 76 ms
+  Rate: 657.89 samples/s
+  Vbus V:    min=11.9900 avg=11.9920 max=11.9941
+  Current A: min=0.075723 avg=0.076595 max=0.080760
+  Power W:   min=0.815830 avg=0.916376 max=0.968459
+[runner] frame_status=OK frame_elapsed_ms=77
+
+### soak: raw
+verdict=PASS elapsed_s=0.000
+=== Raw Registers ===
+  Vshunt: 3721 (0x000E89)
+  Vbus:   61405 (0x00EFDD)
+  Temp:   3965 (0x0F7D)
+  Current:4063 (0x000FDF)
+  Power:  15227 (0x003B7B)
+  Energy: 40277
+  Charge: 173796
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+  DIAG_ALRT snapshot before accumulator reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: recover
+verdict=PASS elapsed_s=0.015
+[I] Invalidating cached hardware state and reinitializing...
+  Status: OK (code=0, detail=0)
+  Message: OK
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 69073
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 19 ms ago (at 239192 ms)
+  Last error: never
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: integer
+verdict=PASS elapsed_s=0.016
+=== Cooperative Instantaneous Sample ===
+  Operation: 621 request: 621 generation: 133
+  Bus:     11992 mV
+  Shunt:   1008 uV
+  Temp:    30977 mdegC
+  Current: 67 mA
+  Power:   806 mW
+  DIAG_ALRT snapshot before current/power reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: probe
+verdict=PASS elapsed_s=0.000
+[I] Probing address 0x41 (raw, no health tracking; reads DIAG_ALRT)...
+[W] DIAG_ALRT reads can clear CNVRF and latched evidence.
+  Status: OK (code=0, detail=0)
+  Message: OK
+  Address: 0x41
+  Manufacturer ID: 0x5449
+  Device ID: 0x2281
+  DIAG_ALRT: 0x0003
+  MEMSTAT: OK
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: power
+verdict=PASS elapsed_s=0.000
+[I] Power: 0.965650 W
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagraw
+verdict=PASS elapsed_s=0.000
+[I] DIAG_ALRT raw: 0x0003
+[W] DIAG_ALRT reads are destructive/status-clearing.
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: current
+verdict=PASS elapsed_s=0.000
+[I] Current: 0.081580 A
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagsnap
+verdict=PASS elapsed_s=0.000
+=== DIAG_ALRT Snapshot ===
+  Note: cache-only; this command does not touch I2C.
+  Valid:      yes
+  Raw:        0x0003
+  Captured:   240732 ms
+  MEMSTAT:    yes
+  CNVRF:      yes
+  ENERGYOF:   no
+  CHARGEOF:   no
+  MATHOF:     no
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: temp
+verdict=PASS elapsed_s=0.000
+[I] Temp: 30.99 C
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: drv
+verdict=PASS elapsed_s=0.000
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 75444
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 4 ms ago (at 241249 ms)
+  Last error: never
+  Mode: CONT_ALL
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vshunt
+verdict=PASS elapsed_s=0.000
+[I] Vshunt: 0.0012250 V
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: settings
+verdict=PASS elapsed_s=0.000
+=== Active Settings ===
+  Initialized:      yes
+  State:            READY
+  Address:          0x41
+  I2C timeout:      50 ms
+  Offline threshold:5
+  nowMs hook:       yes
+  Mode:             CONT_ALL (15)
+  VBUSCT/VSHCT/VTCT:1052us / 1052us / 1052us
+  Averaging:        1 samples
+  ADC range:        +/-163.84mV
+  Conversion delay: 0 x 2 ms (0 ms)
+  Temp compensation:no  tempco=0 ppm/degC
+  Calibration:      Rshunt=0.000000 ohm  MaxCurrent=0.000000 A
+  Calibration state:calibrated=yes clamped=no rangeExceeded=no
+  Hardware dirty:   no mask=0x0000000000000000
+  Dirty cause:      OK detail=0
+  Thresholds dirty: no
+  Triggered state:  pending=no start=0 ms
+  Est. conv time:   3156 us
+  CURRENT_LSB:      0.000019079 A
+  SHUNT_CAL:        0x0EA7
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vbus
+verdict=PASS elapsed_s=0.000
+[I] Vbus: 11.9906 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: ready
+verdict=PASS elapsed_s=0.000
+[I] Conversion ready: yes
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: stress_mix 50
+verdict=PASS elapsed_s=0.047
+=== stress_mix summary ===
+  Total: ok=50 fail=0 (100.00%)
+  Duration: 32 ms
+  Rate: 1562.50 ops/s
+  measure    ok=8 fail=0
+  vbus       ok=7 fail=0
+  current    ok=7 fail=0
+  temp       ok=7 fail=0
+  diag       ok=7 fail=0
+  mfgid      ok=7 fail=0
+  devid      ok=7 fail=0
+  Health delta: success +147, failures +0
+[runner] frame_status=OK frame_elapsed_ms=32
+
+### soak: read
+verdict=PASS elapsed_s=0.016
+[I] Reading all measurements:
+  Vbus:    11.9914 V
+  Vshunt:  0.0011881 V
+  Temp:    30.98 C
+  Current: 0.079195 A
+  Power:   0.949655 W
+  Energy:  0.000000000 J
+  Charge:  0.000000000 C
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: stress 50
+verdict=PASS elapsed_s=0.079
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: 50
+  Errors: 0
+  Duration: 77 ms
+  Rate: 649.35 samples/s
+  Vbus V:    min=11.9891 avg=11.9915 max=11.9932
+  Current A: min=0.068435 avg=0.076721 max=0.084613
+  Power W:   min=0.820592 avg=0.919941 max=1.014675
+[runner] frame_status=OK frame_elapsed_ms=77
+
+### soak: raw
+verdict=PASS elapsed_s=0.000
+=== Raw Registers ===
+  Vshunt: 3686 (0x000E66)
+  Vbus:   61402 (0x00EFDA)
+  Temp:   3966 (0x0F7E)
+  Current:4025 (0x000FB9)
+  Power:  15084 (0x003AEC)
+  Energy: 43965
+  Charge: 189673
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+  DIAG_ALRT snapshot before accumulator reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: recover
+verdict=PASS elapsed_s=0.016
+[I] Invalidating cached hardware state and reinitializing...
+  Status: OK (code=0, detail=0)
+  Message: OK
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 82348
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 19 ms ago (at 243496 ms)
+  Last error: never
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: integer
+verdict=PASS elapsed_s=0.016
+=== Cooperative Instantaneous Sample ===
+  Operation: 671 request: 671 generation: 158
+  Bus:     11993 mV
+  Shunt:   1015 uV
+  Temp:    30969 mdegC
+  Current: 68 mA
+  Power:   812 mW
+  DIAG_ALRT snapshot before current/power reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: probe
+verdict=PASS elapsed_s=0.016
+[I] Probing address 0x41 (raw, no health tracking; reads DIAG_ALRT)...
+[W] DIAG_ALRT reads can clear CNVRF and latched evidence.
+  Status: OK (code=0, detail=0)
+  Message: OK
+  Address: 0x41
+  Manufacturer ID: 0x5449
+  Device ID: 0x2281
+  DIAG_ALRT: 0x0003
+  MEMSTAT: OK
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: power
+verdict=PASS elapsed_s=0.000
+[I] Power: 1.002953 W
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagraw
+verdict=PASS elapsed_s=0.000
+[I] DIAG_ALRT raw: 0x0003
+[W] DIAG_ALRT reads are destructive/status-clearing.
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: current
+verdict=PASS elapsed_s=0.000
+[I] Current: 0.081714 A
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagsnap
+verdict=PASS elapsed_s=0.000
+=== DIAG_ALRT Snapshot ===
+  Note: cache-only; this command does not touch I2C.
+  Valid:      yes
+  Raw:        0x0003
+  Captured:   245037 ms
+  MEMSTAT:    yes
+  CNVRF:      yes
+  ENERGYOF:   no
+  CHARGEOF:   no
+  MATHOF:     no
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: temp
+verdict=PASS elapsed_s=0.000
+[I] Temp: 31.00 C
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: drv
+verdict=PASS elapsed_s=0.000
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 88719
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 4 ms ago (at 245551 ms)
+  Last error: never
+  Mode: CONT_ALL
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vshunt
+verdict=PASS elapsed_s=0.000
+[I] Vshunt: 0.0010741 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: settings
+verdict=PASS elapsed_s=0.000
+=== Active Settings ===
+  Initialized:      yes
+  State:            READY
+  Address:          0x41
+  I2C timeout:      50 ms
+  Offline threshold:5
+  nowMs hook:       yes
+  Mode:             CONT_ALL (15)
+  VBUSCT/VSHCT/VTCT:1052us / 1052us / 1052us
+  Averaging:        1 samples
+  ADC range:        +/-163.84mV
+  Conversion delay: 0 x 2 ms (0 ms)
+  Temp compensation:no  tempco=0 ppm/degC
+  Calibration:      Rshunt=0.000000 ohm  MaxCurrent=0.000000 A
+  Calibration state:calibrated=yes clamped=no rangeExceeded=no
+  Hardware dirty:   no mask=0x0000000000000000
+  Dirty cause:      OK detail=0
+  Thresholds dirty: no
+  Triggered state:  pending=no start=0 ms
+  Est. conv time:   3156 us
+  CURRENT_LSB:      0.000019079 A
+  SHUNT_CAL:        0x0EA7
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vbus
+verdict=PASS elapsed_s=0.000
+[I] Vbus: 11.9891 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: ready
+verdict=PASS elapsed_s=0.000
+[I] Conversion ready: yes
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: stress_mix 50
+verdict=PASS elapsed_s=0.032
+=== stress_mix summary ===
+  Total: ok=50 fail=0 (100.00%)
+  Duration: 32 ms
+  Rate: 1562.50 ops/s
+  measure    ok=8 fail=0
+  vbus       ok=7 fail=0
+  current    ok=7 fail=0
+  temp       ok=7 fail=0
+  diag       ok=7 fail=0
+  mfgid      ok=7 fail=0
+  devid      ok=7 fail=0
+  Health delta: success +147, failures +0
+[runner] frame_status=OK frame_elapsed_ms=32
+
+### soak: read
+verdict=PASS elapsed_s=0.000
+[I] Reading all measurements:
+  Vbus:    11.9914 V
+  Vshunt:  0.0011825 V
+  Temp:    31.00 C
+  Current: 0.078833 A
+  Power:   0.945259 W
+  Energy:  0.000000000 J
+  Charge:  0.000000000 C
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: stress 50
+verdict=PASS elapsed_s=0.078
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: 50
+  Errors: 0
+  Duration: 77 ms
+  Rate: 649.35 samples/s
+  Vbus V:    min=11.9896 avg=11.9916 max=11.9934
+  Current A: min=0.068225 avg=0.076776 max=0.086083
+  Power W:   min=0.817967 avg=0.920424 max=1.032380
+[runner] frame_status=OK frame_elapsed_ms=78
+
+### soak: raw
+verdict=PASS elapsed_s=0.000
+=== Raw Registers ===
+  Vshunt: 3692 (0x000E6C)
+  Vbus:   61393 (0x00EFD1)
+  Temp:   3967 (0x0F7F)
+  Current:4031 (0x000FBF)
+  Power:  15104 (0x003B00)
+  Energy: 47653
+  Charge: 205530
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+  DIAG_ALRT snapshot before accumulator reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: recover
+verdict=PASS elapsed_s=0.016
+[I] Invalidating cached hardware state and reinitializing...
+  Status: OK (code=0, detail=0)
+  Message: OK
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 95623
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 19 ms ago (at 247800 ms)
+  Last error: never
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: integer
+verdict=PASS elapsed_s=0.016
+=== Cooperative Instantaneous Sample ===
+  Operation: 721 request: 721 generation: 183
+  Bus:     11994 mV
+  Shunt:   950 uV
+  Temp:    30992 mdegC
+  Current: 63 mA
+  Power:   759 mW
+  DIAG_ALRT snapshot before current/power reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: probe
+verdict=PASS elapsed_s=0.000
+[I] Probing address 0x41 (raw, no health tracking; reads DIAG_ALRT)...
+[W] DIAG_ALRT reads can clear CNVRF and latched evidence.
+  Status: OK (code=0, detail=0)
+  Message: OK
+  Address: 0x41
+  Manufacturer ID: 0x5449
+  Device ID: 0x2281
+  DIAG_ALRT: 0x0003
+  MEMSTAT: OK
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: power
+verdict=PASS elapsed_s=0.000
+[I] Power: 1.067973 W
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: diagraw
+verdict=PASS elapsed_s=0.000
+[I] DIAG_ALRT raw: 0x0003
+[W] DIAG_ALRT reads are destructive/status-clearing.
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: current
+verdict=PASS elapsed_s=0.000
+[I] Current: 0.083679 A
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagsnap
+verdict=PASS elapsed_s=0.000
+=== DIAG_ALRT Snapshot ===
+  Note: cache-only; this command does not touch I2C.
+  Valid:      yes
+  Raw:        0x0003
+  Captured:   249342 ms
+  MEMSTAT:    yes
+  CNVRF:      yes
+  ENERGYOF:   no
+  CHARGEOF:   no
+  MATHOF:     no
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: temp
+verdict=PASS elapsed_s=0.000
+[I] Temp: 30.99 C
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: drv
+verdict=PASS elapsed_s=0.000
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 101994
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 4 ms ago (at 249859 ms)
+  Last error: never
+  Mode: CONT_ALL
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: vshunt
+verdict=PASS elapsed_s=0.000
+[I] Vshunt: 0.0012222 V
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: settings
+verdict=PASS elapsed_s=0.000
+=== Active Settings ===
+  Initialized:      yes
+  State:            READY
+  Address:          0x41
+  I2C timeout:      50 ms
+  Offline threshold:5
+  nowMs hook:       yes
+  Mode:             CONT_ALL (15)
+  VBUSCT/VSHCT/VTCT:1052us / 1052us / 1052us
+  Averaging:        1 samples
+  ADC range:        +/-163.84mV
+  Conversion delay: 0 x 2 ms (0 ms)
+  Temp compensation:no  tempco=0 ppm/degC
+  Calibration:      Rshunt=0.000000 ohm  MaxCurrent=0.000000 A
+  Calibration state:calibrated=yes clamped=no rangeExceeded=no
+  Hardware dirty:   no mask=0x0000000000000000
+  Dirty cause:      OK detail=0
+  Thresholds dirty: no
+  Triggered state:  pending=no start=0 ms
+  Est. conv time:   3156 us
+  CURRENT_LSB:      0.000019079 A
+  SHUNT_CAL:        0x0EA7
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vbus
+verdict=PASS elapsed_s=0.000
+[I] Vbus: 11.9916 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: ready
+verdict=PASS elapsed_s=0.000
+[I] Conversion ready: yes
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: stress_mix 50
+verdict=PASS elapsed_s=0.031
+=== stress_mix summary ===
+  Total: ok=50 fail=0 (100.00%)
+  Duration: 32 ms
+  Rate: 1562.50 ops/s
+  measure    ok=8 fail=0
+  vbus       ok=7 fail=0
+  current    ok=7 fail=0
+  temp       ok=7 fail=0
+  diag       ok=7 fail=0
+  mfgid      ok=7 fail=0
+  devid      ok=7 fail=0
+  Health delta: success +147, failures +0
+[runner] frame_status=OK frame_elapsed_ms=32
+
+### soak: read
+verdict=PASS elapsed_s=0.000
+[I] Reading all measurements:
+  Vbus:    11.9898 V
+  Vshunt:  0.0011881 V
+  Temp:    31.01 C
+  Current: 0.079195 A
+  Power:   0.949533 W
+  Energy:  0.000000000 J
+  Charge:  0.000000000 C
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: stress 50
+verdict=PASS elapsed_s=0.079
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: 50
+  Errors: 0
+  Duration: 76 ms
+  Rate: 657.89 samples/s
+  Vbus V:    min=11.9891 avg=11.9917 max=11.9932
+  Current A: min=0.075914 avg=0.076656 max=0.080531
+  Power W:   min=0.822485 avg=0.917179 max=0.965712
+[runner] frame_status=OK frame_elapsed_ms=77
+
+### soak: raw
+verdict=PASS elapsed_s=0.000
+=== Raw Registers ===
+  Vshunt: 3702 (0x000E76)
+  Vbus:   61407 (0x00EFDF)
+  Temp:   3966 (0x0F7E)
+  Current:4042 (0x000FCA)
+  Power:  15149 (0x003B2D)
+  Energy: 51356
+  Charge: 221445
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+  DIAG_ALRT snapshot before accumulator reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: recover
+verdict=PASS elapsed_s=0.016
+[I] Invalidating cached hardware state and reinitializing...
+  Status: OK (code=0, detail=0)
+  Message: OK
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 108898
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 19 ms ago (at 252109 ms)
+  Last error: never
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: integer
+verdict=PASS elapsed_s=0.016
+=== Cooperative Instantaneous Sample ===
+  Operation: 771 request: 771 generation: 208
+  Bus:     11992 mV
+  Shunt:   1001 uV
+  Temp:    31016 mdegC
+  Current: 67 mA
+  Power:   800 mW
+  DIAG_ALRT snapshot before current/power reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: probe
+verdict=PASS elapsed_s=0.000
+[I] Probing address 0x41 (raw, no health tracking; reads DIAG_ALRT)...
+[W] DIAG_ALRT reads can clear CNVRF and latched evidence.
+  Status: OK (code=0, detail=0)
+  Message: OK
+  Address: 0x41
+  Manufacturer ID: 0x5449
+  Device ID: 0x2281
+  DIAG_ALRT: 0x0003
+  MEMSTAT: OK
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: power
+verdict=PASS elapsed_s=0.000
+[I] Power: 0.982256 W
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagraw
+verdict=PASS elapsed_s=0.000
+[I] DIAG_ALRT raw: 0x0003
+[W] DIAG_ALRT reads are destructive/status-clearing.
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: current
+verdict=PASS elapsed_s=0.000
+[I] Current: 0.084327 A
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagsnap
+verdict=PASS elapsed_s=0.000
+=== DIAG_ALRT Snapshot ===
+  Note: cache-only; this command does not touch I2C.
+  Valid:      yes
+  Raw:        0x0003
+  Captured:   253655 ms
+  MEMSTAT:    yes
+  CNVRF:      yes
+  ENERGYOF:   no
+  CHARGEOF:   no
+  MATHOF:     no
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: temp
+verdict=PASS elapsed_s=0.000
+[I] Temp: 31.01 C
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: drv
+verdict=PASS elapsed_s=0.000
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 115269
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 4 ms ago (at 254169 ms)
+  Last error: never
+  Mode: CONT_ALL
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vshunt
+verdict=PASS elapsed_s=0.000
+[I] Vshunt: 0.0011822 V
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: settings
+verdict=PASS elapsed_s=0.000
+=== Active Settings ===
+  Initialized:      yes
+  State:            READY
+  Address:          0x41
+  I2C timeout:      50 ms
+  Offline threshold:5
+  nowMs hook:       yes
+  Mode:             CONT_ALL (15)
+  VBUSCT/VSHCT/VTCT:1052us / 1052us / 1052us
+  Averaging:        1 samples
+  ADC range:        +/-163.84mV
+  Conversion delay: 0 x 2 ms (0 ms)
+  Temp compensation:no  tempco=0 ppm/degC
+  Calibration:      Rshunt=0.000000 ohm  MaxCurrent=0.000000 A
+  Calibration state:calibrated=yes clamped=no rangeExceeded=no
+  Hardware dirty:   no mask=0x0000000000000000
+  Dirty cause:      OK detail=0
+  Thresholds dirty: no
+  Triggered state:  pending=no start=0 ms
+  Est. conv time:   3156 us
+  CURRENT_LSB:      0.000019079 A
+  SHUNT_CAL:        0x0EA7
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vbus
+verdict=PASS elapsed_s=0.000
+[I] Vbus: 11.9920 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: ready
+verdict=PASS elapsed_s=0.000
+[I] Conversion ready: yes
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: stress_mix 50
+verdict=PASS elapsed_s=0.047
+=== stress_mix summary ===
+  Total: ok=50 fail=0 (100.00%)
+  Duration: 32 ms
+  Rate: 1562.50 ops/s
+  measure    ok=8 fail=0
+  vbus       ok=7 fail=0
+  current    ok=7 fail=0
+  temp       ok=7 fail=0
+  diag       ok=7 fail=0
+  mfgid      ok=7 fail=0
+  devid      ok=7 fail=0
+  Health delta: success +147, failures +0
+[runner] frame_status=OK frame_elapsed_ms=32
+
+### soak: read
+verdict=PASS elapsed_s=0.016
+[I] Reading all measurements:
+  Vbus:    11.9914 V
+  Vshunt:  0.0011922 V
+  Temp:    31.00 C
+  Current: 0.079462 A
+  Power:   0.952830 W
+  Energy:  0.000000000 J
+  Charge:  0.000000000 C
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: stress 50
+verdict=PASS elapsed_s=0.078
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: 50
+  Errors: 0
+  Duration: 76 ms
+  Rate: 657.89 samples/s
+  Vbus V:    min=11.9898 avg=11.9917 max=11.9936
+  Current A: min=0.075990 avg=0.076578 max=0.080111
+  Power W:   min=0.818272 avg=0.916311 max=0.960644
+[runner] frame_status=OK frame_elapsed_ms=77
+
+### soak: raw
+verdict=PASS elapsed_s=0.015
+=== Raw Registers ===
+  Vshunt: 3723 (0x000E8B)
+  Vbus:   61392 (0x00EFD0)
+  Temp:   3970 (0x0F82)
+  Current:4065 (0x000FE1)
+  Power:  15231 (0x003B7F)
+  Energy: 55057
+  Charge: 237332
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+  DIAG_ALRT snapshot before accumulator reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: recover
+verdict=PASS elapsed_s=0.016
+[I] Invalidating cached hardware state and reinitializing...
+  Status: OK (code=0, detail=0)
+  Message: OK
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 122173
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 19 ms ago (at 256416 ms)
+  Last error: never
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: integer
+verdict=PASS elapsed_s=0.015
+=== Cooperative Instantaneous Sample ===
+  Operation: 821 request: 821 generation: 233
+  Bus:     11993 mV
+  Shunt:   900 uV
+  Temp:    31016 mdegC
+  Current: 60 mA
+  Power:   720 mW
+  DIAG_ALRT snapshot before current/power reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: probe
+verdict=PASS elapsed_s=0.016
+[I] Probing address 0x41 (raw, no health tracking; reads DIAG_ALRT)...
+[W] DIAG_ALRT reads can clear CNVRF and latched evidence.
+  Status: OK (code=0, detail=0)
+  Message: OK
+  Address: 0x41
+  Manufacturer ID: 0x5449
+  Device ID: 0x2281
+  DIAG_ALRT: 0x0003
+  MEMSTAT: OK
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: power
+verdict=PASS elapsed_s=0.000
+[I] Power: 0.972000 W
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagraw
+verdict=PASS elapsed_s=0.015
+[I] DIAG_ALRT raw: 0x0003
+[W] DIAG_ALRT reads are destructive/status-clearing.
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: current
+verdict=PASS elapsed_s=0.000
+[I] Current: 0.087532 A
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagsnap
+verdict=PASS elapsed_s=0.000
+=== DIAG_ALRT Snapshot ===
+  Note: cache-only; this command does not touch I2C.
+  Valid:      yes
+  Raw:        0x0003
+  Captured:   257958 ms
+  MEMSTAT:    yes
+  CNVRF:      yes
+  ENERGYOF:   no
+  CHARGEOF:   no
+  MATHOF:     no
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: temp
+verdict=PASS elapsed_s=0.000
+[I] Temp: 31.00 C
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: drv
+verdict=PASS elapsed_s=0.000
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 128544
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 4 ms ago (at 258472 ms)
+  Last error: never
+  Mode: CONT_ALL
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vshunt
+verdict=PASS elapsed_s=0.000
+[I] Vshunt: 0.0011828 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: settings
+verdict=PASS elapsed_s=0.000
+=== Active Settings ===
+  Initialized:      yes
+  State:            READY
+  Address:          0x41
+  I2C timeout:      50 ms
+  Offline threshold:5
+  nowMs hook:       yes
+  Mode:             CONT_ALL (15)
+  VBUSCT/VSHCT/VTCT:1052us / 1052us / 1052us
+  Averaging:        1 samples
+  ADC range:        +/-163.84mV
+  Conversion delay: 0 x 2 ms (0 ms)
+  Temp compensation:no  tempco=0 ppm/degC
+  Calibration:      Rshunt=0.000000 ohm  MaxCurrent=0.000000 A
+  Calibration state:calibrated=yes clamped=no rangeExceeded=no
+  Hardware dirty:   no mask=0x0000000000000000
+  Dirty cause:      OK detail=0
+  Thresholds dirty: no
+  Triggered state:  pending=no start=0 ms
+  Est. conv time:   3156 us
+  CURRENT_LSB:      0.000019079 A
+  SHUNT_CAL:        0x0EA7
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vbus
+verdict=PASS elapsed_s=0.000
+[I] Vbus: 11.9920 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: ready
+verdict=PASS elapsed_s=0.000
+[I] Conversion ready: yes
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: stress_mix 50
+verdict=PASS elapsed_s=0.032
+=== stress_mix summary ===
+  Total: ok=50 fail=0 (100.00%)
+  Duration: 32 ms
+  Rate: 1562.50 ops/s
+  measure    ok=8 fail=0
+  vbus       ok=7 fail=0
+  current    ok=7 fail=0
+  temp       ok=7 fail=0
+  diag       ok=7 fail=0
+  mfgid      ok=7 fail=0
+  devid      ok=7 fail=0
+  Health delta: success +147, failures +0
+[runner] frame_status=OK frame_elapsed_ms=32
+
+### soak: read
+verdict=PASS elapsed_s=0.000
+[I] Reading all measurements:
+  Vbus:    11.9930 V
+  Vshunt:  0.0011919 V
+  Temp:    31.00 C
+  Current: 0.079443 A
+  Power:   0.952708 W
+  Energy:  0.000000000 J
+  Charge:  0.000000000 C
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: stress 50
+verdict=PASS elapsed_s=0.078
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: 50
+  Errors: 0
+  Duration: 76 ms
+  Rate: 657.89 samples/s
+  Vbus V:    min=11.9906 avg=11.9920 max=11.9932
+  Current A: min=0.075914 avg=0.076555 max=0.080512
+  Power W:   min=0.818578 avg=0.915989 max=0.965467
+[runner] frame_status=OK frame_elapsed_ms=77
+
+### soak: raw
+verdict=PASS elapsed_s=0.000
+=== Raw Registers ===
+  Vshunt: 3731 (0x000E93)
+  Vbus:   61393 (0x00EFD1)
+  Temp:   3968 (0x0F80)
+  Current:4074 (0x000FEA)
+  Power:  15265 (0x003BA1)
+  Energy: 58754
+  Charge: 253203
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+  DIAG_ALRT snapshot before accumulator reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: recover
+verdict=PASS elapsed_s=0.015
+[I] Invalidating cached hardware state and reinitializing...
+  Status: OK (code=0, detail=0)
+  Message: OK
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 135448
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 19 ms ago (at 260718 ms)
+  Last error: never
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: integer
+verdict=PASS elapsed_s=0.016
+=== Cooperative Instantaneous Sample ===
+  Operation: 871 request: 871 generation: 258
+  Bus:     11992 mV
+  Shunt:   960 uV
+  Temp:    31000 mdegC
+  Current: 64 mA
+  Power:   767 mW
+  DIAG_ALRT snapshot before current/power reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: probe
+verdict=PASS elapsed_s=0.000
+[I] Probing address 0x41 (raw, no health tracking; reads DIAG_ALRT)...
+[W] DIAG_ALRT reads can clear CNVRF and latched evidence.
+  Status: OK (code=0, detail=0)
+  Message: OK
+  Address: 0x41
+  Manufacturer ID: 0x5449
+  Device ID: 0x2281
+  DIAG_ALRT: 0x0003
+  MEMSTAT: OK
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: power
+verdict=PASS elapsed_s=0.000
+[I] Power: 0.937872 W
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagraw
+verdict=PASS elapsed_s=0.000
+[I] DIAG_ALRT raw: 0x0003
+[W] DIAG_ALRT reads are destructive/status-clearing.
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: current
+verdict=PASS elapsed_s=0.000
+[I] Current: 0.096080 A
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagsnap
+verdict=PASS elapsed_s=0.000
+=== DIAG_ALRT Snapshot ===
+  Note: cache-only; this command does not touch I2C.
+  Valid:      yes
+  Raw:        0x0003
+  Captured:   262263 ms
+  MEMSTAT:    yes
+  CNVRF:      yes
+  ENERGYOF:   no
+  CHARGEOF:   no
+  MATHOF:     no
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: temp
+verdict=PASS elapsed_s=0.000
+[I] Temp: 31.00 C
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: drv
+verdict=PASS elapsed_s=0.000
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 141819
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 4 ms ago (at 262780 ms)
+  Last error: never
+  Mode: CONT_ALL
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: vshunt
+verdict=PASS elapsed_s=0.000
+[I] Vshunt: 0.0010891 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: settings
+verdict=PASS elapsed_s=0.000
+=== Active Settings ===
+  Initialized:      yes
+  State:            READY
+  Address:          0x41
+  I2C timeout:      50 ms
+  Offline threshold:5
+  nowMs hook:       yes
+  Mode:             CONT_ALL (15)
+  VBUSCT/VSHCT/VTCT:1052us / 1052us / 1052us
+  Averaging:        1 samples
+  ADC range:        +/-163.84mV
+  Conversion delay: 0 x 2 ms (0 ms)
+  Temp compensation:no  tempco=0 ppm/degC
+  Calibration:      Rshunt=0.000000 ohm  MaxCurrent=0.000000 A
+  Calibration state:calibrated=yes clamped=no rangeExceeded=no
+  Hardware dirty:   no mask=0x0000000000000000
+  Dirty cause:      OK detail=0
+  Thresholds dirty: no
+  Triggered state:  pending=no start=0 ms
+  Est. conv time:   3156 us
+  CURRENT_LSB:      0.000019079 A
+  SHUNT_CAL:        0x0EA7
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vbus
+verdict=PASS elapsed_s=0.000
+[I] Vbus: 11.9918 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: ready
+verdict=PASS elapsed_s=0.000
+[I] Conversion ready: yes
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: stress_mix 50
+verdict=PASS elapsed_s=0.031
+=== stress_mix summary ===
+  Total: ok=50 fail=0 (100.00%)
+  Duration: 32 ms
+  Rate: 1562.50 ops/s
+  measure    ok=8 fail=0
+  vbus       ok=7 fail=0
+  current    ok=7 fail=0
+  temp       ok=7 fail=0
+  diag       ok=7 fail=0
+  mfgid      ok=7 fail=0
+  devid      ok=7 fail=0
+  Health delta: success +147, failures +0
+[runner] frame_status=OK frame_elapsed_ms=32
+
+### soak: read
+verdict=PASS elapsed_s=0.000
+[I] Reading all measurements:
+  Vbus:    11.9906 V
+  Vshunt:  0.0011866 V
+  Temp:    31.01 C
+  Current: 0.079100 A
+  Power:   0.948434 W
+  Energy:  0.000000000 J
+  Charge:  0.000000000 C
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: stress 50
+verdict=PASS elapsed_s=0.078
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: 50
+  Errors: 0
+  Duration: 76 ms
+  Rate: 657.89 samples/s
+  Vbus V:    min=11.9900 avg=11.9917 max=11.9936
+  Current A: min=0.075780 avg=0.076664 max=0.080225
+  Power W:   min=0.817784 avg=0.917227 max=0.961926
+[runner] frame_status=OK frame_elapsed_ms=77
+
+### soak: raw
+verdict=PASS elapsed_s=0.000
+=== Raw Registers ===
+  Vshunt: 3716 (0x000E84)
+  Vbus:   61403 (0x00EFDB)
+  Temp:   3968 (0x0F80)
+  Current:4057 (0x000FD9)
+  Power:  15204 (0x003B64)
+  Energy: 62451
+  Charge: 269096
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+  DIAG_ALRT snapshot before accumulator reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: recover
+verdict=PASS elapsed_s=0.016
+[I] Invalidating cached hardware state and reinitializing...
+  Status: OK (code=0, detail=0)
+  Message: OK
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 148723
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 19 ms ago (at 265032 ms)
+  Last error: never
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: integer
+verdict=PASS elapsed_s=0.015
+=== Cooperative Instantaneous Sample ===
+  Operation: 921 request: 921 generation: 283
+  Bus:     11993 mV
+  Shunt:   1004 uV
+  Temp:    31008 mdegC
+  Current: 67 mA
+  Power:   803 mW
+  DIAG_ALRT snapshot before current/power reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: probe
+verdict=PASS elapsed_s=0.000
+[I] Probing address 0x41 (raw, no health tracking; reads DIAG_ALRT)...
+[W] DIAG_ALRT reads can clear CNVRF and latched evidence.
+  Status: OK (code=0, detail=0)
+  Message: OK
+  Address: 0x41
+  Manufacturer ID: 0x5449
+  Device ID: 0x2281
+  DIAG_ALRT: 0x0003
+  MEMSTAT: OK
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: power
+verdict=PASS elapsed_s=0.000
+[I] Power: 0.992025 W
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagraw
+verdict=PASS elapsed_s=0.000
+[I] DIAG_ALRT raw: 0x0003
+[W] DIAG_ALRT reads are destructive/status-clearing.
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: current
+verdict=PASS elapsed_s=0.016
+[I] Current: 0.081923 A
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagsnap
+verdict=PASS elapsed_s=0.000
+=== DIAG_ALRT Snapshot ===
+  Note: cache-only; this command does not touch I2C.
+  Valid:      yes
+  Raw:        0x0003
+  Captured:   266571 ms
+  MEMSTAT:    yes
+  CNVRF:      yes
+  ENERGYOF:   no
+  CHARGEOF:   no
+  MATHOF:     no
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: temp
+verdict=PASS elapsed_s=0.016
+[I] Temp: 31.00 C
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: drv
+verdict=PASS elapsed_s=0.000
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 155094
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 4 ms ago (at 267089 ms)
+  Last error: never
+  Mode: CONT_ALL
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vshunt
+verdict=PASS elapsed_s=0.015
+[I] Vshunt: 0.0012244 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: settings
+verdict=PASS elapsed_s=0.015
+=== Active Settings ===
+  Initialized:      yes
+  State:            READY
+  Address:          0x41
+  I2C timeout:      50 ms
+  Offline threshold:5
+  nowMs hook:       yes
+  Mode:             CONT_ALL (15)
+  VBUSCT/VSHCT/VTCT:1052us / 1052us / 1052us
+  Averaging:        1 samples
+  ADC range:        +/-163.84mV
+  Conversion delay: 0 x 2 ms (0 ms)
+  Temp compensation:no  tempco=0 ppm/degC
+  Calibration:      Rshunt=0.000000 ohm  MaxCurrent=0.000000 A
+  Calibration state:calibrated=yes clamped=no rangeExceeded=no
+  Hardware dirty:   no mask=0x0000000000000000
+  Dirty cause:      OK detail=0
+  Thresholds dirty: no
+  Triggered state:  pending=no start=0 ms
+  Est. conv time:   3156 us
+  CURRENT_LSB:      0.000019079 A
+  SHUNT_CAL:        0x0EA7
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vbus
+verdict=PASS elapsed_s=0.000
+[I] Vbus: 11.9904 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: ready
+verdict=PASS elapsed_s=0.016
+[I] Conversion ready: yes
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: stress_mix 50
+verdict=PASS elapsed_s=0.031
+=== stress_mix summary ===
+  Total: ok=50 fail=0 (100.00%)
+  Duration: 32 ms
+  Rate: 1562.50 ops/s
+  measure    ok=8 fail=0
+  vbus       ok=7 fail=0
+  current    ok=7 fail=0
+  temp       ok=7 fail=0
+  diag       ok=7 fail=0
+  mfgid      ok=7 fail=0
+  devid      ok=7 fail=0
+  Health delta: success +147, failures +0
+[runner] frame_status=OK frame_elapsed_ms=32
+
+### soak: read
+verdict=PASS elapsed_s=0.000
+[I] Reading all measurements:
+  Vbus:    11.9918 V
+  Vshunt:  0.0011812 V
+  Temp:    31.01 C
+  Current: 0.078737 A
+  Power:   0.944160 W
+  Energy:  0.000000000 J
+  Charge:  0.000000000 C
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: stress 50
+verdict=PASS elapsed_s=0.078
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: 50
+  Errors: 0
+  Duration: 76 ms
+  Rate: 657.89 samples/s
+  Vbus V:    min=11.9904 avg=11.9921 max=11.9936
+  Current A: min=0.075914 avg=0.076666 max=0.080702
+  Power W:   min=0.815159 avg=0.917068 max=0.967787
+[runner] frame_status=OK frame_elapsed_ms=77
+
+### soak: raw
+verdict=PASS elapsed_s=0.000
+=== Raw Registers ===
+  Vshunt: 3692 (0x000E6C)
+  Vbus:   61406 (0x00EFDE)
+  Temp:   3967 (0x0F7F)
+  Current:4031 (0x000FBF)
+  Power:  15107 (0x003B03)
+  Energy: 66140
+  Charge: 284960
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+  DIAG_ALRT snapshot before accumulator reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: recover
+verdict=PASS elapsed_s=0.016
+[I] Invalidating cached hardware state and reinitializing...
+  Status: OK (code=0, detail=0)
+  Message: OK
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 161998
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 19 ms ago (at 269331 ms)
+  Last error: never
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: integer
+verdict=PASS elapsed_s=0.015
+=== Cooperative Instantaneous Sample ===
+  Operation: 971 request: 971 generation: 308
+  Bus:     11993 mV
+  Shunt:   1008 uV
+  Temp:    31000 mdegC
+  Current: 67 mA
+  Power:   806 mW
+  DIAG_ALRT snapshot before current/power reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: probe
+verdict=PASS elapsed_s=0.000
+[I] Probing address 0x41 (raw, no health tracking; reads DIAG_ALRT)...
+[W] DIAG_ALRT reads can clear CNVRF and latched evidence.
+  Status: OK (code=0, detail=0)
+  Message: OK
+  Address: 0x41
+  Manufacturer ID: 0x5449
+  Device ID: 0x2281
+  DIAG_ALRT: 0x0003
+  MEMSTAT: OK
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: power
+verdict=PASS elapsed_s=0.000
+[I] Power: 0.804902 W
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagraw
+verdict=PASS elapsed_s=0.000
+[I] DIAG_ALRT raw: 0x0003
+[W] DIAG_ALRT reads are destructive/status-clearing.
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: current
+verdict=PASS elapsed_s=0.000
+[I] Current: 0.081771 A
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagsnap
+verdict=PASS elapsed_s=0.000
+=== DIAG_ALRT Snapshot ===
+  Note: cache-only; this command does not touch I2C.
+  Valid:      yes
+  Raw:        0x0003
+  Captured:   270873 ms
+  MEMSTAT:    yes
+  CNVRF:      yes
+  ENERGYOF:   no
+  CHARGEOF:   no
+  MATHOF:     no
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: temp
+verdict=PASS elapsed_s=0.000
+[I] Temp: 31.00 C
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: drv
+verdict=PASS elapsed_s=0.000
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 168369
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 3 ms ago (at 271391 ms)
+  Last error: never
+  Mode: CONT_ALL
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vshunt
+verdict=PASS elapsed_s=0.000
+[I] Vshunt: 0.0010822 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: settings
+verdict=PASS elapsed_s=0.000
+=== Active Settings ===
+  Initialized:      yes
+  State:            READY
+  Address:          0x41
+  I2C timeout:      50 ms
+  Offline threshold:5
+  nowMs hook:       yes
+  Mode:             CONT_ALL (15)
+  VBUSCT/VSHCT/VTCT:1052us / 1052us / 1052us
+  Averaging:        1 samples
+  ADC range:        +/-163.84mV
+  Conversion delay: 0 x 2 ms (0 ms)
+  Temp compensation:no  tempco=0 ppm/degC
+  Calibration:      Rshunt=0.000000 ohm  MaxCurrent=0.000000 A
+  Calibration state:calibrated=yes clamped=no rangeExceeded=no
+  Hardware dirty:   no mask=0x0000000000000000
+  Dirty cause:      OK detail=0
+  Thresholds dirty: no
+  Triggered state:  pending=no start=0 ms
+  Est. conv time:   3156 us
+  CURRENT_LSB:      0.000019079 A
+  SHUNT_CAL:        0x0EA7
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vbus
+verdict=PASS elapsed_s=0.000
+[I] Vbus: 11.9920 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: ready
+verdict=PASS elapsed_s=0.000
+[I] Conversion ready: yes
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: stress_mix 50
+verdict=PASS elapsed_s=0.031
+=== stress_mix summary ===
+  Total: ok=50 fail=0 (100.00%)
+  Duration: 32 ms
+  Rate: 1562.50 ops/s
+  measure    ok=8 fail=0
+  vbus       ok=7 fail=0
+  current    ok=7 fail=0
+  temp       ok=7 fail=0
+  diag       ok=7 fail=0
+  mfgid      ok=7 fail=0
+  devid      ok=7 fail=0
+  Health delta: success +147, failures +0
+[runner] frame_status=OK frame_elapsed_ms=33
+
+### soak: read
+verdict=PASS elapsed_s=0.000
+[I] Reading all measurements:
+  Vbus:    11.9906 V
+  Vshunt:  0.0011928 V
+  Temp:    30.99 C
+  Current: 0.079519 A
+  Power:   0.953440 W
+  Energy:  0.000000000 J
+  Charge:  0.000000000 C
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: stress 50
+verdict=PASS elapsed_s=0.078
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: 50
+  Errors: 0
+  Duration: 76 ms
+  Rate: 657.89 samples/s
+  Vbus V:    min=11.9898 avg=11.9918 max=11.9932
+  Current A: min=0.076066 avg=0.076635 max=0.080454
+  Power W:   min=0.819921 avg=0.917012 max=0.964613
+[runner] frame_status=OK frame_elapsed_ms=77
+
+### soak: raw
+verdict=PASS elapsed_s=0.000
+=== Raw Registers ===
+  Vshunt: 3698 (0x000E72)
+  Vbus:   61393 (0x00EFD1)
+  Temp:   3967 (0x0F7F)
+  Current:4038 (0x000FC6)
+  Power:  15130 (0x003B1A)
+  Energy: 69832
+  Charge: 300861
+  Accum valid: energy=no charge=no
+  Accum overflow: ENERGYOF=no CHARGEOF=no MATHOF=no
+  DIAG_ALRT snapshot before accumulator reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=2
+
+### soak: recover
+verdict=PASS elapsed_s=0.015
+[I] Invalidating cached hardware state and reinitializing...
+  Status: OK (code=0, detail=0)
+  Message: OK
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 175273
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 19 ms ago (at 273640 ms)
+  Last error: never
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: integer
+verdict=PASS elapsed_s=0.016
+=== Cooperative Instantaneous Sample ===
+  Operation: 1021 request: 1021 generation: 333
+  Bus:     11991 mV
+  Shunt:   1005 uV
+  Temp:    31016 mdegC
+  Current: 67 mA
+  Power:   803 mW
+  DIAG_ALRT snapshot before current/power reads: 0x0003
+[runner] frame_status=OK frame_elapsed_ms=14
+
+### soak: probe
+verdict=PASS elapsed_s=0.000
+[I] Probing address 0x41 (raw, no health tracking; reads DIAG_ALRT)...
+[W] DIAG_ALRT reads can clear CNVRF and latched evidence.
+  Status: OK (code=0, detail=0)
+  Message: OK
+  Address: 0x41
+  Manufacturer ID: 0x5449
+  Device ID: 0x2281
+  DIAG_ALRT: 0x0003
+  MEMSTAT: OK
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: power
+verdict=PASS elapsed_s=0.000
+[I] Power: 0.925784 W
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagraw
+verdict=PASS elapsed_s=0.016
+[I] DIAG_ALRT raw: 0x0003
+[W] DIAG_ALRT reads are destructive/status-clearing.
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: current
+verdict=PASS elapsed_s=0.000
+[I] Current: 0.081599 A
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: diagsnap
+verdict=PASS elapsed_s=0.000
+=== DIAG_ALRT Snapshot ===
+  Note: cache-only; this command does not touch I2C.
+  Valid:      yes
+  Raw:        0x0003
+  Captured:   275177 ms
+  MEMSTAT:    yes
+  CNVRF:      yes
+  ENERGYOF:   no
+  CHARGEOF:   no
+  MATHOF:     no
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: temp
+verdict=PASS elapsed_s=0.000
+[I] Temp: 31.00 C
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: drv
+verdict=PASS elapsed_s=0.000
+=== Driver Health ===
+  Configured address: 0x41
+  State: READY
+  Online: yes
+  Consecutive failures: 0
+  Total success: 181644
+  Total failures: 0
+  Success rate: 100.0%
+  Last OK: 4 ms ago (at 275692 ms)
+  Last error: never
+  Mode: CONT_ALL
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vshunt
+verdict=PASS elapsed_s=0.000
+[I] Vshunt: 0.0010759 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: settings
+verdict=PASS elapsed_s=0.000
+=== Active Settings ===
+  Initialized:      yes
+  State:            READY
+  Address:          0x41
+  I2C timeout:      50 ms
+  Offline threshold:5
+  nowMs hook:       yes
+  Mode:             CONT_ALL (15)
+  VBUSCT/VSHCT/VTCT:1052us / 1052us / 1052us
+  Averaging:        1 samples
+  ADC range:        +/-163.84mV
+  Conversion delay: 0 x 2 ms (0 ms)
+  Temp compensation:no  tempco=0 ppm/degC
+  Calibration:      Rshunt=0.000000 ohm  MaxCurrent=0.000000 A
+  Calibration state:calibrated=yes clamped=no rangeExceeded=no
+  Hardware dirty:   no mask=0x0000000000000000
+  Dirty cause:      OK detail=0
+  Thresholds dirty: no
+  Triggered state:  pending=no start=0 ms
+  Est. conv time:   3156 us
+  CURRENT_LSB:      0.000019079 A
+  SHUNT_CAL:        0x0EA7
+[runner] frame_status=OK frame_elapsed_ms=1
+
+### soak: vbus
+verdict=PASS elapsed_s=0.000
+[I] Vbus: 11.9908 V
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### soak: ready
+verdict=PASS elapsed_s=0.000
+[I] Conversion ready: yes
+[runner] frame_status=OK frame_elapsed_ms=0
+
+### not-run: <fixture: disconnected target>
+verdict=NOT RUN elapsed_s=0.000
+requires safe disconnect or switched fixture
+
+### not-run: <fixture: bus fault injection>
+verdict=NOT RUN elapsed_s=0.000
+requires safe NACK/timeout/bus-error injection
+
+### not-run: <fixture: alert pin capture>
+verdict=NOT RUN elapsed_s=0.000
+requires alert-pin wiring and safe threshold stimulus
+
+### not-run: <fixture: MCU reset or power cycle>
+verdict=NOT RUN elapsed_s=0.000
+requires explicit reset/power-cycle control
+

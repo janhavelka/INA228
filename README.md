@@ -215,6 +215,11 @@ See [ESP-IDF integration](docs/integration/esp-idf.md), the
 
 ## Build and validation
 
+Arduino builds are pinned to PIOArduino `55.03.311`, which supplies
+Arduino-ESP32 `3.3.11` and ESP-IDF `5.5.5`. The diagnostic CLI `version`
+command prints the running framework versions and detected flash/PSRAM so HIL
+evidence can verify the firmware stack instead of relying only on build logs.
+
 ```sh
 python -m platformio test -e native
 python -m platformio run -e esp32s2dev
@@ -228,7 +233,9 @@ python scripts/generate_version.py check
 
 The native ESP-IDF example is built by CI for ESP32-S2 and ESP32-S3. Physical
 hardware validation is separate from native tests and build validation; see the
-validation documents for dated evidence and remaining gates.
+validation documents for dated evidence and remaining gates. The current
+framework delta and compatibility audit are recorded in the
+[PIOArduino 55.03.311 migration review](docs/validation/pioarduino-55.03.311-migration.md).
 
 ## Versioning
 

@@ -1,11 +1,32 @@
 # Hardware Evidence Summary
 
-This file preserves the release-relevant facts from generated HIL reports that
-were removed during repository cleanup. The retained evidence is useful, but it
-does not upgrade the claim level: all runs used a low-voltage Arduino
-ESP32-S3/COM21 fixture, were produced from dirty worktrees, and did not include
-fault injection, ALERT-pin capture, controlled MCU reset, or INA228 power-cycle
-control.
+This file summarizes dated HIL evidence without upgrading its claim level.
+Current detailed reports remain under `docs/validation/hardware/`; older report
+summaries are retained below.
+
+## Current v3 Migration Evidence
+
+On 2026-07-31, physical board serial `24:58:7C:DB:DB:AC` was addressed initially
+as COM3 and re-enumerated as COM4 after the ESP32-S3 USB boot reset. Runtime
+output confirmed ESP32-S3 revision 1, 4 MB flash, 2 MB PSRAM, Arduino-ESP32
+3.3.11, and ESP-IDF v5.5.5. The INA228 was identified at `0x41` with
+manufacturer ID `0x5449`, device ID `0x2281`, and healthy MEMSTAT.
+
+| Run | Base commit/worktree | Duration | PASS | FAIL | UNKNOWN | NOT RUN | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| PIOArduino 55.03.311 exhaustive + benchmark | `4c32312` + dirty migration changes | 9.0 s | 851 | 0 | 0 | 5 | Full synchronous and cooperative feature sweep, exact transfer budgets, 100 iterations across six read paths, 1,000 measurement samples, and 1,000 mixed operations. |
+| PIOArduino 55.03.311 shakedown soak | `4c32312` + dirty migration changes | 63.3 s | 5940 | 0 | 0 | 4 | Eight smoke checks plus 5,932 soak commands over the requested 60-second interval; not the release-gate 8-hour soak. |
+
+Reports and full serial transcripts:
+`hardware/2026-07-31/4c32312-dirty-pioarduino-55.03.311-esp32s3/`.
+
+This evidence used a low-voltage connected fixture. It did not include
+controlled fault injection, ALERT-pin capture, reference-instrument accuracy
+measurements, controlled MCU/INA228 power cycling, the alternate low-current
+profile needed to exercise ADCRANGE=1 physically, ESP32-S2/ESP-IDF physical
+runs, or a clean 8-hour soak. It is not release-grade hardware validation.
+
+## Historical v2 Evidence
 
 All entries below predate the v3 cooperative owner contract. They are historical
 v2 evidence only and must not be cited as v3 hardware validation.

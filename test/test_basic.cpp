@@ -2495,6 +2495,18 @@ void test_fixed_calibration_plans_cover_tunnelmonitor_profile_and_strict_limits(
   TEST_ASSERT_FALSE(plan.maxCurrentExceedsShuntRange);
   TEST_ASSERT_FALSE(plan.maxCurrentExceedsCurrentRegister);
 
+  CalibrationConfig exampleProfile{};
+  exampleProfile.shuntMicroOhms = 15000;
+  exampleProfile.mode = CalibrationMode::FROM_MAXIMUM_CURRENT;
+  exampleProfile.maxCurrentMilliAmps = 10000;
+  TEST_ASSERT_TRUE(INA228::INA228::calculateCalibration(
+      exampleProfile, AdcRange::MV_163_84, plan).ok());
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(
+      exampleProfile.maxCurrentMilliAmps, plan.representableCurrentMilliAmps);
+  TEST_ASSERT_FALSE(plan.clamped);
+  TEST_ASSERT_FALSE(plan.maxCurrentExceedsShuntRange);
+  TEST_ASSERT_FALSE(plan.maxCurrentExceedsCurrentRegister);
+
   CalibrationConfig derived = explicitPlan;
   derived.mode = CalibrationMode::FROM_MAXIMUM_CURRENT;
   derived.currentLsbNanoAmps = 0;
