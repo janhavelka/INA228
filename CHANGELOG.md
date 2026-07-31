@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-07-31
+
 ### Changed
 
 - Pinned Arduino builds to PIOArduino `55.03.311` (Arduino-ESP32 `3.3.11`,
@@ -336,7 +338,8 @@ converted values.
 - `recover()` now re-validates manufacturer ID, device ID, and MEMSTAT before reapplying cached configuration and calibration.
 - Bringup `scan` now includes an INA228-specific address probe, and startup can auto-detect a single healthy INA228 on `0x40..0x4F`.
 
-[Unreleased]: https://github.com/janhavelka/INA228/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/janhavelka/INA228/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/janhavelka/INA228/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/janhavelka/INA228/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/janhavelka/INA228/compare/v1.3.0...v2.0.0
 [1.3.0]: https://github.com/janhavelka/INA228/compare/v1.2.0...v1.3.0

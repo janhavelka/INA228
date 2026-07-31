@@ -31,7 +31,7 @@ For a PlatformIO application, pin the current release tag in `platformio.ini`:
 
 ```ini
 lib_deps =
-  https://github.com/janhavelka/INA228.git#v3.0.0
+  https://github.com/janhavelka/INA228.git#v3.0.1
 build_unflags =
   -std=gnu++11
 build_flags =
