@@ -1,5 +1,8 @@
 name: CI
 
+env:
+  PLATFORMIO_VERSION: "6.1.19"
+
 on:
   push:
     branches: [main]
@@ -37,7 +40,7 @@ jobs:
       - name: Install PlatformIO
         run: |
           python -m pip install --upgrade pip
-          pip install platformio
+          pip install "platformio==${PLATFORMIO_VERSION}"
 
       - name: Build ${{ matrix.environment }}
         run: |
@@ -74,7 +77,7 @@ jobs:
       - name: Install PlatformIO
         run: |
           python -m pip install --upgrade pip
-          pip install platformio
+          pip install "platformio==${PLATFORMIO_VERSION}"
 
       - name: Enforce core timing guard
         run: |
@@ -139,7 +142,10 @@ jobs:
           python-version: '3.11'
 
       - name: Install PlatformIO
-        run: pip install platformio
+        run: pip install "platformio==${PLATFORMIO_VERSION}"
+
+      - name: Install Doxygen
+        run: sudo apt-get update && sudo apt-get install --yes doxygen
 
       - name: Run static contract checks
         run: |
@@ -153,6 +159,11 @@ jobs:
           python tools/check_owner_contract.py 2>&1 | tee static-contract-logs/check_owner_contract.log
           python scripts/generate_version.py check 2>&1 | tee static-contract-logs/generate_version_check.log
 
+      - name: Build API documentation with warnings as errors
+        run: |
+          set -o pipefail
+          doxygen Doxyfile 2>&1 | tee static-contract-logs/doxygen.log
+
       - name: Upload static contract logs
         uses: actions/upload-artifact@v4
         if: always()
@@ -163,6 +174,54 @@ jobs:
 
       - name: Validate library package
         run: pio pkg pack
+
+      - name: Verify packaged public library
+        run: |
+          set -euo pipefail
+          archive="$(find . -maxdepth 1 -name 'INA228-*.tar.gz' -print -quit)"
+          test -n "$archive"
+          tar -tzf "$archive" | sort | tee package-contents.log
+          for path in \
+            library.json \
+            CMakeLists.txt \
+            idf_component.yml \
+            include/INA228/INA228.h \
+            include/INA228/Version.h \
+            docs/integration/esp-idf.md \
+            docs/reference/ina228-device-reference.md \
+            docs/validation/validation-status.md \
+            docs/validation/pioarduino-55.03.311-migration.md \
+            src/INA228.cpp; do
+            grep -Fx "$path" package-contents.log
+          done
+          for prefix in \
+            .github/ \
+            .pio/ \
+            .vscode/ \
+            docs/doxygen/ \
+            docs/reference/vendor/ \
+            docs/validation/hardware/ \
+            scripts/ \
+            test/ \
+            tools/; do
+            ! grep -Fq "$prefix" package-contents.log
+          done
+          mkdir package-smoke
+          tar -xzf "$archive" -C package-smoke
+          g++ -std=c++17 -Wall -Wextra -Werror=return-type \
+            -Ipackage-smoke/include -c package-smoke/src/INA228.cpp \
+            -o package-smoke/INA228.o
+          python - <<'PY'
+          import pathlib
+          import re
+
+          root = pathlib.Path("package-smoke")
+          readme = (root / "README.md").read_text(encoding="utf-8")
+          for link in re.findall(r"\[[^]]+\]\(([^)]+)\)", readme):
+              target = link.split("#", 1)[0]
+              if target and "://" not in target and not target.startswith("mailto:"):
+                  assert (root / target).is_file(), f"missing README target: {target}"
+          PY
 
       - name: Upload PlatformIO package
         uses: actions/upload-artifact@v4

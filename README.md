@@ -25,7 +25,40 @@ health policy, and recovery.
 Core files under `include/INA228/` and `src/` contain no Arduino, ESP-IDF,
 FreeRTOS, logging, platform delay, or bus-handle dependencies.
 
-## Owner-safe production API
+## Installation
+
+For a PlatformIO application, pin the current release tag in `platformio.ini`:
+
+```ini
+lib_deps =
+  https://github.com/janhavelka/INA228.git#v3.0.0
+build_unflags =
+  -std=gnu++11
+build_flags =
+  -std=gnu++17
+```
+
+If the application already selects C++17 or newer effectively, keep its
+existing language-standard settings instead. The INA228 public headers and
+implementation require C++17.
+
+Then include the public header:
+
+```cpp
+#include <INA228/INA228.h>
+```
+
+For native ESP-IDF, place the tagged repository under the application's
+`components/INA228/` directory. The root `CMakeLists.txt` registers the library
+as an ESP-IDF component and requires C++17. The application still supplies its
+own `driver/i2c_master.h` transport; see the native example and
+[ESP-IDF integration guide](docs/integration/esp-idf.md).
+
+Release tags are appropriate for normal consumers. Integrators testing an
+unreleased fix should pin an exact reviewed commit rather than tracking a
+branch.
+
+## Recommended cooperative owner API
 
 The external owner first calls `bind()`, which validates and stores the desired
 configuration without touching I2C. It then starts one operation and advances it
@@ -52,7 +85,9 @@ if (status.ok()) {
   status = monitor.startInitialize(requestToken, operationId);  // zero I2C
 }
 
-// Called by the one I2C owner. A budget of one permits at most one callback.
+// Repeat this block on successive owner activations until the job terminates
+// or the application-owned deadline expires. One call cannot finish init.
+// A budget of one permits at most one transport callback per activation.
 if (status.ok() || status.inProgress()) {
   status = monitor.pollJob(monotonicNowMs, 1);
 }
@@ -179,7 +214,7 @@ available (`I2C_NACK_ADDR`, `I2C_NACK_DATA`, `I2C_NACK_UNKNOWN_PHASE`,
 
 The public surface remains complete, but integration code should distinguish:
 
-- Owner-safe production operations: `bind`, cooperative starts, `pollJob`,
+- Recommended cooperative owner operations: `bind`, cooperative starts, `pollJob`,
   cancellation/timeout, cache-only state/result/diagnostic access, and explicit
   invalidation.
 - Pure helpers: calibration planning, identity parsing, register encoding,
@@ -208,6 +243,19 @@ bus-silent, or lifecycle cleanup may be used there.
 
 Both examples use a 15 mOhm/10 A demonstration profile. Replace it with the
 actual Kelvin-sensed shunt and validated maximum current for your hardware.
+The Arduino example defaults to GPIO8 SDA, GPIO9 SCL, and address `0x40`, then
+attempts INA228 discovery during startup. Override the pins, bus settings,
+address, and calibration for the actual board before connecting a load.
+
+Build, upload, and monitor the Arduino example with:
+
+```sh
+python -m platformio run -e esp32s3dev
+python -m platformio run -e esp32s3dev -t upload --upload-port COMx
+python -m platformio device monitor -e esp32s3dev -p COMx
+```
+
+Use `esp32s2dev` for the supplied ESP32-S2 environment.
 
 See [ESP-IDF integration](docs/integration/esp-idf.md), the
 [device reference](docs/reference/ina228-device-reference.md), and the
@@ -215,8 +263,9 @@ See [ESP-IDF integration](docs/integration/esp-idf.md), the
 
 ## Build and validation
 
-Arduino builds are pinned to PIOArduino `55.03.311`, which supplies
-Arduino-ESP32 `3.3.11` and ESP-IDF `5.5.5`. The diagnostic CLI `version`
+Arduino builds require PlatformIO Core `6.1.19` and are pinned to PIOArduino
+`55.03.311`, which supplies
+Arduino-ESP32 `3.3.11` and ESP-IDF `5.5.5`. The Arduino diagnostic CLI `version`
 command prints the running framework versions and detected flash/PSRAM so HIL
 evidence can verify the firmware stack instead of relying only on build logs.
 
@@ -243,12 +292,17 @@ framework delta and compatibility audit are recorded in the
 generated; do not edit it directly.
 
 ```sh
-python scripts/generate_version.py set 3.0.0
+python scripts/generate_version.py bump patch
+# Or set an explicit release version:
+python scripts/generate_version.py set X.Y.Z
 python scripts/generate_version.py check
 ```
 
-Version 3 is a breaking release because configuration and owner-safe operation
-contracts were added and the production health default changed to passive.
+The generator synchronizes `Version.h`, `idf_component.yml`, and Doxygen's
+project version from `library.json`.
+
+Version 3 is a breaking release because configuration and cooperative-owner
+operation contracts were added and the default health policy changed to passive.
 
 ## License
 

@@ -12,7 +12,7 @@ operator. Confirm it is safe for the connected hardware before running.
 ```text
 version
 scan
-scanina
+init 0xNN
 probe
 mfgid
 devid
@@ -20,6 +20,11 @@ cfg
 timing
 drv
 ```
+
+Replace `0xNN` with the healthy address reported by `scan`. The `scan` command
+already includes the INA228 identity/MEMSTAT probe. Use `scanina` only when an
+INA228-only repeat scan is useful; it reads status-sensitive `DIAG_ALRT` while
+checking MEMSTAT and can consume CNVRF or latched evidence.
 
 Expected identity is manufacturer `0x5449`, DIEID `0x228`, and an explicitly
 reported/accepted revision. Do not validate identity by masking arbitrary high
@@ -81,7 +86,9 @@ xfer_reset
 apply_step 1
 xfer_assert 1 0 1
 
+xfer_reset
 apply_step 13
+xfer_assert 7 6 13
 ```
 
 The job maximum is 14 callbacks, performs no driver retry, and must end only
@@ -114,6 +121,7 @@ After the wait, finish with:
 
 ```text
 reset_step 15
+xfer_assert 9 6 15
 ```
 
 The whole maintenance job maximum is 16 callbacks, including full verified
@@ -178,9 +186,25 @@ Then exercise each threshold while capturing ALERT. Record polarity,
 latch/transparent clearing, conversion-ready routing, and diagnostic evidence.
 ALERT is monitoring only and is not a safety interlock.
 
+## Automated suites
+
+| Suite | Composition and purpose |
+| --- | --- |
+| `smoke` | Stack version, discovery, initialization, basic settings, health, diagnostics, and raw conversion read. |
+| `functional` | `smoke` plus ordinary typed reads, settings, recovery, self-test, and short stress commands. |
+| `targeted` | `smoke` plus the full synchronous feature sweep and v3 cooperative state/lifecycle cases; useful for diagnosis. |
+| `transfer` | `smoke` plus exact cooperative callback-budget assertions; useful for diagnosis. |
+| `exhaustive` | `smoke`, `functional`, the feature sweep, v3 cooperative cases, and transfer-budget assertions. This is the single release feature gate. |
+
+The canonical release run is:
+
+```powershell
+python tools\run_i2c_hil.py --port COMx --baud 115200 --suite exhaustive --require-framed --fail-on-unknown --include-not-run --benchmark-count 100 --report hil-exhaustive.md --transcript hil-exhaustive-transcript.txt
+```
+
 ## Stress and soak
 
-After the targeted and transfer suites pass with no FAIL/UNKNOWN rows:
+After the exhaustive suite passes with no FAIL/UNKNOWN rows:
 
 ```text
 stress_mix 1000

@@ -5,8 +5,9 @@
  * These are convenience defaults for reference designs only.
  * NOT part of the library API. Override for your hardware.
  *
- * @warning The library itself is board-agnostic. All pins are passed via Config.
- *          These defaults are provided for examples only.
+ * @warning The library itself is board-agnostic. Pins are configured only by
+ *          the application-owned example transport and are never passed to or
+ *          configured by the core driver.
  */
 
 #pragma once
@@ -42,8 +43,7 @@ static constexpr int LED = 48;
 
 /// @brief Initialize I2C for examples using the default config.
 inline bool initI2c() {
-  return transport::initWire(I2C_SDA, I2C_SCL, I2C_FREQ_HZ, I2C_TIMEOUT_MS,
-                             INA228_I2C_ADDR);
+  return transport::initWire(I2C_SDA, I2C_SCL, I2C_FREQ_HZ, I2C_TIMEOUT_MS);
 }
 
 }  // namespace board

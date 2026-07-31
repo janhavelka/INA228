@@ -10,7 +10,6 @@
 #include "examples/common/CliStyle.h"
 #include "examples/common/Log.h"
 #include "examples/common/BoardConfig.h"
-#include "examples/common/BusDiag.h"
 #include "examples/common/I2cTransport.h"
 #include "examples/common/I2cScanner.h"
 
@@ -70,10 +69,6 @@ const char* errToStr(INA228::Err err);
 // Helper Functions
 // ============================================================================
 
-uint32_t exampleNowMs(void*) {
-  return millis();
-}
-
 bool isValidIna228Address(uint8_t address) {
   return address >= INA228_ADDR_MIN && address <= INA228_ADDR_MAX;
 }
@@ -96,7 +91,6 @@ INA228::Status checkAddressAck(uint8_t address) {
 }
 
 INA228::Config makeExampleConfig(uint8_t address) {
-  (void)transport::selectAddress(address);
   INA228::Config cfg;
   cfg.i2cWrite = transport::wireWrite;
   cfg.i2cWriteRead = transport::wireWriteRead;
@@ -1599,7 +1593,7 @@ void processCommand(const String& cmdLine) {
 
     Serial.printf("HIL_BEGIN token=%s seq=%s\n", token.c_str(), seq.c_str());
     const uint32_t startMs = millis();
-    INA228::Err frameStatus = INA228::Err::OK;
+    INA228::Err frameStatus;
     if (inner.length() == 0 || inner.startsWith("hilrun ")) {
       frameStatus = INA228::Err::INVALID_PARAM;
     } else {
@@ -1666,7 +1660,7 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "scan") {
-    bus_diag::scan();
+    i2c_scanner::scanDefault();
     scanIna228Addresses();
     return;
   }
@@ -2564,7 +2558,7 @@ void setup() {
   }
   LOGI("I2C initialized (SDA=%d, SCL=%d)", board::I2C_SDA, board::I2C_SCL);
 
-  bus_diag::scan();
+  i2c_scanner::scanDefault();
   scanIna228Addresses();
 
   INA228::Status st = initializeDevice(selectedAddress, true);

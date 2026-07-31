@@ -30,7 +30,7 @@ the following TunnelMonitor areas were inspected:
 - power-monitor product constants and health/result publication paths.
 
 No TunnelMonitor source was changed. Its dependency authority still requires an
-independently hardened, immutable exact pin plus a private adapter and HIL before
+independently hardened, exact reviewed pin plus a private adapter and HIL before
 integration. Product-specific calibration/profile selection remains an explicit
 application decision.
 
@@ -172,13 +172,17 @@ C++17 configuration.
 
 Build commands and actual results are recorded in
 `docs/validation/validation-status.md`.
-Historical hardware evidence remains historical and does not validate v3. The
-following external gates remain:
+Generic dirty-worktree ESP32-S3/INA228 v3 HIL from 2026-07-31 is summarized in
+`docs/validation/hardware-evidence.md`. It exercises this library and example,
+but it does not validate the private TunnelMonitor adapter, exact product pins,
+outer owner, product calibration, or end-to-end publication path. The following
+external gates remain:
 
-- ESP32-S2/S3 hardware runs of initialization, sampling, cancellation, removal,
-  reappearance, NACK/timeout/bus fault, reset, and diagnostic behavior;
+- ESP32-S2 hardware coverage and ESP32-S3 controlled fault/electrical runs of
+  cancellation, removal, reappearance, NACK/timeout/bus fault, reset, and
+  diagnostic behavior;
 - approval of the TunnelMonitor calibration/current-LSB profile;
-- an immutable exact dependency pin and private adapter review;
+- an exact reviewed dependency commit pin and private adapter review;
 - end-to-end HIL of outer deadline, eight-slot identity, one-transfer owner
   budget, exactly-once publication, removal/reappearance, and owner recovery;
 - electrical validation of shunt tolerance/heating, ADC range, temperature

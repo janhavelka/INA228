@@ -3,7 +3,7 @@
 Date: 2026-07-31
 
 This review covers the Arduino PlatformIO migration from
-`platformio/espressif32@7.0.1` to the immutable PIOArduino `55.03.311` release
+`platformio/espressif32@7.0.1` to the versioned PIOArduino `55.03.311` release
 asset. It does not change the native ESP-IDF example's independently managed
 SDK/CI version.
 
@@ -11,6 +11,7 @@ SDK/CI version.
 
 | Component | Previous Arduino build stack | Current pinned stack |
 | --- | --- | --- |
+| PlatformIO Core | earlier local/CI installation | 6.1.19 |
 | Platform | PlatformIO Espressif32 7.0.1 | PIOArduino 55.03.311 |
 | Arduino-ESP32 | 2.0.17 | 3.3.11 |
 | ESP-IDF under Arduino | 4.4.7 | 5.5.5 |
@@ -43,10 +44,11 @@ Primary references:
 - Static CLI, owner, timing, native-IDF-example, and HIL parser contracts passed.
 - Native suite passed 101/101 tests.
 - Arduino ESP32-S3 and ESP32-S2 builds passed on the pinned stack.
-- The S3 firmware uploaded with esptool 5.3.0; flash contents were hash verified.
+- The S3 firmware upload completed with esptool 5.3.0, whose console reported
+  successful data-hash verification. The upload console log was not retained.
 - Runtime confirmed Arduino-ESP32 3.3.11 and ESP-IDF v5.5.5.
-- Exhaustive/benchmark HIL recorded 851 PASS, 0 FAIL, 0 UNKNOWN, and five
-  explicit fixture/tooling NOT RUN rows.
+- Exhaustive/benchmark HIL recorded 851 PASS, 0 FAIL, 0 UNKNOWN, four explicit
+  fixture/tooling NOT RUN rows, and one NOT RUN row for the 8-hour soak.
 - The separate 60-second shakedown recorded 5,940 PASS, 0 FAIL, 0 UNKNOWN,
   including 5,932 soak commands.
 

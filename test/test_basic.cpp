@@ -375,15 +375,6 @@ bool wasRegisterRead(const FakeBus& bus, uint8_t reg) {
   return false;
 }
 
-size_t firstReadIndex(const FakeBus& bus, uint8_t reg) {
-  for (size_t i = 0; i < bus.readHistoryCount; ++i) {
-    if (bus.readHistory[i] == reg) {
-      return i;
-    }
-  }
-  return bus.readHistoryCount;
-}
-
 void clearReadHistory(FakeBus& bus) {
   bus.readHistoryCount = 0;
   bus.lastReadReg = 0;

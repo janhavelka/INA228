@@ -172,9 +172,7 @@ inline INA228::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLe
  * @param timeoutMs I2C timeout in milliseconds (default 50ms)
  * @return true on success
  */
-inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutMs = 50,
-                     uint8_t address = 0x40) {
-  (void)address;
+inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutMs = 50) {
 #if defined(ARDUINO_ARCH_ESP32)
   // Toggle SCL to release any stuck slave
   pinMode(scl, OUTPUT);
@@ -218,10 +216,6 @@ inline INA228::Status probeAddress(uint8_t addr, uint16_t timeoutMs) {
 
 inline uint32_t arduinoNowMs(void*) {
   return millis();
-}
-
-inline bool selectAddress(uint8_t) {
-  return true;
 }
 
 inline void* configUser() {

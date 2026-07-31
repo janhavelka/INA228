@@ -44,6 +44,29 @@
   "headers": [
     "INA228/INA228.h"
   ],
+  "export": {
+    "exclude": [
+      ".github",
+      ".pio",
+      ".vscode",
+      "docs/doxygen",
+      "docs/reference/vendor",
+      "docs/reports",
+      "docs/validation/hardware",
+      "scripts",
+      "test",
+      "tools",
+      ".clang-format",
+      ".editorconfig",
+      ".gitattributes",
+      ".gitignore",
+      "AGENTS.md",
+      "CODEOWNERS",
+      "CONTRIBUTING.md",
+      "Doxyfile",
+      "platformio.ini"
+    ]
+  },
   "build": {
     "includeDir": "include",
     "srcDir": "src"

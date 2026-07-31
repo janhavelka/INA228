@@ -1,0 +1,24 @@
+* text=auto
+
+*.c text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+*.ino text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.ini text eol=lf
+*.cmake text eol=lf
+*.sh text eol=lf
+*.txt text eol=lf
+Doxyfile text eol=lf
+CMakeLists.txt text eol=lf
+.clang-format text eol=lf
+.editorconfig text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
+
+*.pdf binary

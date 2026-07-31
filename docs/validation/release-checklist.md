@@ -19,8 +19,7 @@ Run and record:
 ```bash
 python -m py_compile tools/run_i2c_hil.py
 python tools/run_i2c_hil.py --parser-self-test
-python tools/run_i2c_hil.py --dry-run --suite targeted
-python tools/run_i2c_hil.py --dry-run --suite transfer
+python tools/run_i2c_hil.py --dry-run --suite exhaustive --include-not-run --benchmark-count 100
 python tools/check_core_timing_guard.py
 python tools/check_owner_contract.py
 python tools/check_cli_contract.py
@@ -30,10 +29,15 @@ python -m platformio test -e native
 python -m platformio run -e esp32s3dev
 python -m platformio run -e esp32s2dev
 python -m platformio pkg pack
+doxygen Doxyfile
 git diff --check
 ```
 
-Remove any generated `INA228-*.tar.gz` artifact after package validation.
+Use PlatformIO Core `6.1.19`. Inspect the package and compile its exported source
+standalone under C++17. At minimum it must contain `library.json`,
+`CMakeLists.txt`, `idf_component.yml`, `include/INA228/INA228.h`,
+`include/INA228/Version.h`, and `src/INA228.cpp`; its README links must resolve
+within the archive. Remove the generated `INA228-*.tar.gz` after validation.
 
 Run pure ESP-IDF builds when ESP-IDF is installed:
 
@@ -53,6 +57,7 @@ Before merging or tagging, verify a completed CI run for the final branch or PR:
 - PlatformIO ESP32-S3 build passes.
 - PlatformIO ESP32-S2 build passes.
 - Package validation passes.
+- Doxygen completes with warnings treated as errors.
 - Pure ESP-IDF `esp32s3` build passes.
 - Pure ESP-IDF `esp32s2` build passes.
 - Artifacts are present for native test results, static contract logs,
@@ -65,6 +70,8 @@ Before merging or tagging, verify a completed CI run for the final branch or PR:
 - `docs/validation/hardware-evidence.md` lists checked-in HIL reports and
   marks partial evidence separately from release-grade validation.
 - `docs/validation/hardware-validation-procedure.md` matches the CLI examples.
+- The release HIL gate is one framed `exhaustive` run with no FAIL/UNKNOWN rows;
+  `targeted` and `transfer` are diagnostic subsets, not additional gates.
 - Wording separates implemented behavior, native tests, CI configuration,
   ESP-IDF build proof, and hardware validation.
 - No production, field, 85 V safety, or hardware validation claims appear

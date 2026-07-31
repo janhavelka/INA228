@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Pinned Arduino builds to PIOArduino `55.03.311` (Arduino-ESP32 `3.3.11`,
-  ESP-IDF `5.5.5`) and declared the tested ESP32-S3 QIO/QSPI PSRAM layout.
+  ESP-IDF `5.5.5`) with PlatformIO Core `6.1.19`, and declared the tested
+  ESP32-S3 QIO/QSPI PSRAM layout.
 - Updated the ESP32-S2 post-upload reset spelling for esptool 5 and removed the
   obsolete classic-ESP32 PSRAM cache workaround from the ESP32-S3 flags.
 - Added Arduino core, ESP-IDF, MCU, flash, and PSRAM details to the diagnostic
@@ -18,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reconciled the HIL runner with the v3 cooperative-owner contract and restored
   comprehensive mode, timing, averaging, alert, raw-width, validation, job,
   transfer-budget, and stress coverage to the exhaustive suite.
+- Consolidated release HIL guidance on one framed exhaustive suite, tightened
+  report taxonomy and evidence claims, and completed installation, package,
+  Doxygen, and release-checklist documentation.
+- Simplified release metadata generation so `library.json` synchronizes only
+  this library's `Version.h`, ESP-IDF component version, and Doxygen version.
+- Removed unused example helper layers, no-op transport/address helpers,
+  duplicate bus recovery, dead logging levels, and stale HIL retry/parser state.
+- Pinned CI to PlatformIO Core `6.1.19` and added Doxygen plus standalone
+  exported-package compile checks.
 
 ### Fixed
 
@@ -35,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including 1,000 measurement samples and 1,000 mixed operations. A separate
   60-second shakedown passed 5,932 soak commands with zero FAIL/UNKNOWN results.
   This is implementation evidence, not clean-commit release qualification.
+- The cleanup worktree passed 101/101 native tests, exhaustive cppcheck,
+  warnings-as-errors Doxygen generation, standalone exported-package compile,
+  both Arduino target builds, and a fresh 851-check framed S3 exhaustive HIL
+  with zero FAIL/UNKNOWN results. The HIL report was temporary, so it is not
+  checked-in release evidence.
 
 ## [3.0.0] - 2026-07-19
 
@@ -319,6 +334,7 @@ converted values.
 - `recover()` now re-validates manufacturer ID, device ID, and MEMSTAT before reapplying cached configuration and calibration.
 - Bringup `scan` now includes an INA228-specific address probe, and startup can auto-detect a single healthy INA228 on `0x40..0x4F`.
 
+[Unreleased]: https://github.com/janhavelka/INA228/compare/v3.0.0...HEAD
 [3.0.0]: https://github.com/janhavelka/INA228/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/janhavelka/INA228/compare/v1.3.0...v2.0.0
 [1.3.0]: https://github.com/janhavelka/INA228/compare/v1.2.0...v1.3.0

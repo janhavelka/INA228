@@ -127,6 +127,11 @@ addresses.
 - Die temperature LSB is `7.8125 mdegC`.
 - `SHUNT_CAL = 13107.2 * 10^6 * CURRENT_LSB * RSHUNT` for `ADCRANGE=0`.
 - Multiply `SHUNT_CAL` by 4 when `ADCRANGE=1`.
+- Maximum-current planning divides by the signed 20-bit positive limit
+  (`524287`), not the total 20-bit code count. Its derived `SHUNT_CAL` is rounded
+  upward so register quantization cannot reduce representable positive current
+  below the caller's requested maximum. Explicit-current-LSB planning retains
+  nearest-value rounding because its caller selected the LSB directly.
 - `Current [A] = CURRENT_LSB * CURRENT`.
 - `Power [W] = 3.2 * CURRENT_LSB * POWER`.
 - `Energy [J] = 16 * 3.2 * CURRENT_LSB * ENERGY`.

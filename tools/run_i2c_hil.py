@@ -28,8 +28,6 @@ class Step:
     suite: str = "smoke"
     expect_failure: bool = False
     pause_after_s: float = 0.0
-    accept_busy_after_empty_retry: bool = False
-    accept_no_job_after_empty_retry: bool = False
 
 
 @dataclass
@@ -42,19 +40,15 @@ class Result:
 
 @dataclass
 class SoakSummary:
-    requested_s: float
     total: int = 0
-    stored: int = 0
     pass_count: int = 0
     fail_count: int = 0
     unknown_count: int = 0
-    empty_response_retries: int = 0
     total_latency_s: float = 0.0
     min_latency_s: float = 0.0
     max_latency_s: float = 0.0
     command_counts: dict[str, int] = field(default_factory=dict)
     command_failures: dict[str, int] = field(default_factory=dict)
-    command_empty_retries: dict[str, int] = field(default_factory=dict)
 
     def record(self, result: Result) -> None:
         self.total += 1
@@ -70,12 +64,6 @@ class SoakSummary:
         if result.verdict != "PASS":
             self.command_failures[result.step.command] = (
                 self.command_failures.get(result.step.command, 0) + 1
-            )
-        retry_count = result.output.count("[runner] empty framed response attempt")
-        if retry_count > 0:
-            self.empty_response_retries += retry_count
-            self.command_empty_retries[result.step.command] = (
-                self.command_empty_retries.get(result.step.command, 0) + retry_count
             )
         self.total_latency_s += result.elapsed_s
         if self.total == 1:
@@ -157,7 +145,7 @@ FUNCTIONAL_STEPS: tuple[Step, ...] = (
 )
 
 
-def targeted_steps() -> tuple[Step, ...]:
+def feature_sweep_steps() -> tuple[Step, ...]:
     """Synchronous feature sweep compatible with the v3 owner contract."""
     steps: list[Step] = [
         Step("verbose 0", ("Verbose mode",), "reduce CLI chatter", "targeted"),
@@ -340,7 +328,7 @@ def targeted_steps() -> tuple[Step, ...]:
     return tuple(steps)
 
 
-FEATURE_SWEEP_STEPS: tuple[Step, ...] = targeted_steps()
+FEATURE_SWEEP_STEPS: tuple[Step, ...] = feature_sweep_steps()
 
 SOAK_STEPS: tuple[Step, ...] = (
     Step("vbus", ("Vbus",), "soak bus voltage", "soak"),
@@ -363,12 +351,6 @@ SOAK_STEPS: tuple[Step, ...] = (
     Step("stress 50", ("Stress Summary", "Errors:"), "soak stress", "soak"),
     Step("stress_mix 50", ("stress_mix summary", "fail="), "soak mixed stress", "soak"),
 )
-
-
-def soak_steps_for_suite(suite: str) -> tuple[Step, ...]:
-    # v3 cooperative sample steps intentionally span commands. Keep soak paths
-    # self-contained so a pending job cannot interfere with the next command.
-    return SOAK_STEPS
 
 
 BENCHMARK_STEPS: tuple[Step, ...] = (
@@ -510,10 +492,6 @@ def clean_output(text: str) -> str:
     return ANSI_RE.sub("", text).replace("\r\n", "\n").replace("\r", "\n")
 
 
-def has_line_prompt(text: str) -> bool:
-    return bool(PROMPT_RE.search(clean_output(text)))
-
-
 def has_failure(text: str) -> bool:
     upper = text.upper()
     return any(token in upper for token in FAILURE_TOKENS) or any(
@@ -533,17 +511,6 @@ def classify_output(output: str, expected: Sequence[str]) -> str:
 def classify_step(output: str, step: Step) -> str:
     text = clean_output(output)
     expected_seen = all(token in text for token in step.expected)
-    if (step.accept_busy_after_empty_retry
-            and "[runner] empty framed response attempt" in text
-            and "Status: BUSY" in text
-            and "Another fixed-step job is active" in text):
-        return "PASS"
-    if (step.accept_no_job_after_empty_retry
-            and "[runner] empty framed response attempt" in text
-            and "Status: BUSY" in text
-            and ("No apply calibration job active" in text
-                 or "No reset job active" in text)):
-        return "PASS"
     if step.expect_failure and expected_seen:
         return "PASS"
     if has_failure(text):
@@ -645,56 +612,12 @@ def parser_self_test() -> int:
     if not ok or classify_step(payload, invalid_step) != "PASS":
         print("parser self-test FAILED: nested/invalid frame status")
         return 1
-    recovered_start = (
-        "[runner] empty framed response attempt 1; retrying\n"
-        "[I] startResetJob(): BUSY\n"
-        "  Status: BUSY (code=11, detail=0)\n"
-        "  Message: Another fixed-step job is active\n"
-        "[runner] frame_status=BUSY frame_elapsed_ms=1\n"
-        "Status: BUSY\n"
-    )
-    recovered_step = Step(
-        "reset_start",
-        ("startResetJob", "IN_PROGRESS"),
-        "recovered reset start",
-        accept_busy_after_empty_retry=True,
-    )
-    strict_step = Step("reset_start", ("startResetJob", "IN_PROGRESS"), "strict reset start")
-    if classify_step(recovered_start, recovered_step) != "PASS":
-        print("parser self-test FAILED: recovered start BUSY was not accepted")
-        return 1
-    if classify_step(recovered_start, strict_step) != "FAIL":
-        print("parser self-test FAILED: strict start accepted recovered BUSY")
-        return 1
-    recovered_done = (
-        "[runner] empty framed response attempt 1; retrying\n"
-        "[I] pollConfigReplayJob(6): BUSY\n"
-        "  Status: BUSY (code=11, detail=0)\n"
-        "  Message: No apply calibration job active\n"
-        "[runner] frame_status=BUSY frame_elapsed_ms=1\n"
-        "Status: BUSY\n"
-    )
-    recovered_done_step = Step(
-        "apply_step 6",
-        ("pollConfigReplayJob", "OK"),
-        "recovered apply completion",
-        accept_no_job_after_empty_retry=True,
-    )
-    strict_done_step = Step("apply_step 6", ("pollConfigReplayJob", "OK"),
-                            "strict apply completion")
-    if classify_step(recovered_done, recovered_done_step) != "PASS":
-        print("parser self-test FAILED: recovered completion BUSY was not accepted")
-        return 1
-    if classify_step(recovered_done, strict_done_step) != "FAIL":
-        print("parser self-test FAILED: strict completion accepted recovered BUSY")
-        return 1
     print("parser self-test PASSED")
     return 0
 
 
 def print_plan(steps: Iterable[Step], soak_seconds: float,
-               benchmark_count: int, include_not_run: bool,
-               suite: str = "smoke") -> None:
+               benchmark_count: int, include_not_run: bool) -> None:
     print("INA228 HIL command plan:")
     for step in steps:
         expected = ", ".join(step.expected)
@@ -705,9 +628,8 @@ def print_plan(steps: Iterable[Step], soak_seconds: float,
         print(f"  {'<benchmark>':<16} # {benchmark_count} iterations each for "
               f"{len(BENCHMARK_STEPS)} read paths")
     if soak_seconds > 0.0:
-        soak_steps = soak_steps_for_suite(suite)
         print(f"  {'<soak loop>':<16} # soak for {soak_seconds:.0f}s using "
-              f"{len(soak_steps)} {suite} soak commands")
+              f"{len(SOAK_STEPS)} self-contained soak commands")
     if include_not_run:
         print(f"  {'<not-run rows>':<16} # {len(STATIC_NOT_RUN_STEPS)} fixture/tooling limitations")
 
@@ -825,78 +747,59 @@ def drain_input(serial_port, drain_s: float) -> str:
 
 def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
     start = time.monotonic()
-    output = ""
-    retry_notes: list[str] = []
     marker_missing = False
-    attempts = max(0, args.empty_retries) + 1
-    for attempt in range(attempts):
-        stale = drain_input(serial_port, args.drain_before_command_s)
-        token = f"{args.frame_prefix}{time.monotonic_ns()}{attempt}"
-        seq = str(attempt)
-        if args.no_command_framing:
-            serial_port.write((step.command + "\n").encode("ascii"))
-            serial_port.flush()
-            output = read_response(serial_port, args.timeout_s, args.idle_s, args.prompt_token)
-        elif args.legacy_marker:
-            marker = f"HILMARK {token}"
-            serial_port.write((f"{step.command}\nhilmark {token}\n").encode("ascii"))
-            serial_port.flush()
-            marker_output = read_until_text(serial_port, args.timeout_s, marker,
-                                            args.max_frame_bytes)
-            marker_missing = marker not in marker_output
-            output = strip_hil_marker(marker_output, token)
-            if marker_missing:
-                recovered = False
-                for retry in range(args.marker_retries):
-                    retry_token = f"{args.frame_prefix}{time.monotonic_ns()}R{retry}"
-                    retry_marker = f"HILMARK {retry_token}"
-                    serial_port.write((f"hilmark {retry_token}\n").encode("ascii"))
-                    serial_port.flush()
-                    retry_output = read_until_text(serial_port, args.timeout_s, retry_marker,
-                                                  args.max_frame_bytes)
-                    if retry_marker in retry_output:
-                        output += (
-                            f"\n[runner] recovered missing HILMARK {token} "
-                            f"with retry {retry + 1}"
-                        )
-                        marker_missing = False
-                        recovered = True
-                        break
-                    output += f"\n[runner] marker retry {retry + 1} failed:\n{retry_output}"
-                if not recovered:
-                    output += f"\n[runner] missing HILMARK {token}"
-        else:
-            serial_port.write((f"hilrun {token} {seq} {step.command}\n").encode("ascii"))
-            serial_port.flush()
-            frame_output = read_until_hilrun_end(serial_port, args.timeout_s, token, seq,
-                                                 args.max_frame_bytes)
-            if not frame_output.strip() and attempt < attempts - 1:
-                retry_notes.append(
-                    f"[runner] empty framed response attempt {attempt + 1}; retrying"
-                )
-                output = ""
-                marker_missing = False
-                if args.command_pause_s > 0.0:
-                    time.sleep(args.command_pause_s)
-                continue
-            output, frame_ok = strip_hilrun_frame(frame_output, token, seq)
-            marker_missing = not frame_ok
-            if frame_ok:
-                trailer = drain_input(serial_port, args.post_frame_drain_s)
-                if clean_output(trailer).strip() and not PROMPT_RE.fullmatch(
-                    clean_output(trailer).strip()
-                ):
-                    output += "\n[runner] drained trailing serial input after frame:\n"
-                    output += trailer
-        if stale.strip():
-            output = "[runner] drained stale serial input before command:\n" + stale + "\n" + output
-        if output.strip() or attempt == attempts - 1:
-            break
-        if args.command_pause_s > 0.0:
-            time.sleep(args.command_pause_s)
+    stale = drain_input(serial_port, args.drain_before_command_s)
+    token = f"{args.frame_prefix}{time.monotonic_ns()}"
+    seq = "0"
+    if args.no_command_framing:
+        serial_port.write((step.command + "\n").encode("ascii"))
+        serial_port.flush()
+        output = read_response(serial_port, args.timeout_s, args.idle_s, args.prompt_token)
+    elif args.legacy_marker:
+        marker = f"HILMARK {token}"
+        serial_port.write((f"{step.command}\nhilmark {token}\n").encode("ascii"))
+        serial_port.flush()
+        marker_output = read_until_text(serial_port, args.timeout_s, marker,
+                                        args.max_frame_bytes)
+        marker_missing = marker not in marker_output
+        output = strip_hil_marker(marker_output, token)
+        if marker_missing:
+            recovered = False
+            for retry in range(args.marker_retries):
+                retry_token = f"{args.frame_prefix}{time.monotonic_ns()}R{retry}"
+                retry_marker = f"HILMARK {retry_token}"
+                serial_port.write((f"hilmark {retry_token}\n").encode("ascii"))
+                serial_port.flush()
+                retry_output = read_until_text(serial_port, args.timeout_s, retry_marker,
+                                              args.max_frame_bytes)
+                if retry_marker in retry_output:
+                    output += (
+                        f"\n[runner] recovered missing HILMARK {token} "
+                        f"with retry {retry + 1}"
+                    )
+                    marker_missing = False
+                    recovered = True
+                    break
+                output += f"\n[runner] marker retry {retry + 1} failed:\n{retry_output}"
+            if not recovered:
+                output += f"\n[runner] missing HILMARK {token}"
+    else:
+        serial_port.write((f"hilrun {token} {seq} {step.command}\n").encode("ascii"))
+        serial_port.flush()
+        frame_output = read_until_hilrun_end(serial_port, args.timeout_s, token, seq,
+                                             args.max_frame_bytes)
+        output, frame_ok = strip_hilrun_frame(frame_output, token, seq)
+        marker_missing = not frame_ok
+        if frame_ok:
+            trailer = drain_input(serial_port, args.post_frame_drain_s)
+            if clean_output(trailer).strip() and not PROMPT_RE.fullmatch(
+                clean_output(trailer).strip()
+            ):
+                output += "\n[runner] drained trailing serial input after frame:\n"
+                output += trailer
+    if stale.strip():
+        output = "[runner] drained stale serial input before command:\n" + stale + "\n" + output
     elapsed = time.monotonic() - start
-    if retry_notes:
-        output = "\n".join(retry_notes + [output])
     verdict = "UNKNOWN" if marker_missing else classify_step(output, step)
     return Result(step=step, verdict=verdict, elapsed_s=elapsed, output=clean_output(output))
 
@@ -1080,10 +983,6 @@ def write_report(path: pathlib.Path, args: argparse.Namespace, results: Sequence
                 f.write("- Non-PASS soak command counts:\n")
                 for command, count in sorted(soak_summary.command_failures.items()):
                     f.write(f"  - `{command}`: {count}\n")
-            if soak_summary is not None and soak_summary.command_empty_retries:
-                f.write("- Empty framed response retry counts:\n")
-                for command, count in sorted(soak_summary.command_empty_retries.items()):
-                    f.write(f"  - `{command}`: {count}\n")
         f.write("\n## Limitations\n\n")
         f.write("- Hardware safety and fixture details must be filled in by the operator.\n")
         f.write("- This runner records serial CLI evidence only; external instruments must be logged separately.\n")
@@ -1097,12 +996,11 @@ def write_report(path: pathlib.Path, args: argparse.Namespace, results: Sequence
 
 def run_soak(serial_port, args: argparse.Namespace, results: list[Result],
              soak_seconds: float) -> SoakSummary:
-    summary = SoakSummary(requested_s=soak_seconds)
+    summary = SoakSummary()
     deadline = time.monotonic() + soak_seconds
     index = 0
-    soak_steps = soak_steps_for_suite(args.suite)
     while time.monotonic() < deadline:
-        step = soak_steps[index % len(soak_steps)]
+        step = SOAK_STEPS[index % len(SOAK_STEPS)]
         result = run_step(serial_port, step, args)
         summary.record(result)
         store_result = (
@@ -1112,7 +1010,6 @@ def run_soak(serial_port, args: argparse.Namespace, results: list[Result],
         )
         if store_result:
             results.append(result)
-            summary.stored += 1
         print_result = (
             result.verdict != "PASS"
             or args.soak_progress_every <= 1
@@ -1141,13 +1038,13 @@ def run_benchmarks(serial_port, args: argparse.Namespace, results: list[Result])
         return
     for step in BENCHMARK_STEPS:
         latencies: list[float] = []
-        failures = 0
+        non_pass = 0
         for _ in range(args.benchmark_count):
             result = run_step(serial_port, step, args)
             results.append(result)
             latencies.append(result.elapsed_s)
-            if result.verdict == "FAIL":
-                failures += 1
+            if result.verdict != "PASS":
+                non_pass += 1
             if args.verbose:
                 print(f"[{result.verdict}] {step.command} ({step.label}) "
                       f"{result.elapsed_s:.3f}s")
@@ -1156,7 +1053,7 @@ def run_benchmarks(serial_port, args: argparse.Namespace, results: list[Result])
                 time.sleep(pause_s)
         if latencies:
             mean = sum(latencies) / len(latencies)
-            print(f"[BENCH] {step.command}: count={len(latencies)} failures={failures} "
+            print(f"[BENCH] {step.command}: count={len(latencies)} non_pass={non_pass} "
                   f"min/mean/max={min(latencies):.3f}/{mean:.3f}/{max(latencies):.3f}s")
 
 
@@ -1265,8 +1162,6 @@ def main(argv: Sequence[str]) -> int:
                         help="Bounded hilmark retry count when a command marker is not observed")
     parser.add_argument("--prompt-token",
                         help="Optional prompt token that ends response reads early")
-    parser.add_argument("--empty-retries", type=int, default=0,
-                        help="Bounded retries when a command returns no serial output")
     parser.add_argument("--soak-hours", type=float, default=0.0,
                         help="Run a soak loop for this many hours, e.g. 8")
     parser.add_argument("--soak-seconds", type=float, default=0.0,
@@ -1294,7 +1189,7 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--fail-on-unknown", action="store_true",
                         help="Return nonzero when any step is UNKNOWN")
     parser.add_argument("--stop-on-non-pass", action="store_true",
-                        help="Stop soak after the first FAIL or UNKNOWN row")
+                        help="Also stop soak after UNKNOWN; FAIL always stops it")
     parser.add_argument("--verbose", action="store_true",
                         help="Print command responses during hardware run")
     args = parser.parse_args(argv)
@@ -1304,7 +1199,7 @@ def main(argv: Sequence[str]) -> int:
     if (args.boot_capture_s < 0.0 or args.command_pause_s < 0.0
             or args.drain_before_command_s < 0.0 or args.post_frame_drain_s < 0.0):
         parser.error("boot capture, command pause, and drain times must be nonnegative")
-    if args.empty_retries < 0 or args.marker_retries < 0 or args.benchmark_count < 0:
+    if args.marker_retries < 0 or args.benchmark_count < 0:
         parser.error("retry and benchmark counts must be nonnegative")
     if args.soak_store_every <= 0 or args.soak_progress_every <= 0:
         parser.error("soak store/progress strides must be positive")
@@ -1325,7 +1220,7 @@ def main(argv: Sequence[str]) -> int:
         return parser_self_test()
     if args.dry_run:
         print_plan(selected_steps(args.suite), soak_seconds,
-                   args.benchmark_count, args.include_not_run, args.suite)
+                   args.benchmark_count, args.include_not_run)
         return 0
     if not args.port:
         parser.error("--port is required unless --dry-run or --parser-self-test is used")

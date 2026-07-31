@@ -15,7 +15,7 @@ manufacturer ID `0x5449`, device ID `0x2281`, and healthy MEMSTAT.
 | Run | Base commit/worktree | Duration | PASS | FAIL | UNKNOWN | NOT RUN | Notes |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | PIOArduino 55.03.311 exhaustive + benchmark | `4c32312` + dirty migration changes | 9.0 s | 851 | 0 | 0 | 5 | Full synchronous and cooperative feature sweep, exact transfer budgets, 100 iterations across six read paths, 1,000 measurement samples, and 1,000 mixed operations. |
-| PIOArduino 55.03.311 shakedown soak | `4c32312` + dirty migration changes | 63.3 s | 5940 | 0 | 0 | 4 | Eight smoke checks plus 5,932 soak commands over the requested 60-second interval; not the release-gate 8-hour soak. |
+| PIOArduino 55.03.311 shakedown soak | `4c32312` + dirty migration changes | 63.3 s | 5,940 | 0 | 0 | 4 | Eight smoke checks plus 5,932 soak commands over the requested 60-second interval; not the release-gate 8-hour soak. |
 
 Reports and full serial transcripts:
 `hardware/2026-07-31/4c32312-dirty-pioarduino-55.03.311-esp32s3/`.
@@ -44,9 +44,8 @@ Fixture: `INA228_0x41_low_voltage_no_fault_injection`.
 ## Release-Grade Evidence Still Required
 
 - Clean git status before build and upload.
-- Clean-commit framed targeted feature suite with `0 FAIL` and `0 UNKNOWN`.
-- Clean-commit framed transfer-count suite proving fixed-step polling budgets
-  with `0 FAIL` and `0 UNKNOWN`.
+- Clean-commit framed exhaustive suite with `0 FAIL` and `0 UNKNOWN`, including
+  the feature sweep and exact fixed-step callback-budget assertions.
 - Framed 8-hour soak with `0 FAIL` and `0 UNKNOWN`.
 - Fault-injection fixture coverage for address NACK, data/unknown-phase NACK,
   timeout, stuck-bus/bus error, OFFLINE behavior, and recovery.
@@ -57,8 +56,8 @@ Fixture: `INA228_0x41_low_voltage_no_fault_injection`.
 
 ## Serial/HIL Runner Finding
 
-Long host-driven serial HIL runs exposed framing fragility in the example/HIL
-runner path. The evidence does not prove a core library or I2C transaction
-failure. A future release-grade soak should use a clean commit and either
-stronger host framing or an MCU-side soak command that reports bounded summary
-results.
+Historical v2 host-driven runs exposed serial framing fragility; those UNKNOWN
+rows did not prove a core library or I2C transaction failure. The v3 runner now
+uses framed `hilrun` commands, bounded writes, explicit DTR/RTS handling, and
+exact frame-status parsing. Those controls produced zero UNKNOWN rows in the
+short migration runs, but they still require a clean eight-hour proof.

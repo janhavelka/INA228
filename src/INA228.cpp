@@ -406,12 +406,12 @@ Status INA228::_validateBinding(const Config& config, CalibrationPlan& plan,
     return Status::Ok();
   }
   uint16_t shuntCal = 0;
-  float currentLsb = 0.0f;
+  float legacyCurrentLsb = 0.0f;
   bool clamped = false;
   bool exceeds = false;
   Status st = computeCalibration(config.shuntResistanceOhm,
                                  config.maxExpectedCurrentA, config.adcRange,
-                                 shuntCal, currentLsb, clamped, exceeds);
+                                 shuntCal, legacyCurrentLsb, clamped, exceeds);
   if (!st.ok()) {
     return Status::Error(Err::INVALID_CONFIG, st.msg, st.detail);
   }
@@ -425,7 +425,7 @@ Status INA228::_validateBinding(const Config& config, CalibrationPlan& plan,
   plan.selectedCurrentLsbNanoAmps = static_cast<uint32_t>(std::round(
       static_cast<double>(config.maxExpectedCurrentA) * 1.0e9 / 524288.0));
   plan.effectiveCurrentLsbNanoAmps = static_cast<uint32_t>(std::round(
-      static_cast<double>(currentLsb) * 1.0e9));
+      static_cast<double>(legacyCurrentLsb) * 1.0e9));
   plan.representableCurrentMilliAmps = static_cast<uint32_t>(
       (static_cast<uint64_t>(plan.effectiveCurrentLsbNanoAmps) * 524287ULL) /
       1000000ULL);
@@ -514,10 +514,10 @@ float INA228::_plannedCurrentLsbAmps() const {
 }
 
 uint32_t INA228::_nextOperationIdValue() {
-  uint32_t value = _nextOperationId;
-  if (value == 0) value = 1;
-  _nextOperationId = value + 1U;
-  if (_nextOperationId == 0) _nextOperationId = 1;
+  const uint32_t value = _nextOperationId == 0 ? 1 : _nextOperationId;
+  _nextOperationId = value == std::numeric_limits<uint32_t>::max()
+      ? 1
+      : value + 1U;
   return value;
 }
 
@@ -2361,7 +2361,6 @@ Status INA228::setConversionDelay(uint8_t steps2ms) {
 Status INA228::startApplyCalibration() {
   uint32_t operationId = 0;
   return startReinitialize(0, operationId);
-
 }
 
 Status INA228::pollApplyCalibration(uint32_t nowMs, uint8_t maxInstructions) {
@@ -2375,7 +2374,6 @@ Status INA228::pollApplyCalibration(uint32_t nowMs, uint8_t maxInstructions) {
   JobResult result{};
   Status taken = takeJobResult(operationId, result);
   return taken.ok() ? polled : taken;
-
 }
 
 // ===========================================================================
@@ -2598,13 +2596,11 @@ Status INA228::setPowerOverlimitThreshold(float powerW) {
 Status INA228::softReset() {
   return Status::Error(Err::INVALID_CONFIG,
                        "Use startReset()/pollJob() for bounded startup wait");
-
 }
 
 Status INA228::startResetJob() {
   uint32_t operationId = 0;
   return startReset(0, operationId);
-
 }
 
 Status INA228::pollResetJob(uint32_t nowMs, uint8_t maxInstructions) {
@@ -2617,20 +2613,16 @@ Status INA228::pollResetJob(uint32_t nowMs, uint8_t maxInstructions) {
   JobResult result{};
   Status taken = takeJobResult(operationId, result);
   return taken.ok() ? polled : taken;
-
 }
 
 Status INA228::resetAccumulators() {
-  {
-    uint32_t operationId = 0;
-    Status staged = startAccumulatorReset(0, operationId);
-    if (!staged.ok()) return staged;
-    staged = pollJob(_nowMs(), 2);
-    JobResult result{};
-    Status taken = takeJobResult(operationId, result);
-    return taken.ok() ? staged : taken;
-  }
-
+  uint32_t operationId = 0;
+  Status staged = startAccumulatorReset(0, operationId);
+  if (!staged.ok()) return staged;
+  staged = pollJob(_nowMs(), 2);
+  JobResult result{};
+  Status taken = takeJobResult(operationId, result);
+  return taken.ok() ? staged : taken;
 }
 
 Status INA228::readManufacturerId(uint16_t& id) {
@@ -2781,7 +2773,7 @@ Status INA228::readReg40(uint8_t reg, uint64_t& value) {
 }
 
 Status INA228::writeReg16(uint8_t reg, uint16_t value) {
-  uint8_t payload[3] = {
+  const uint8_t payload[3] = {
     reg,
     static_cast<uint8_t>(value >> 8),
     static_cast<uint8_t>(value & 0xFF)
