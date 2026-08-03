@@ -130,6 +130,16 @@ earlier. `pollJob(..., 0)` is valid and bus-silent; it can advance an elapsed
 time gate but cannot call the transport. A positive budget is a maximum for that
 call. The library performs no automatic retry.
 
+`Config::nowMs` and explicit timestamps supplied to cooperative/readiness APIs
+must use the same wrap-safe monotonic millisecond domain. A successful trigger,
+reset, or configured-trigger write starts its software wait only after the
+blocking callback returns. With `Config::nowMs`, the driver samples that
+post-write time immediately. Without the optional hook, the next explicit
+caller timestamp establishes the origin in one bus-silent activation, and the
+full unchanged device wait follows. Hookless `isConversionReady()` cannot
+advance an unresolved origin; use `pollConversionReady(nowMs, ...)` or
+`tick(nowMs)`.
+
 The caller owns the operation deadline. `timeoutJob()` and `cancelJob()` are
 idempotent and bus-silent. Their terminal `JobEffect` distinguishes:
 
@@ -149,9 +159,10 @@ until readback succeeds.
 ### Atomic instantaneous sample
 
 `startInstantaneousSample()` is accepted only after successful calibration and
-verified hardware synchronization. The bound base mode must be a shutdown or
-continuous mode; triggered base modes are rejected because the sample job owns
-the one-shot transition.
+verified hardware synchronization. `Config::mode` may select any valid INA228
+mode for initialization, including a triggered mode. The instantaneous-sample
+job itself still requires the active configured base mode to be shutdown or
+continuous because that job owns its one-shot transition.
 
 The job verifies critical configuration, triggers all channels, waits without
 I2C, captures `DIAG_ALRT`, reads the five instantaneous channels while the

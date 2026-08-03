@@ -370,11 +370,6 @@ Status INA228::_validateBinding(const Config& config, CalibrationPlan& plan,
       !isValidAveraging(config.averaging) || !isValidAdcRange(config.adcRange)) {
     return Status::Error(Err::INVALID_CONFIG, "Invalid ADC configuration");
   }
-  if (isTriggeredMode(config.mode)) {
-    return Status::Error(
-        Err::INVALID_CONFIG,
-        "Bound base mode must be shutdown or continuous; use a triggered job");
-  }
   if (config.shuntTempCoeffPpmC > cmd::TEMPCO_MAX ||
       config.supportedRevisionMask == 0) {
     return Status::Error(Err::INVALID_CONFIG,
@@ -469,6 +464,7 @@ Status INA228::bind(const Config& config) {
   _hardwareDirtyCause = Status::Error(
       Err::HARDWARE_STATE_UNKNOWN, "Bound hardware has not been verified");
   _trigPending = false;
+  _trigStartMs = 0;
   _accumulationReady = false;
   _configurationGeneration = 0;
   _accumulatorGeneration = 0;
@@ -542,6 +538,7 @@ void INA228::_clearCooperativeState() {
   _sampleScratch = InstantaneousSample{};
   _jobReadback = 0;
   _jobWaitStartMs = 0;
+  _deferredTimeOrigin = DeferredTimeOrigin::NONE;
   _jobDeferredStatus = Status::Ok();
 }
 
@@ -579,6 +576,9 @@ Status INA228::_startJob(JobKind kind, JobPhase firstPhase,
   _sampleScratch.configurationGeneration = _configurationGeneration;
   _jobReadback = 0;
   _jobWaitStartMs = 0;
+  if (_deferredTimeOrigin == DeferredTimeOrigin::JOB_WAIT) {
+    _deferredTimeOrigin = DeferredTimeOrigin::NONE;
+  }
   _jobDeferredStatus = Status::Ok();
   operationId = id;
   return Status::Ok();
@@ -665,6 +665,9 @@ Status INA228::_failJob(const Status& status, bool failedWrite,
                         uint32_t nowMs) {
   const bool identityJob = _jobSnapshot.kind == JobKind::INITIALIZE ||
                            _jobSnapshot.kind == JobKind::REINITIALIZE;
+  const bool resetMayHaveInvalidatedTrigger =
+      _jobSnapshot.kind == JobKind::RESET &&
+      (failedWrite || _jobHadSuccessfulWrite);
   JobEffect effect = JobEffect::NONE;
   if (failedWrite) {
     effect = JobEffect::INDETERMINATE;
@@ -683,6 +686,16 @@ Status INA228::_failJob(const Status& status, bool failedWrite,
     _deviceIdentityValid = false;
     _invalidateAccumulatorEpoch();
   }
+  if (_deferredTimeOrigin == DeferredTimeOrigin::JOB_WAIT) {
+    _deferredTimeOrigin = DeferredTimeOrigin::NONE;
+  }
+  if ((identityJob || resetMayHaveInvalidatedTrigger) && _trigPending) {
+    _trigPending = false;
+    _trigStartMs = 0;
+    if (_deferredTimeOrigin == DeferredTimeOrigin::TRIGGERED_CONVERSION) {
+      _deferredTimeOrigin = DeferredTimeOrigin::NONE;
+    }
+  }
   return _finishJob(status, JobState::FAILED, effect, nowMs);
 }
 
@@ -693,6 +706,8 @@ Status INA228::_cancelJob(const Status& status, JobState state) {
   JobEffect effect = JobEffect::NONE;
   const bool identityJob = _jobSnapshot.kind == JobKind::INITIALIZE ||
                            _jobSnapshot.kind == JobKind::REINITIALIZE;
+  const bool resetInvalidatedTrigger =
+      _jobSnapshot.kind == JobKind::RESET && _jobHadSuccessfulWrite;
   if (_jobHadSuccessfulWrite || identityJob) {
     if (_jobHadSuccessfulWrite) effect = JobEffect::PARTIAL;
     _hardwareState = HardwareState::RESYNC_REQUIRED;
@@ -703,6 +718,16 @@ Status INA228::_cancelJob(const Status& status, JobState state) {
     _hardwareDirtyCause = status;
     _deviceIdentityValid = false;
     _invalidateAccumulatorEpoch();
+  }
+  if (_deferredTimeOrigin == DeferredTimeOrigin::JOB_WAIT) {
+    _deferredTimeOrigin = DeferredTimeOrigin::NONE;
+  }
+  if ((identityJob || resetInvalidatedTrigger) && _trigPending) {
+    _trigPending = false;
+    _trigStartMs = 0;
+    if (_deferredTimeOrigin == DeferredTimeOrigin::TRIGGERED_CONVERSION) {
+      _deferredTimeOrigin = DeferredTimeOrigin::NONE;
+    }
   }
   _sampleScratch = InstantaneousSample{};
   return _finishJob(status, state, effect, _nowMs());
@@ -810,6 +835,9 @@ Status INA228::invalidateHardwareState(const Status& cause) {
   _dirtyRegisterMask = 0;
   _deviceIdentityValid = false;
   _invalidateAccumulatorEpoch();
+  _trigPending = false;
+  _trigStartMs = 0;
+  _deferredTimeOrigin = DeferredTimeOrigin::NONE;
   return result;
 }
 
@@ -961,7 +989,7 @@ Status INA228::_pollJobTransfer(uint32_t nowMs) {
       if (!st.ok()) return _failJob(st, true, nowMs);
       _jobHadSuccessfulWrite = true;
       if (isTriggeredMode(_config.mode)) {
-        _markTriggeredConversionStarted(nowMs);
+        _markTriggeredConversionStarted();
       }
       _setJobPhase(JobPhase::VERIFY_CONFIG);
       return Status{Err::IN_PROGRESS, 0, "Job in progress"};
@@ -1057,7 +1085,7 @@ Status INA228::_pollJobTransfer(uint32_t nowMs) {
       st = writeReg16(cmd::REG_ADC_CONFIG, _triggeredAllAdcConfig());
       if (!st.ok()) return _failJob(st, true, nowMs);
       _jobHadSuccessfulWrite = true;
-      _jobWaitStartMs = nowMs;
+      _armPostWriteTimeOrigin(DeferredTimeOrigin::JOB_WAIT);
       _invalidateAccumulatorEpoch();
       _clearCapturedConversionReadyFlag();
       _setJobPhase(JobPhase::SAMPLE_WAIT);
@@ -1171,7 +1199,14 @@ Status INA228::_pollJobTransfer(uint32_t nowMs) {
       if (!st.ok()) return _failJob(st, true, nowMs);
       _jobHadSuccessfulWrite = true;
       _hardwareState = HardwareState::RESYNC_REQUIRED;
-      _jobWaitStartMs = nowMs;
+      // Reset invalidates any earlier conversion. Discard its timing before
+      // arming the reset wait so the single deferred origin stays unambiguous.
+      _trigPending = false;
+      _trigStartMs = 0;
+      if (_deferredTimeOrigin == DeferredTimeOrigin::TRIGGERED_CONVERSION) {
+        _deferredTimeOrigin = DeferredTimeOrigin::NONE;
+      }
+      _armPostWriteTimeOrigin(DeferredTimeOrigin::JOB_WAIT);
       _setJobPhase(JobPhase::RESET_WAIT);
       return Status{Err::IN_PROGRESS, 0, "Reset startup wait in progress"};
 
@@ -1224,6 +1259,18 @@ Status INA228::pollJob(uint32_t nowMs, uint8_t maxTransfers) {
   }
   if (_jobPollActive) {
     return Status::Error(Err::BUSY, "Job poll re-entry is not allowed");
+  }
+
+  if (_deferredTimeOrigin == DeferredTimeOrigin::JOB_WAIT) {
+    _jobWaitStartMs = nowMs;
+    _deferredTimeOrigin = DeferredTimeOrigin::NONE;
+    return Status{Err::IN_PROGRESS, 0, "Post-write wait origin established"};
+  }
+  if (_deferredTimeOrigin == DeferredTimeOrigin::TRIGGERED_CONVERSION) {
+    _trigStartMs = nowMs;
+    _deferredTimeOrigin = DeferredTimeOrigin::NONE;
+    return Status{Err::IN_PROGRESS, 0,
+                  "Triggered conversion time origin established"};
   }
   _jobPollActive = true;
 
@@ -1279,6 +1326,11 @@ Status INA228::pollJob(uint32_t nowMs, uint8_t maxTransfers) {
     if (!_cooperativeJobActive()) {
       _jobPollActive = false;
       return st;
+    }
+    if (_deferredTimeOrigin == DeferredTimeOrigin::JOB_WAIT) {
+      _jobPollActive = false;
+      return Status{Err::IN_PROGRESS, 0,
+                    "Post-write wait origin pending caller timestamp"};
     }
   }
   _jobPollActive = false;
@@ -1902,6 +1954,10 @@ Status INA228::readCharge(double& out) {
 }
 
 Status INA228::isConversionReady(bool& ready) {
+  if (_config.nowMs == nullptr && _trigPending) {
+    ready = false;
+    return Status::Ok();
+  }
   return pollConversionReady(_nowMs(), ready);
 }
 
@@ -1909,6 +1965,11 @@ Status INA228::pollConversionReady(uint32_t nowMs, bool& ready) {
   ready = false;
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (_deferredTimeOrigin == DeferredTimeOrigin::TRIGGERED_CONVERSION) {
+    _trigStartMs = nowMs;
+    _deferredTimeOrigin = DeferredTimeOrigin::NONE;
+    return Status::Ok();
   }
   if (_trigPending && !_triggerDeadlineElapsed(nowMs)) {
     return Status::Ok();
@@ -1938,6 +1999,11 @@ Status INA228::pollMeasurementReady(uint32_t nowMs, uint8_t maxInstructions,
   if (!allowed.ok()) return allowed;
   Status clean = _ensureHardwareClean();
   if (!clean.ok()) return clean;
+  if (_deferredTimeOrigin == DeferredTimeOrigin::TRIGGERED_CONVERSION) {
+    _trigStartMs = nowMs;
+    _deferredTimeOrigin = DeferredTimeOrigin::NONE;
+    return Status::Ok();
+  }
   if (!_trigPending) {
     ready = true;
     return Status::Ok();
@@ -1980,7 +2046,7 @@ Status INA228::setMode(Mode mode) {
   _config.mode = mode;
   _invalidateAccumulatorEpoch();
   if (isTriggeredMode(mode)) {
-    _markTriggeredConversionStarted(_nowMs());
+    _markTriggeredConversionStarted();
     return Status{Err::IN_PROGRESS, 0, "Conversion started"};
   }
   _completeTriggeredConversion();
@@ -2016,7 +2082,7 @@ Status INA228::triggerConversion(Mode mode) {
 
   _config.mode = mode;
   _invalidateAccumulatorEpoch();
-  _markTriggeredConversionStarted(_nowMs());
+  _markTriggeredConversionStarted();
   return Status{Err::IN_PROGRESS, 0, "Conversion started"};
 }
 
@@ -2044,7 +2110,7 @@ Status INA228::setVbusConvTime(ConvTime ct) {
     _config.vbusConvTime = old;
     _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
   } else if (isTriggeredMode(_config.mode)) {
-    _markTriggeredConversionStarted(_nowMs());
+    _markTriggeredConversionStarted();
   } else {
     _invalidateAccumulatorEpoch();
   }
@@ -2068,7 +2134,7 @@ Status INA228::setVshuntConvTime(ConvTime ct) {
     _config.vshuntConvTime = old;
     _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
   } else if (isTriggeredMode(_config.mode)) {
-    _markTriggeredConversionStarted(_nowMs());
+    _markTriggeredConversionStarted();
   } else {
     _invalidateAccumulatorEpoch();
   }
@@ -2092,7 +2158,7 @@ Status INA228::setTempConvTime(ConvTime ct) {
     _config.vtempConvTime = old;
     _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
   } else if (isTriggeredMode(_config.mode)) {
-    _markTriggeredConversionStarted(_nowMs());
+    _markTriggeredConversionStarted();
   } else {
     _invalidateAccumulatorEpoch();
   }
@@ -2116,7 +2182,7 @@ Status INA228::setAveraging(Averaging avg) {
     _config.averaging = old;
     _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
   } else if (isTriggeredMode(_config.mode)) {
-    _markTriggeredConversionStarted(_nowMs());
+    _markTriggeredConversionStarted();
   } else {
     _invalidateAccumulatorEpoch();
   }
@@ -2988,6 +3054,11 @@ Status INA228::_ensureMeasurementReadyForRead() {
   if (!_trigPending) {
     return Status::Ok();
   }
+  if (_config.nowMs == nullptr ||
+      _deferredTimeOrigin == DeferredTimeOrigin::TRIGGERED_CONVERSION) {
+    return Status::Error(Err::MEASUREMENT_NOT_READY,
+                         "Triggered conversion requires explicit readiness poll");
+  }
   const uint32_t now = _nowMs();
   if (!_triggerDeadlineElapsed(now)) {
     return Status::Error(Err::MEASUREMENT_NOT_READY, "Triggered conversion not ready");
@@ -3043,7 +3114,8 @@ Status INA228::_fillPowerSampleUnits(const RawSample& raw,
 
 
 bool INA228::_triggerDeadlineElapsed(uint32_t nowMs) const {
-  return (nowMs - _trigStartMs) >= estimateConversionTimeMs();
+  return _deferredTimeOrigin != DeferredTimeOrigin::TRIGGERED_CONVERSION &&
+         (nowMs - _trigStartMs) >= estimateConversionTimeMs();
 }
 
 bool INA228::_modeSupportsEnergyAccumulation() const {
@@ -3128,10 +3200,11 @@ Status INA228::_validateAccumulatorDiag(uint16_t raw, uint16_t overflowBit,
   return Status::Ok();
 }
 
-void INA228::_markTriggeredConversionStarted(uint32_t nowMs) {
+void INA228::_markTriggeredConversionStarted() {
   _invalidateAccumulatorEpoch();
   _trigPending = true;
-  _trigStartMs = nowMs;
+  _trigStartMs = 0;
+  _armPostWriteTimeOrigin(DeferredTimeOrigin::TRIGGERED_CONVERSION);
   _clearCapturedConversionReadyFlag();
 }
 
@@ -3139,6 +3212,9 @@ void INA228::_completeTriggeredConversion() {
   const bool wasTriggeredMode = isTriggeredMode(_config.mode);
   _trigPending = false;
   _trigStartMs = 0;
+  if (_deferredTimeOrigin == DeferredTimeOrigin::TRIGGERED_CONVERSION) {
+    _deferredTimeOrigin = DeferredTimeOrigin::NONE;
+  }
   _markAccumulationInvalid();
   if (wasTriggeredMode) {
     _config.mode = Mode::SHUTDOWN;
@@ -3276,6 +3352,21 @@ uint32_t INA228::_nowMs() const {
     return _config.nowMs(_config.timeUser);
   }
   return 0;
+}
+
+void INA228::_armPostWriteTimeOrigin(DeferredTimeOrigin origin) {
+  if (_config.nowMs == nullptr) {
+    _deferredTimeOrigin = origin;
+    return;
+  }
+
+  const uint32_t postWriteMs = _nowMs();
+  if (origin == DeferredTimeOrigin::JOB_WAIT) {
+    _jobWaitStartMs = postWriteMs;
+  } else if (origin == DeferredTimeOrigin::TRIGGERED_CONVERSION) {
+    _trigStartMs = postWriteMs;
+  }
+  _deferredTimeOrigin = DeferredTimeOrigin::NONE;
 }
 
 uint16_t INA228::_buildAdcConfig() const {

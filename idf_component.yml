@@ -1,4 +1,4 @@
-version: "3.0.1"
+version: "3.0.2"
 description: "Framework-neutral INA228 power monitor with bounded owner-driven cooperative operations."
 license: "MIT"
 url: "https://github.com/janhavelka/INA228"

@@ -89,6 +89,16 @@ plus callback/scheduling allowance fits that deadline. Progress does not renew
 the deadline. On expiry call `timeoutJob()`; on cancellation call `cancelJob()`.
 Both are idempotent and perform no I2C.
 
+The `config.nowMs` hook and every explicit `nowMs` passed to the library must
+come from the same wrap-safe monotonic millisecond domain. For a trigger or
+reset write, the library samples the hook only after the successful blocking
+transport callback returns. If the hook is omitted, the next timestamped owner
+activation establishes the post-write origin without I2C, then the complete
+unchanged device wait elapses. This adds one bus-silent activation; it does not
+change transfer budgets, device wait durations, or retries. With no hook,
+`isConversionReady()` cannot advance an unresolved trigger; call
+`pollConversionReady(nowMs, ...)` or `tick(nowMs)`.
+
 After terminal state, call `takeJobResult(expectedOperationId, result)` once.
 A successful take reports delivery, not necessarily job success. Inspect
 `result.job.state`, `result.job.status`, and `result.job.effect`. If effect is

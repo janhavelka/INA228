@@ -318,7 +318,12 @@ public:
 
   /// Advance the active job with at most @p maxTransfers transport callbacks.
   /// A zero budget is valid and can advance an elapsed wait gate without I2C.
+  /// Timed write transitions use Config::nowMs after callback return, or use
+  /// the next call's @p nowMs as a bus-silent origin when the hook is unset.
+  /// Explicit and hooked timestamps must share one wrap-safe monotonic domain.
   /// There are no driver retries.
+  /// @param nowMs Current monotonic timestamp in milliseconds
+  /// @param maxTransfers Maximum transport callbacks permitted on this call
   Status pollJob(uint32_t nowMs, uint8_t maxTransfers);
 
   /// Cancel the active job with no I2C. Partial writes require resync.
@@ -621,6 +626,9 @@ public:
   Status readCharge(double& out);
 
   /// Check if conversion is ready using Config::nowMs when a trigger is pending.
+  /// @note With no Config::nowMs hook, this remains bus-silent and reports not
+  /// ready while a trigger is pending. Use pollConversionReady(nowMs, ...) or
+  /// tick(nowMs) to establish and advance the time origin.
   /// @note After the software deadline elapses this performs a destructive
   /// DIAG_ALRT read to observe CNVRF. Evidence from that read is preserved in
   /// getDiagAlertSnapshot(), but hardware status bits can still be cleared.
@@ -632,6 +640,9 @@ public:
   ///
   /// This is the status-returning variant used by tick(). It allows triggered
   /// conversions to advance deterministically even when Config::nowMs is unset.
+  /// In that case the first explicit timestamp after the successful trigger
+  /// write only anchors the origin and performs no I2C; the full conversion
+  /// interval follows before CNVRF can be inspected.
   /// CNVRF remains authoritative after the software deadline has elapsed.
   /// @note After the software deadline elapses this performs a destructive
   /// DIAG_ALRT read to observe CNVRF. Evidence from that read is preserved in
@@ -918,6 +929,12 @@ private:
     ACCUMULATOR_VERIFY
   };
 
+  enum class DeferredTimeOrigin : uint8_t {
+    NONE,
+    JOB_WAIT,
+    TRIGGERED_CONVERSION
+  };
+
   // =========================================================================
   // Transport Wrappers
   // =========================================================================
@@ -998,7 +1015,7 @@ private:
   Status _validateAccumulatorDiag(uint16_t raw, uint16_t overflowBit,
                                   const char* overflowMsg) const;
   bool _triggerDeadlineElapsed(uint32_t nowMs) const;
-  void _markTriggeredConversionStarted(uint32_t nowMs);
+  void _markTriggeredConversionStarted();
   void _completeTriggeredConversion();
   void _clearCapturedConversionReadyFlag();
   void _clearCapturedAccumulatorEvidence();
@@ -1030,6 +1047,7 @@ private:
   bool _hardwareAccessAllowed() const;
   void _clearCooperativeState();
   void _invalidateAccumulatorEpoch();
+  void _armPostWriteTimeOrigin(DeferredTimeOrigin origin);
 
   /// Build ADC_CONFIG register value from current config
   uint16_t _buildAdcConfig() const;
@@ -1078,6 +1096,7 @@ private:
   // Triggered conversion tracking
   bool _trigPending = false;
   uint32_t _trigStartMs = 0;
+  DeferredTimeOrigin _deferredTimeOrigin = DeferredTimeOrigin::NONE;
 
   // Accumulator validity tracking
   bool _accumulationReady = false;

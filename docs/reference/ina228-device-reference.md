@@ -155,8 +155,15 @@ addresses.
 - Continuous modes update measurement registers repeatedly.
 - In triggered mode, wait for the computed deadline and confirm `CNVRF` before
   treating a sample as fresh.
+- Timed trigger/reset origins are established after the successful blocking
+  register write returns. `Config::nowMs` is sampled then; without that hook,
+  the next explicit wrap-safe timestamp anchors the full wait in a bus-silent
+  activation. Hooked and explicit timestamps must share one monotonic domain.
+- Hookless `isConversionReady()` cannot advance an unresolved trigger; use
+  `pollConversionReady(nowMs, ...)` or `tick(nowMs)`.
 - The cooperative instantaneous-sample job owns its triggered transition. Its
-  bound base profile must be continuous or shutdown, not a triggered mode.
+  active configured base mode must be continuous or shutdown, even though
+  initialization itself supports valid triggered `Config::mode` values.
 
 ## Alert And Diagnostic Notes
 

@@ -42,9 +42,14 @@ using I2cWriteReadFn = Status (*)(uint8_t addr, const uint8_t* txData, size_t tx
 /// @brief Optional monotonic millisecond timestamp callback.
 /// @param user User context pointer passed through from Config
 /// @return Current monotonic milliseconds
-/// @note Framework-neutral builds do not call platform time APIs; if unset,
-/// health timestamps use 0. Triggered conversions can still be advanced by
-/// caller-supplied timestamps passed to tick() or pollConversionReady().
+/// @note This hook and explicit timestamps passed to pollJob(), tick(), and
+/// readiness APIs must use the same wrap-safe monotonic millisecond domain.
+/// After a successful blocking write that starts a timed device action, the
+/// hook is sampled after the transport callback returns. If unset, health
+/// timestamps use 0 and the next explicit caller timestamp anchors the full
+/// device wait in one bus-silent activation. Hookless isConversionReady()
+/// cannot establish or advance that origin; use pollConversionReady() or
+/// tick().
 using NowMsFn = uint32_t (*)(void* user);
 
 /// @brief ADC operating mode (MODE field in ADC_CONFIG register, bits 15:12).
@@ -153,7 +158,7 @@ struct Config {
   uint32_t i2cTimeoutMs = 50;            ///< I2C transaction timeout in ms
 
   // === ADC Settings ===
-  Mode mode = Mode::CONT_ALL;            ///< Stable shutdown/continuous base mode; jobs own one-shot triggers
+  Mode mode = Mode::CONT_ALL;            ///< Initial shutdown, triggered, or continuous operating mode
   ConvTime vbusConvTime = ConvTime::US_1052;  ///< Bus voltage conversion time
   ConvTime vshuntConvTime = ConvTime::US_1052; ///< Shunt voltage conversion time
   ConvTime vtempConvTime = ConvTime::US_1052;  ///< Temperature conversion time
