@@ -6,6 +6,7 @@
 #include <cstdint>
 #include "INA228/Status.h"
 
+/// @brief Framework-neutral INA228 driver API.
 namespace INA228 {
 
 /// @brief I2C write callback signature.
@@ -115,19 +116,19 @@ enum class CalibrationMode : uint8_t {
 /// electrical shunt range and is not silently changed to obtain a convenient
 /// CURRENT_LSB.
 struct CalibrationConfig {
-  uint32_t shuntMicroOhms = 0;
-  CalibrationMode mode = CalibrationMode::NONE;
-  uint32_t maxCurrentMilliAmps = 0;
-  uint32_t currentLsbNanoAmps = 0;
+  uint32_t shuntMicroOhms = 0; ///< Installed shunt resistance in micro-ohms
+  CalibrationMode mode = CalibrationMode::NONE; ///< CURRENT_LSB selection mode
+  uint32_t maxCurrentMilliAmps = 0; ///< Maximum expected current in milliamps
+  uint32_t currentLsbNanoAmps = 0; ///< Requested CURRENT_LSB in nanoamps
   bool allowUnsafePlan = false; ///< Explicit opt-in to clamp/range exceedance
 };
 
 /// @brief Deterministic writable DIAG_ALRT configuration.
 struct AlertConfig {
-  bool latched = false;
-  bool conversionReady = false;
-  bool slowAlert = false;
-  bool activeHigh = false;
+  bool latched = false; ///< True for latched ALERT behavior
+  bool conversionReady = false; ///< Route conversion-ready state to ALERT
+  bool slowAlert = false; ///< Compare averaged values for alert limits
+  bool activeHigh = false; ///< True for active-high ALERT polarity
 };
 
 /// @brief Transport health behavior.

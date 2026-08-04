@@ -36,18 +36,26 @@ protection.
 
 ## Capture Presets
 
+Install `pyserial` in the runner environment before automated HIL capture. A
+release run starts from a clean checkout; the runner validates the firmware's
+library version, exact 12-character Git commit identity, source status, and exact
+profile framework tokens before accepting the `version` step.
+
 Arduino ESP32-S3:
 
 ```powershell
 $Port = "COMx"
 $Run = "docs\validation\hardware\YYYY-MM-DD\<short-commit>-arduino-esp32s3dev-addr-0x40"
+$LibraryVersion = (Get-Content library.json -Raw | ConvertFrom-Json).version
+$Commit = git rev-parse --short=12 HEAD
 New-Item -ItemType Directory -Force $Run
 git rev-parse HEAD | Tee-Object "$Run\commit.txt"
-python -m platformio run -e esp32s3dev 2>&1 | Tee-Object "$Run\build.txt"
-python -m platformio run -e esp32s3dev -t upload --upload-port $Port 2>&1 | Tee-Object "$Run\upload.txt"
-python tools\run_i2c_hil.py --port $Port --baud 115200 --suite exhaustive --require-framed --fail-on-unknown --include-not-run --benchmark-count 100 --report "$Run\hil-exhaustive.md" --transcript "$Run\hil-exhaustive-transcript.txt" 2>&1 | Tee-Object "$Run\hil-exhaustive-runner.txt"
+git status --porcelain --untracked-files=normal | Tee-Object "$Run\source-status.txt"
+.\scripts\pio.cmd run -e esp32s3dev 2>&1 | Tee-Object "$Run\build.txt"
+.\scripts\pio.cmd run -e esp32s3dev -t upload --upload-port $Port 2>&1 | Tee-Object "$Run\upload.txt"
+python tools\run_i2c_hil.py --port $Port --baud 115200 --profile arduino --expected-library-version $LibraryVersion --expected-commit $Commit --expected-git-status clean --suite exhaustive --require-framed --fail-on-unknown --include-not-run --benchmark-count 100 --operator "<name>" --board "<board/revision>" --environment "esp32s3dev" --fixture "<fixture/load>" --safety "<approved limits>" --report "$Run\hil-exhaustive.md" --transcript "$Run\hil-exhaustive-transcript.txt" 2>&1 | Tee-Object "$Run\hil-exhaustive-runner.txt"
 Start-Transcript -Path "$Run\monitor-transcript.txt"
-python -m platformio device monitor -e esp32s3dev -p $Port
+.\scripts\pio.cmd device monitor -e esp32s3dev -p $Port
 Stop-Transcript
 ```
 
@@ -58,11 +66,16 @@ Pure ESP-IDF ESP32-S3:
 ```powershell
 $Port = "COMx"
 $Run = "docs\validation\hardware\YYYY-MM-DD\<short-commit>-idf-esp32s3-addr-0x40"
+$LibraryVersion = (Get-Content library.json -Raw | ConvertFrom-Json).version
+$Commit = git rev-parse --short=12 HEAD
 New-Item -ItemType Directory -Force $Run
 git rev-parse HEAD | Tee-Object "$Run\commit.txt"
+git status --porcelain --untracked-files=normal | Tee-Object "$Run\source-status.txt"
 idf.py -C examples/esp_idf/basic set-target esp32s3 build 2>&1 | Tee-Object "$Run\build.txt"
+idf.py -C examples/esp_idf/basic -p $Port flash 2>&1 | Tee-Object "$Run\flash.txt"
+python tools\run_i2c_hil.py --port $Port --baud 115200 --profile idf --expected-library-version $LibraryVersion --expected-commit $Commit --expected-git-status clean --suite exhaustive --require-framed --fail-on-unknown --include-not-run --benchmark-count 100 --operator "<name>" --board "<board/revision>" --environment "esp-idf-v6.0.1-esp32s3" --fixture "<fixture/load>" --safety "<approved limits>" --report "$Run\hil-exhaustive.md" --transcript "$Run\hil-exhaustive-transcript.txt" 2>&1 | Tee-Object "$Run\hil-exhaustive-runner.txt"
 Start-Transcript -Path "$Run\flash-monitor-transcript.txt"
-idf.py -C examples/esp_idf/basic -p $Port flash monitor
+idf.py -C examples/esp_idf/basic -p $Port monitor
 Stop-Transcript
 ```
 

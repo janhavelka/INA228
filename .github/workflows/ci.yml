@@ -153,6 +153,7 @@ jobs:
           mkdir -p static-contract-logs
           python -m py_compile tools/run_i2c_hil.py 2>&1 | tee static-contract-logs/py_compile_run_i2c_hil.log
           python tools/run_i2c_hil.py --parser-self-test 2>&1 | tee static-contract-logs/hil_parser_self_test.log
+          python tools/test_run_i2c_hil_parser.py 2>&1 | tee static-contract-logs/hil_parser_regression_tests.log
           python tools/check_cli_contract.py 2>&1 | tee static-contract-logs/check_cli_contract.log
           python tools/check_idf_example_contract.py 2>&1 | tee static-contract-logs/check_idf_example_contract.log
           python tools/check_core_timing_guard.py 2>&1 | tee static-contract-logs/check_core_timing_guard.log

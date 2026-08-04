@@ -77,23 +77,23 @@ struct IntegerSample {
 
 /// @brief Snapshot of cached settings and runtime state without I2C access.
 struct SettingsSnapshot {
-  bool initialized = false;
-  DriverState state = DriverState::UNINIT;
-  uint8_t i2cAddress = 0x40;
-  uint32_t i2cTimeoutMs = 0;
-  uint8_t offlineThreshold = 0;
-  bool hasNowMsHook = false;
-  Mode mode = Mode::CONT_ALL;
-  ConvTime vbusConvTime = ConvTime::US_1052;
-  ConvTime vshuntConvTime = ConvTime::US_1052;
-  ConvTime vtempConvTime = ConvTime::US_1052;
-  Averaging averaging = Averaging::AVG_1;
-  AdcRange adcRange = AdcRange::MV_163_84;
-  float shuntResistanceOhm = 0.0f;
-  float maxExpectedCurrentA = 0.0f;
-  bool tempCompEnabled = false;
-  uint16_t shuntTempCoeffPpmC = 0;
-  uint8_t convDelayMs2 = 0;
+  bool initialized = false;             ///< True after verified initialization
+  DriverState state = DriverState::UNINIT; ///< Current transport-health state
+  uint8_t i2cAddress = 0x40;            ///< Bound 7-bit device address
+  uint32_t i2cTimeoutMs = 0;            ///< Bound per-transaction timeout
+  uint8_t offlineThreshold = 0;         ///< Consecutive-failure OFFLINE threshold
+  bool hasNowMsHook = false;            ///< True when Config::nowMs is configured
+  Mode mode = Mode::CONT_ALL;           ///< Cached operating mode
+  ConvTime vbusConvTime = ConvTime::US_1052; ///< Cached bus-voltage conversion time
+  ConvTime vshuntConvTime = ConvTime::US_1052; ///< Cached shunt conversion time
+  ConvTime vtempConvTime = ConvTime::US_1052; ///< Cached temperature conversion time
+  Averaging averaging = Averaging::AVG_1; ///< Cached ADC averaging selection
+  AdcRange adcRange = AdcRange::MV_163_84; ///< Cached shunt ADC range
+  float shuntResistanceOhm = 0.0f;      ///< Bound shunt resistance in ohms
+  float maxExpectedCurrentA = 0.0f;     ///< Bound maximum expected current
+  bool tempCompEnabled = false;         ///< Cached temperature-compensation state
+  uint16_t shuntTempCoeffPpmC = 0;      ///< Cached shunt coefficient in ppm/C
+  uint8_t convDelayMs2 = 0;             ///< Cached conversion delay in 2-ms units
   float currentLsb = 0.0f;             ///< Actual amps/LSB used for converted current-derived values
   uint16_t shuntCal = 0;               ///< Actual SHUNT_CAL value programmed by the driver
   bool calibrated = false;             ///< True when SHUNT_CAL/currentLsb are usable and hardware is clean
@@ -103,8 +103,8 @@ struct SettingsSnapshot {
   uint64_t dirtyRegisterMask = 0;      ///< Bit mask of possibly dirty registers, indexed by register address
   Status hardwareDirtyCause{};         ///< First failure/status that made hardwareDirty true
   bool thresholdsDirty = false;        ///< Sticky advisory that thresholds may not match active scale
-  bool triggeredConversionPending = false;
-  uint32_t triggeredConversionStartMs = 0;
+  bool triggeredConversionPending = false; ///< A triggered conversion is awaiting readiness
+  uint32_t triggeredConversionStartMs = 0; ///< Stored origin; zero is also a valid timestamp
 };
 
 /// @brief Diagnostic, alert configuration, and alert flag bits from DIAG_ALRT.
@@ -139,27 +139,27 @@ struct DiagAlertSnapshot {
   bool valid = false;       ///< True after the driver captured a DIAG_ALRT value
   uint16_t raw = 0;         ///< Preserved DIAG_ALRT evidence plus latest config/MEMSTAT bits
   DiagAlert diag{};         ///< Parsed DIAG_ALRT fields
-  uint32_t capturedMs = 0;  ///< Timestamp from Config::nowMs, or 0 if unavailable
+  uint32_t capturedMs = 0;  ///< Owner poll/hook capture time; zero is valid or unavailable by context
 };
 
 /// @brief Deterministic fixed-unit SHUNT_CAL plan.
 struct CalibrationPlan {
-  uint16_t shuntCal = 0;
-  uint32_t selectedCurrentLsbNanoAmps = 0;
-  uint32_t effectiveCurrentLsbNanoAmps = 0;
-  uint32_t representableCurrentMilliAmps = 0;
-  uint32_t shuntFullScaleMicrovolts = 0;
-  bool quantized = false;
-  bool clamped = false;
-  bool maxCurrentExceedsShuntRange = false;
-  bool maxCurrentExceedsCurrentRegister = false;
+  uint16_t shuntCal = 0;                 ///< Planned SHUNT_CAL register value
+  uint32_t selectedCurrentLsbNanoAmps = 0; ///< Requested/selected CURRENT_LSB
+  uint32_t effectiveCurrentLsbNanoAmps = 0; ///< CURRENT_LSB after register quantization
+  uint32_t representableCurrentMilliAmps = 0; ///< Signed CURRENT register range
+  uint32_t shuntFullScaleMicrovolts = 0; ///< Active shunt ADC full-scale voltage
+  bool quantized = false;                ///< True when effective LSB differs from selected LSB
+  bool clamped = false;                  ///< True when SHUNT_CAL was clamped
+  bool maxCurrentExceedsShuntRange = false; ///< Requested current exceeds shunt ADC range
+  bool maxCurrentExceedsCurrentRegister = false; ///< Requested current exceeds CURRENT range
 };
 
 /// @brief Parsed DEVICE_ID identity fields.
 struct DeviceIdentity {
-  uint16_t manufacturerId = 0;
-  uint16_t dieId = 0;
-  uint8_t revision = 0;
+  uint16_t manufacturerId = 0; ///< Raw MANUFACTURER_ID register
+  uint16_t dieId = 0;          ///< Parsed 12-bit die identifier
+  uint8_t revision = 0;        ///< Parsed 4-bit silicon revision
 };
 
 /// @brief Verification relationship between desired cache and hardware.
@@ -199,6 +199,7 @@ enum class JobEffect : uint8_t {
   INDETERMINATE  ///< A failed side-effecting transfer may have changed hardware/evidence
 };
 
+/// @brief Scheduling class for cooperative operations.
 enum class OperationClass : uint8_t {
   STEADY_STATE,
   MULTI_STEP_RUNTIME,
@@ -207,22 +208,23 @@ enum class OperationClass : uint8_t {
 
 /// @brief Declared worst-case work for one job; retries are always zero.
 struct JobLimits {
-  OperationClass operationClass = OperationClass::MULTI_STEP_RUNTIME;
-  uint16_t maxTransfers = 0;
-  uint32_t maxWaitMicroseconds = 0;
-  uint8_t maxRetries = 0;
+  OperationClass operationClass = OperationClass::MULTI_STEP_RUNTIME; ///< Scheduling class
+  uint16_t maxTransfers = 0;          ///< Maximum transport callbacks
+  uint32_t maxWaitMicroseconds = 0;   ///< Maximum driver-required wait time
+  uint8_t maxRetries = 0;             ///< Driver retry count; always zero
 };
 
 /// @brief Fixed diagnostic event cache; acknowledgement is bus-silent.
 struct DiagnosticEvents {
-  bool valid = false;
-  uint16_t latestRaw = 0;
-  uint16_t newlyObservedEvents = 0;
-  uint16_t stickyEvents = 0;
-  uint32_t observedAtMs = 0;
-  uint32_t firstObservedAtMs[16] = {};
+  bool valid = false;                  ///< True after diagnostic evidence was captured
+  uint16_t latestRaw = 0;              ///< Most recently observed DIAG_ALRT value
+  uint16_t newlyObservedEvents = 0;    ///< Event bits first seen in the latest capture
+  uint16_t stickyEvents = 0;           ///< Retained event bits awaiting acknowledgement
+  uint32_t observedAtMs = 0;           ///< Timestamp of the latest event-bearing capture
+  uint32_t firstObservedAtMs[16] = {}; ///< First-observed timestamp by register bit
 };
 
+/// @brief Valid-channel bits for InstantaneousSample::validChannels.
 enum ChannelFlag : uint16_t {
   CHANNEL_SHUNT_VOLTAGE_VALID = 1U << 0,
   CHANNEL_BUS_VOLTAGE_VALID   = 1U << 1,
@@ -233,41 +235,41 @@ enum ChannelFlag : uint16_t {
 
 /// @brief Atomically committed result of one triggered conversion sequence.
 struct InstantaneousSample {
-  uint32_t operationId = 0;
-  uint32_t requestToken = 0;
-  uint32_t configurationGeneration = 0;
-  uint32_t capturedAtMs = 0;
-  uint16_t validChannels = 0;
-  RawSample raw{};
-  IntegerSample values{};
-  DiagnosticEvents diagnostics{};
+  uint32_t operationId = 0;            ///< Driver-assigned operation identity
+  uint32_t requestToken = 0;           ///< Caller-supplied correlation token
+  uint32_t configurationGeneration = 0; ///< Configuration generation used
+  uint32_t capturedAtMs = 0;           ///< Readiness/diagnostic capture timestamp
+  uint16_t validChannels = 0;          ///< Bitwise ChannelFlag validity mask
+  RawSample raw{};                     ///< Committed raw channel values
+  IntegerSample values{};              ///< Committed fixed-unit values
+  DiagnosticEvents diagnostics{};      ///< Diagnostic evidence captured with the sample
 };
 
 /// @brief Cache-only cooperative job state.
 struct JobSnapshot {
-  JobKind kind = JobKind::NONE;
-  JobState state = JobState::IDLE;
-  JobEffect effect = JobEffect::NONE;
-  uint32_t operationId = 0;
-  uint32_t requestToken = 0;
-  uint32_t startConfigurationGeneration = 0;
-  uint32_t configurationGeneration = 0;
-  uint32_t startedAtMs = 0;
-  uint32_t finishedAtMs = 0;
-  uint16_t phase = 0;
-  uint16_t transfersCompleted = 0;
-  bool resultAvailable = false;
-  Status status{};
+  JobKind kind = JobKind::NONE;         ///< Operation kind
+  JobState state = JobState::IDLE;     ///< Current lifecycle state
+  JobEffect effect = JobEffect::NONE;  ///< Known hardware-effect boundary
+  uint32_t operationId = 0;            ///< Driver-assigned operation identity
+  uint32_t requestToken = 0;           ///< Caller-supplied correlation token
+  uint32_t startConfigurationGeneration = 0; ///< Generation captured at start
+  uint32_t configurationGeneration = 0; ///< Current configuration generation
+  uint32_t startedAtMs = 0;            ///< Start timestamp, or zero if unavailable
+  uint32_t finishedAtMs = 0;           ///< Terminal timestamp, or zero if unavailable
+  uint16_t phase = 0;                  ///< Internal phase exposed for diagnostics
+  uint16_t transfersCompleted = 0;     ///< Completed transport callbacks
+  bool resultAvailable = false;        ///< True while terminal result is unconsumed
+  Status status{};                     ///< Current or terminal status
 };
 
 /// @brief Exactly-once terminal result returned by takeJobResult().
 struct JobResult {
-  JobSnapshot job{};
-  bool hasInstantaneousSample = false;
-  InstantaneousSample instantaneousSample{};
+  JobSnapshot job{};                   ///< Terminal job snapshot
+  bool hasInstantaneousSample = false; ///< True when sample payload is present
+  InstantaneousSample instantaneousSample{}; ///< Optional committed sample
 };
 
-/// @brief Managed synchronous INA228 driver.
+/// @brief Cooperative external-owner INA228 driver with bounded synchronous conveniences.
 ///
 /// Instances are not thread-safe or ISR-safe. Applications must serialize API
 /// calls, provide any shared-bus locking outside the driver, and ensure
@@ -296,24 +298,52 @@ public:
 
   /// Validate and retain desired configuration without touching I2C.
   /// Rebinding is rejected while a job or unconsumed result exists.
+  /// @param config Desired driver and transport configuration
+  /// @return Status::Ok() when bound; a validation or lifecycle error otherwise
   Status bind(const Config& config);
 
   /// Start staged identity/configuration/calibration initialization.
+  /// @param requestToken Caller-defined correlation token
+  /// @param operationId Receives the new driver-assigned operation identity
+  /// @return Status::Ok() when started, or a precondition error
   Status startInitialize(uint32_t requestToken, uint32_t& operationId);
 
   /// Start the same verified sequence after invalidation or reappearance.
+  /// @param requestToken Caller-defined correlation token
+  /// @param operationId Receives the new driver-assigned operation identity
+  /// @return Status::Ok() when started, or a precondition error
   Status startReinitialize(uint32_t requestToken, uint32_t& operationId);
 
   /// Start a read-only verification of cached identity and writable registers.
+  /// @param requestToken Caller-defined correlation token
+  /// @param operationId Receives the new driver-assigned operation identity
+  /// @return Status::Ok() when started, or a precondition error
   Status startVerifyConfiguration(uint32_t requestToken, uint32_t& operationId);
 
   /// Start one trigger/wait/diagnostic/five-channel/restore operation.
+  ///
+  /// Requires initialized, synchronized hardware, valid calibration, and a
+  /// shutdown or continuous base mode. Starting is bus-silent. Completion is
+  /// delivered exactly once through takeJobResult() after pollJob() terminates.
+  /// @param requestToken Caller-defined correlation token
+  /// @param operationId Receives the new driver-assigned operation identity
+  /// @return Status::Ok() when started, or a precondition error
   Status startInstantaneousSample(uint32_t requestToken, uint32_t& operationId);
 
   /// Start staged software reset followed by full verified initialization.
+  ///
+  /// Requires initialized, synchronized hardware and is bus-silent until
+  /// pollJob() performs the reset write. The startup wait begins after that
+  /// callback returns and the terminal result remains available exactly once.
+  /// @param requestToken Caller-defined correlation token
+  /// @param operationId Receives the new driver-assigned operation identity
+  /// @return Status::Ok() when started, or a precondition error
   Status startReset(uint32_t requestToken, uint32_t& operationId);
 
   /// Start staged accumulator reset and readback verification.
+  /// @param requestToken Caller-defined correlation token
+  /// @param operationId Receives the new driver-assigned operation identity
+  /// @return Status::Ok() when started, or a precondition error
   Status startAccumulatorReset(uint32_t requestToken, uint32_t& operationId);
 
   /// Advance the active job with at most @p maxTransfers transport callbacks.
@@ -324,46 +354,79 @@ public:
   /// There are no driver retries.
   /// @param nowMs Current monotonic timestamp in milliseconds
   /// @param maxTransfers Maximum transport callbacks permitted on this call
+  /// @return Err::IN_PROGRESS while active, Status::Ok() at success, or the terminal error
   Status pollJob(uint32_t nowMs, uint8_t maxTransfers);
 
   /// Cancel the active job with no I2C. Partial writes require resync.
+  /// @return Err::CANCELLED when cancelled, or a lifecycle error
   Status cancelJob();
 
   /// Cancel as an owner deadline expiry with no I2C.
+  /// @return Err::OPERATION_TIMEOUT when cancelled, or a lifecycle error
   Status timeoutJob();
 
   /// Return the current job snapshot without I2C.
+  /// @param out Receives the current snapshot
+  /// @return Status::Ok()
   Status getJobState(JobSnapshot& out) const;
 
   /// Consume one terminal result exactly once and without I2C.
+  /// @param expectedOperationId Operation identity expected by the caller
+  /// @param out Receives the matching terminal result
+  /// @return Status::Ok(), or a result-availability/identity error
   Status takeJobResult(uint32_t expectedOperationId, JobResult& out);
 
   /// Mark cached hardware verification invalid without I2C.
+  /// An OK cause is normalized to Err::HARDWARE_STATE_UNKNOWN.
+  /// @param cause Reason for invalidation
+  /// @return Status::Ok(), or a lifecycle error
   Status invalidateHardwareState(const Status& cause);
 
+  /// @brief Return the cache-to-hardware verification state without I2C.
+  /// @return Current hardware verification state
   HardwareState hardwareState() const { return _hardwareState; }
 
   /// Return verified identity without I2C.
+  /// @param out Receives cached verified identity
+  /// @return Status::Ok(), or an initialization/verification error
   Status getDeviceIdentity(DeviceIdentity& out) const;
 
   /// Return the selected/effective fixed-unit calibration plan without I2C.
+  /// @param out Receives the cached calibration plan
+  /// @return Status::Ok(), or an initialization/calibration error
   Status getCalibrationPlan(CalibrationPlan& out) const;
 
   /// Return diagnostic event lifecycle state without I2C.
+  /// @param out Receives retained diagnostic evidence
+  /// @return Status::Ok()
   Status getDiagnosticEvents(DiagnosticEvents& out) const;
 
   /// Acknowledge retained event bits without reading DIAG_ALRT.
+  /// Bits outside the acknowledgeable event mask are ignored.
+  /// @param mask DIAG_ALRT event bits to remove from sticky evidence
+  /// @return Status::Ok()
   Status acknowledgeDiagnosticEvents(uint16_t mask);
 
   /// Pure fixed-unit calibration planner; performs no I2C.
+  /// @param config Fixed-unit calibration request
+  /// @param range Shunt ADC full-scale selection
+  /// @param out Receives the deterministic plan
+  /// @return Status::Ok(), or a calibration validation/range error
   static Status calculateCalibration(const CalibrationConfig& config,
                                      AdcRange range, CalibrationPlan& out);
 
   /// Pure DEVICE_ID parser; revision policy is applied during initialization.
+  /// @param manufacturerId Raw MANUFACTURER_ID register value
+  /// @param deviceId Raw DEVICE_ID register value
+  /// @param out Receives parsed identity on success
+  /// @return Status::Ok(), or a manufacturer/die identity error
   static Status parseDeviceIdentity(uint16_t manufacturerId, uint16_t deviceId,
                                     DeviceIdentity& out);
 
   /// Return exact transfer/wait/retry bounds for the current desired profile.
+  /// @param kind Cooperative operation kind
+  /// @param out Receives the declared bounds
+  /// @return Status::Ok(), or Err::INVALID_PARAM for unsupported kinds
   Status getJobLimits(JobKind kind, JobLimits& out) const;
 
   /// Initialize the driver with configuration
@@ -374,14 +437,20 @@ public:
   /// @note Startup verifies MEMSTAT by reading DIAG_ALRT. The observed evidence
   /// is preserved in getDiagAlertSnapshot(), but the hardware read can still
   /// clear CNVRF and latched diagnostic evidence.
+  /// @note If @p config selects a triggered mode without Config::nowMs, a
+  /// successful initialization leaves its conversion origin unresolved until
+  /// pollJob(), pollConversionReady(), pollMeasurementReady(), or tick()
+  /// supplies the next explicit timestamp. Snapshot timestamp zero does not
+  /// distinguish an unresolved origin from a valid wrapped timestamp.
   Status begin(const Config& config);
 
   /// Process pending operations (call regularly from loop)
   /// @param nowMs Current monotonic timestamp in milliseconds. This timestamp
   /// is used directly for triggered-conversion deadline checks.
-  /// @note When driver-owned triggered or accumulator-readiness state can
-  /// advance, this can perform a status-clearing DIAG_ALRT read. Observed
-  /// evidence is preserved in getDiagAlertSnapshot().
+  /// @note This is bus-silent unless a driver-tracked triggered conversion is
+  /// pending. Once its software deadline elapses, this can perform a
+  /// status-clearing DIAG_ALRT read; observed evidence is preserved in
+  /// getDiagAlertSnapshot().
   void tick(uint32_t nowMs);
 
   /// End the driver session and clear local runtime state without I2C.
@@ -391,9 +460,11 @@ public:
   void end();
 
   /// Check if begin() completed successfully and end() has not been called
+  /// @return True when the driver session is initialized
   bool isInitialized() const { return _initialized; }
 
   /// Get the cached configuration snapshot currently owned by the driver
+  /// @return Read-only cached desired configuration
   const Config& getConfig() const { return _config; }
 
   // =========================================================================
@@ -406,10 +477,14 @@ public:
   /// returned unchanged.
   Status probe();
 
-  /// Attempt to recover from DEGRADED/OFFLINE state by re-validating IDs, MEMSTAT, and cached config
-  /// @return Status::Ok() if device now responsive and configuration is re-applied, error otherwise
+  /// Attempt recovery by re-validating IDs, MEMSTAT, and cached configuration.
+  /// @return Status::Ok() if the device responds and configuration is reapplied;
+  /// otherwise the precise validation or transport error.
   /// @note Recovery verifies MEMSTAT by reading DIAG_ALRT. The observed
   /// evidence is preserved, but the hardware read is status-clearing.
+  /// @note Without Config::nowMs, this synchronous convenience does not use
+  /// the zero clock fallback to resolve a deferred triggered-conversion origin.
+  /// The next explicit readiness timestamp still establishes that origin.
   Status recover();
 
   /// Populate a cache-only settings snapshot without touching I2C.
@@ -427,12 +502,15 @@ public:
   // =========================================================================
 
   /// Get current driver state
+  /// @return Current transport-health state
   DriverState state() const { return _driverState; }
 
   /// Get current driver state; compatibility alias for shared I2C library APIs
+  /// @return Current transport-health state
   DriverState driverState() const { return state(); }
 
   /// Check if driver is ready for operations
+  /// @return True in READY or DEGRADED state
   bool isOnline() const {
     return _driverState == DriverState::READY ||
            _driverState == DriverState::DEGRADED;
@@ -443,21 +521,27 @@ public:
   // =========================================================================
 
   /// Timestamp of last successful I2C operation
+  /// @return Timestamp from Config::nowMs, or zero when unavailable
   uint32_t lastOkMs() const { return _lastOkMs; }
 
   /// Timestamp of last failed I2C operation
+  /// @return Timestamp from Config::nowMs, or zero when unavailable
   uint32_t lastErrorMs() const { return _lastErrorMs; }
 
   /// Most recent error status
+  /// @return Last tracked transport error
   Status lastError() const { return _lastError; }
 
   /// Consecutive failures since last success
+  /// @return Saturating consecutive-failure counter
   uint8_t consecutiveFailures() const { return _consecutiveFailures; }
 
   /// Total failure count (lifetime)
+  /// @return Saturating tracked failure count
   uint32_t totalFailures() const { return _totalFailures; }
 
   /// Total success count (lifetime)
+  /// @return Saturating tracked success count
   uint32_t totalSuccess() const { return _totalSuccess; }
 
   // =========================================================================
@@ -525,6 +609,8 @@ public:
   /// This is a named wrapper around triggerConversion() for fixed-step users.
   /// It performs one ADC_CONFIG write and returns Err::IN_PROGRESS when the
   /// conversion was started.
+  /// @param mode One of the triggered operating modes
+  /// @return Err::IN_PROGRESS when started, or a validation/transport error
   Status startTriggeredMeasurement(Mode mode = Mode::TRIG_ALL);
 
   /// Poll triggered measurement readiness with an explicit instruction budget.
@@ -535,6 +621,7 @@ public:
   /// @param nowMs Current monotonic timestamp in milliseconds
   /// @param maxInstructions Maximum transport callbacks allowed, from 1 upward
   /// @param ready Cleared before polling, then set true when the sample is ready
+  /// @return Status::Ok() when polled, or a validation/transport error
   Status pollMeasurementReady(uint32_t nowMs, uint8_t maxInstructions,
                               bool& ready);
 
@@ -547,26 +634,38 @@ public:
   /// returned and remain unchanged while IN_PROGRESS is returned.
   /// @deprecated Prefer startInstantaneousSample(), pollJob(), and
   /// takeJobResult() so the owner supplies time, cancellation, and identity.
+  /// @param rawOut Receives the committed raw sample on completion
+  /// @param integerOut Receives the committed fixed-unit sample on completion
+  /// @param maxInstructions Maximum transport callbacks allowed on this call
+  /// @return Err::IN_PROGRESS while active, Status::Ok() at completion, or an error
   Status readPowerSampleRawStep(RawSample& rawOut, IntegerSample& integerOut,
                                 uint8_t maxInstructions);
 
   /// Start replaying cached static configuration and calibration as a job.
+  /// @return Status::Ok() when started, or a precondition error
   Status startApplyCalibration();
 
   /// Poll cached configuration/calibration replay.
   ///
   /// Each side-effecting register write consumes one instruction and the job
   /// stops on first failure, leaving dirty-state evidence for recovery.
+  /// @param nowMs Current monotonic timestamp in milliseconds
+  /// @param maxInstructions Maximum transport callbacks allowed on this call
+  /// @return Err::IN_PROGRESS while active, Status::Ok() at completion, or an error
   Status pollApplyCalibration(uint32_t nowMs, uint8_t maxInstructions);
 
   /// Start replaying cached static configuration and calibration as a job.
   ///
   /// Preferred clearer alias for startApplyCalibration().
+  /// @return Status::Ok() when started, or a precondition error
   Status startConfigReplayJob() { return startApplyCalibration(); }
 
   /// Poll cached static configuration and calibration replay.
   ///
   /// Preferred clearer alias for pollApplyCalibration().
+  /// @param nowMs Current monotonic timestamp in milliseconds
+  /// @param maxInstructions Maximum transport callbacks allowed on this call
+  /// @return Err::IN_PROGRESS while active, Status::Ok() at completion, or an error
   Status pollConfigReplayJob(uint32_t nowMs, uint8_t maxInstructions) {
     return pollApplyCalibration(nowMs, maxInstructions);
   }
@@ -656,30 +755,55 @@ public:
   // Configuration
   // =========================================================================
 
-  /// Set operating mode
+  /// Set operating mode.
+  ///
+  /// @note Selecting a triggered mode starts a conversion after the successful
+  /// write and returns Err::IN_PROGRESS. Its wait origin follows the same
+  /// post-write hook/deferred-timestamp rule as triggerConversion().
   /// @param mode New operating mode
-  /// @return Status::Ok() on success
+  /// @return Err::IN_PROGRESS when a triggered mode starts; Status::Ok() otherwise
   Status setMode(Mode mode);
 
   /// Get current operating mode
+  /// @param out Receives the cached operating mode
+  /// @return Status::Ok(), or Err::NOT_INITIALIZED
   Status getMode(Mode& out) const;
 
   /// Trigger a one-shot conversion with specified inputs
   /// Writing the MODE bits restarts any conversion in progress.
+  /// With Config::nowMs, the conversion origin is sampled after the successful
+  /// blocking write returns. Without the hook, the next explicit readiness or
+  /// tick timestamp anchors the origin bus-silently before the full wait.
   /// @param mode One of TRIG_* modes
   /// @return Err::IN_PROGRESS when the conversion was started
   Status triggerConversion(Mode mode);
 
-  /// Set bus voltage conversion time
+  /// Set bus voltage conversion time.
+  /// @note In a triggered mode, the successful ADC_CONFIG write restarts the
+  /// conversion using the documented post-write/deferred-origin timing rule.
+  /// @param ct New bus-voltage conversion time
+  /// @return Status::Ok() after a successful write, or an error
   Status setVbusConvTime(ConvTime ct);
 
-  /// Set shunt voltage conversion time
+  /// Set shunt voltage conversion time.
+  /// @note In a triggered mode, the successful ADC_CONFIG write restarts the
+  /// conversion using the documented post-write/deferred-origin timing rule.
+  /// @param ct New shunt-voltage conversion time
+  /// @return Status::Ok() after a successful write, or an error
   Status setVshuntConvTime(ConvTime ct);
 
-  /// Set temperature conversion time
+  /// Set temperature conversion time.
+  /// @note In a triggered mode, the successful ADC_CONFIG write restarts the
+  /// conversion using the documented post-write/deferred-origin timing rule.
+  /// @param ct New die-temperature conversion time
+  /// @return Status::Ok() after a successful write, or an error
   Status setTempConvTime(ConvTime ct);
 
-  /// Set averaging count
+  /// Set averaging count.
+  /// @note In a triggered mode, the successful ADC_CONFIG write restarts the
+  /// conversion using the documented post-write/deferred-origin timing rule.
+  /// @param avg New averaging selection
+  /// @return Status::Ok() after a successful write, or an error
   Status setAveraging(Averaging avg);
 
   /// Set shunt ADC range.
@@ -695,6 +819,8 @@ public:
   /// thresholdsDirty is set after a scale change so applications can reapply
   /// engineering-unit limits deliberately. It is sticky and is not cleared by
   /// successful threshold writes.
+  /// @param range New shunt ADC range
+  /// @return Status::Ok(), or a calibration/transport error
   Status setAdcRange(AdcRange range);
 
   /// Update shunt calibration for the installed shunt resistor.
@@ -725,10 +851,13 @@ public:
   Status setShuntTempCoeff(uint16_t ppmPerC);
 
   /// Enable or disable temperature compensation
+  /// @param enable True to enable TEMPCOMP
+  /// @return Status::Ok(), or a transport/precondition error
   Status setTempCompensation(bool enable);
 
   /// Set conversion delay
   /// @param steps2ms Delay in 2-ms steps (0–255 = 0–510 ms)
+  /// @return Status::Ok(), or a transport/precondition error
   Status setConversionDelay(uint8_t steps2ms);
 
   // =========================================================================
@@ -740,32 +869,44 @@ public:
   /// This performs a destructive hardware read of DIAG_ALRT. It can clear
   /// CNVRF and latched alert flags; the exact raw value is preserved in
   /// getDiagAlertSnapshot().
+  /// @param out Receives parsed DIAG_ALRT fields
+  /// @return Status::Ok(), or a transport/precondition error
   Status readDiagAlert(DiagAlert& out);
 
   /// Read raw DIAG_ALRT register value.
   ///
   /// This performs a destructive hardware read and preserves the exact raw
   /// value in getDiagAlertSnapshot().
+  /// @param raw Receives the DIAG_ALRT register value
+  /// @return Status::Ok(), or a transport/precondition error
   Status readDiagAlertRaw(uint16_t& raw);
 
   /// Read and clear status-sensitive DIAG_ALRT evidence explicitly.
   ///
   /// This is equivalent to readDiagAlertRaw() and is named for callers that
   /// want to make the clear-on-read behavior visible in their poll jobs.
+  /// @param raw Receives the consumed DIAG_ALRT register value
+  /// @return Status::Ok(), or a transport/precondition error
   Status readAndClearDiagAlert(uint16_t& raw);
 
   /// Configure alert latch mode
   /// @param latch true = latched (hold until read), false = transparent
+  /// @return Status::Ok(), or a transport/precondition error
   Status setAlertLatch(bool latch);
 
   /// Configure conversion ready on ALERT pin
+  /// @param enable True to route conversion-ready state to ALERT
+  /// @return Status::Ok(), or a transport/precondition error
   Status setConversionReadyAlert(bool enable);
 
   /// Configure slow alert (compare averaged values)
+  /// @param enable True to compare averaged values
+  /// @return Status::Ok(), or a transport/precondition error
   Status setSlowAlert(bool enable);
 
   /// Configure alert pin polarity
   /// @param activeHigh true = active-high, false = active-low (default)
+  /// @return Status::Ok(), or a transport/precondition error
   Status setAlertPolarity(bool activeHigh);
 
   /// @warning Alert thresholds and ALERT output are monitoring aids, not a
@@ -775,32 +916,38 @@ public:
   /// Uses the signed shunt threshold register scale for the active ADC range
   /// (5 uV/LSB at +/-163.84 mV, 1.25 uV/LSB at +/-40.96 mV).
   /// @param voltageV Threshold voltage in volts
+  /// @return Status::Ok(), or a range/transport error
   Status setShuntOvervoltageThreshold(float voltageV);
 
   /// Set shunt undervoltage threshold
   /// Uses the signed shunt threshold register scale for the active ADC range
   /// (5 uV/LSB at +/-163.84 mV, 1.25 uV/LSB at +/-40.96 mV).
   /// @param voltageV Threshold voltage in volts
+  /// @return Status::Ok(), or a range/transport error
   Status setShuntUndervoltageThreshold(float voltageV);
 
   /// Set bus overvoltage threshold
   /// Uses the unsigned bus threshold register scale (3.125 mV/LSB).
   /// @param voltageV Threshold voltage in volts (0–85V)
+  /// @return Status::Ok(), or a range/transport error
   Status setBusOvervoltageThreshold(float voltageV);
 
   /// Set bus undervoltage threshold
   /// Uses the unsigned bus threshold register scale (3.125 mV/LSB).
   /// @param voltageV Threshold voltage in volts (0–85V)
+  /// @return Status::Ok(), or a range/transport error
   Status setBusUndervoltageThreshold(float voltageV);
 
   /// Set temperature over-limit threshold
   /// @param tempC Threshold temperature in Celsius
+  /// @return Status::Ok(), or a range/transport error
   Status setTemperatureOverlimitThreshold(float tempC);
 
   /// Set power over-limit threshold
   /// Requires calibration because the threshold register scale is derived from
   /// CURRENT_LSB.
   /// @param powerW Threshold power in watts (requires calibration)
+  /// @return Status::Ok(), or a calibration/range/transport error
   Status setPowerOverlimitThreshold(float powerW);
 
   // =========================================================================
@@ -814,6 +961,7 @@ public:
   /// Err::INVALID_CONFIG. Use startReset(), pollJob(), and takeJobResult() for
   /// bounded reset, readback verification, and configuration replay.
   /// @deprecated Use the cooperative reset job.
+  /// @return Err::INVALID_CONFIG; this legacy entry point is bus-silent
   Status softReset();
 
   /// Start software reset as a fixed-step job.
@@ -821,12 +969,16 @@ public:
   /// The job writes reset, waits the datasheet startup time through
   /// pollResetJob(), verifies CONFIG, IDs, and MEMSTAT one register read at a
   /// time, then replays cached configuration/calibration.
+  /// @return Status::Ok() when started, or a precondition error
   Status startResetJob();
 
   /// Poll a software reset job.
   ///
   /// Delay gates consume zero instructions. Every register read or write
   /// consumes one instruction. A zero budget is valid and bus-silent.
+  /// @param nowMs Current monotonic timestamp in milliseconds
+  /// @param maxInstructions Maximum transport callbacks allowed on this call
+  /// @return Err::IN_PROGRESS while active, Status::Ok() at completion, or an error
   Status pollResetJob(uint32_t nowMs, uint8_t maxInstructions);
 
   /// Reset energy and charge accumulators.
@@ -834,15 +986,24 @@ public:
   /// This bounded synchronous convenience drives the same two-transfer
   /// cooperative operation: one CONFIG.RSTACC write and one readback verifying
   /// that RSTACC self-cleared. Successful verification establishes a new zero
-  /// accumulator epoch immediately for the current configuration generation.
+  /// accumulator epoch immediately for the current configuration generation
+  /// and clears obsolete conversion-ready/accumulator-overflow snapshot bits;
+  /// sticky DiagnosticEvents history remains until acknowledged.
+  /// Without Config::nowMs, this convenience does not use the zero clock
+  /// fallback to resolve an unrelated deferred triggered-conversion origin.
   /// Use startAccumulatorReset()/pollJob()/takeJobResult() when the owner must
   /// limit work to one callback per poll.
+  /// @return Status::Ok() after verified reset, or a transport/precondition error
   Status resetAccumulators();
 
   /// Read manufacturer ID (expect 0x5449)
+  /// @param id Receives the raw MANUFACTURER_ID value
+  /// @return Status::Ok(), or a transport/precondition error
   Status readManufacturerId(uint16_t& id);
 
   /// Read device ID (expect 0x2281)
+  /// @param id Receives the raw DEVICE_ID value
+  /// @return Status::Ok(), or a transport/precondition error
   Status readDeviceId(uint16_t& id);
 
   // =========================================================================
@@ -854,11 +1015,17 @@ public:
   /// Diagnostic/service access only. Status-sensitive registers can have read
   /// side effects; REG_DIAG_ALRT reads consume live diagnostic evidence and
   /// accumulator register reads can clear overflow evidence.
+  /// @param reg Register address
+  /// @param value Receives the big-endian 16-bit register value
+  /// @return Status::Ok(), or a transport/precondition error
   Status readRegister16(uint8_t reg, uint16_t& value);
 
   /// Read a 24-bit register using tracked transport.
   ///
   /// Diagnostic/service access only. Prefer typed APIs for normal operation.
+  /// @param reg Register address
+  /// @param value Receives the big-endian 24-bit register value
+  /// @return Status::Ok(), or a transport/precondition error
   Status readRegister24(uint8_t reg, uint32_t& value);
 
   /// Read a 40-bit register using tracked transport.
@@ -866,6 +1033,9 @@ public:
   /// Diagnostic/service access only. ENERGY/CHARGE reads can affect overflow
   /// evidence. This raw helper does not pre-read or preserve DIAG_ALRT; use
   /// typed APIs or explicitly read DIAG_ALRT first when evidence matters.
+  /// @param reg Register address
+  /// @param value Receives the big-endian 40-bit register value
+  /// @return Status::Ok(), or a transport/precondition error
   Status readRegister40(uint8_t reg, uint64_t& value);
 
   /// Write a 16-bit register using tracked transport.
@@ -874,6 +1044,9 @@ public:
   /// helpers and can make cached driver state differ from hardware; use
   /// invalidateHardwareState() and a verified reinitialization to resynchronize
   /// after manual writes.
+  /// @param reg Register address
+  /// @param value Big-endian 16-bit value to write
+  /// @return Status::Ok(), or a transport/precondition error
   Status writeRegister16(uint8_t reg, uint16_t value);
 
   // =========================================================================
@@ -885,6 +1058,7 @@ public:
   uint32_t estimateConversionTimeUs() const;
 
   /// Estimate total conversion time in milliseconds (rounded up)
+  /// @return Conversion time in milliseconds
   uint32_t estimateConversionTimeMs() const;
 
   /// Get cached CURRENT_LSB value (amps per LSB)
@@ -975,13 +1149,13 @@ private:
   /// Read DIAG_ALRT through tracked transport and preserve diagnostic evidence.
   Status _readDiagAlertTracked(uint16_t& raw);
 
-  /// Read DIAG_ALRT through raw transport and preserve diagnostic evidence.
   /// Parse and store a DIAG_ALRT value without touching I2C.
   void _captureDiagAlert(uint16_t raw);
   void _captureDiagAlert(uint16_t raw, uint32_t observedAtMs);
 
   /// Write cached DIAG_ALRT alert configuration bits without reading live flags.
   Status _writeDiagAlertConfig(uint16_t configBits);
+  Status _setAlertConfigBit(uint16_t bit, bool enabled);
 
   // =========================================================================
   // Health Management
@@ -999,23 +1173,20 @@ private:
   // Internal Helpers
   // =========================================================================
 
-  Status _applyCalibration();
   Status _ensureHardwareClean() const;
   Status _ensureCalibrated() const;
   Status _ensureMeasurementReadyForRead();
   uint32_t _nowMs() const;
   bool _modeSupportsEnergyAccumulation() const;
   bool _modeSupportsChargeAccumulation() const;
-  bool _modeSupportsAnyAccumulation() const;
-  void _markAccumulationInvalid();
   Status _ensureEnergyAccumulatorReadable() const;
   Status _ensureChargeAccumulatorReadable() const;
-  Status _readAccumulatorDiag(uint16_t& raw);
   Status _readAndValidateMathDiag(uint16_t& raw);
   Status _validateAccumulatorDiag(uint16_t raw, uint16_t overflowBit,
                                   const char* overflowMsg) const;
   bool _triggerDeadlineElapsed(uint32_t nowMs) const;
   void _markTriggeredConversionStarted();
+  void _invalidateTriggeredConversionTiming();
   void _completeTriggeredConversion();
   void _clearCapturedConversionReadyFlag();
   void _clearCapturedAccumulatorEvidence();
@@ -1026,20 +1197,23 @@ private:
   void _clearHardwareDirty();
   void _markThresholdsDirty();
   bool _isThresholdRegister(uint8_t reg) const;
-  Status _fillPowerSampleUnits(const RawSample& raw, IntegerSample& out) const;
   Status _validateBinding(const Config& config, CalibrationPlan& plan,
                           bool& usesFixedCalibration) const;
   Status _startJob(JobKind kind, JobPhase firstPhase, uint32_t requestToken,
                    uint32_t& operationId);
+  Status _pollJobImpl(uint32_t nowMs, uint8_t maxTransfers,
+                      bool explicitTimestamp);
   Status _pollJobTransfer(uint32_t nowMs);
   Status _finishJob(const Status& status, JobState state, JobEffect effect,
                     uint32_t nowMs);
-  Status _failJob(const Status& status, bool failedWrite, uint32_t nowMs);
+  Status _failJob(const Status& status, bool failedSideEffectingTransfer,
+                  uint32_t nowMs);
   Status _cancelJob(const Status& status, JobState state);
   void _setJobPhase(JobPhase phase);
   uint32_t _nextOperationIdValue();
   uint16_t _desiredDiagConfigBits() const;
-  uint16_t _triggeredAllAdcConfig() const;
+  uint32_t _instantaneousSampleWaitUs() const;
+  uint32_t _instantaneousSampleWaitMs() const;
   float _plannedCurrentLsbAmps() const;
   Status _verifyRegister(uint8_t reg, uint16_t actual, uint16_t expected,
                          uint16_t mask) const;
@@ -1051,6 +1225,7 @@ private:
 
   /// Build ADC_CONFIG register value from current config
   uint16_t _buildAdcConfig() const;
+  uint16_t _buildAdcConfig(Mode mode) const;
 
   /// Build CONFIG register value from current config
   uint16_t _buildConfig() const;
@@ -1102,7 +1277,6 @@ private:
   bool _accumulationReady = false;
   uint32_t _configurationGeneration = 0;
   uint32_t _accumulatorGeneration = 0;
-  uint32_t _accumulatorResetAtMs = 0;
 
   // DIAG_ALRT cache and preserved evidence
   uint16_t _diagAlertConfigBits = 0;
@@ -1121,7 +1295,6 @@ private:
   uint64_t _jobTouchedRegisterMask = 0;
   DeviceIdentity _jobIdentityScratch{};
   InstantaneousSample _sampleScratch{};
-  uint16_t _jobReadback = 0;
   uint32_t _jobWaitStartMs = 0;
   Status _jobDeferredStatus = Status::Ok();
 

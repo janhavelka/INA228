@@ -21,7 +21,7 @@ enum class Err : uint8_t {
   CONVERSION_NOT_READY = MEASUREMENT_NOT_READY, ///< Alias for cross-library uniformity
   MATH_OVERFLOW,             ///< Host arithmetic overflow or INA228 DIAG_ALRT.MATHOF observed
   BUSY,                      ///< Device or driver is busy
-  IN_PROGRESS,               ///< Operation scheduled; call tick() to complete
+  IN_PROGRESS,               ///< Operation started or remains active; continue its documented poll/tick API
 
   // I2C transport details (append-only to preserve existing values)
   I2C_NACK_ADDR,             ///< I2C address not acknowledged
@@ -47,6 +47,8 @@ enum class Err : uint8_t {
 };
 
 /// @brief Static string name for an error code.
+/// @param err Error code to name.
+/// @return Static uppercase name, or `"UNKNOWN"` for an unrecognized value.
 constexpr const char* errName(Err err) {
   return err == Err::OK ? "OK" :
          err == Err::NOT_INITIALIZED ? "NOT_INITIALIZED" :
@@ -82,16 +84,23 @@ constexpr const char* errName(Err err) {
 
 /// @brief Status structure returned by all fallible operations.
 struct Status {
-  Err code = Err::OK;
+  Err code = Err::OK;          ///< Stable library status code
   int32_t detail = 0;        ///< Implementation-specific detail (e.g., I2C error code)
   const char* msg = "";      ///< Static string describing the error
 
+  /// @brief Construct an OK status with empty detail and message fields.
   constexpr Status() = default;
+
+  /// @brief Construct a status from explicit fields.
+  /// @param c Status code.
+  /// @param d Implementation-specific detail value.
+  /// @param m Static-lifetime descriptive message.
   constexpr Status(Err c, int32_t d, const char* m) : code(c), detail(d), msg(m) {}
 
   /// @return true if operation succeeded
   constexpr bool ok() const { return code == Err::OK; }
 
+  /// @param err Status code to compare.
   /// @return true if the status code matches @p err
   constexpr bool is(Err err) const { return code == err; }
 
@@ -101,10 +110,15 @@ struct Status {
   /// @return true if operation in progress (not a failure)
   constexpr bool inProgress() const { return code == Err::IN_PROGRESS; }
 
-  /// Create a success status
+  /// @brief Create a success status.
+  /// @return Status with Err::OK.
   static constexpr Status Ok() { return Status{Err::OK, 0, "OK"}; }
 
-  /// Create an error status
+  /// @brief Create a non-OK status.
+  /// @param err Status code.
+  /// @param message Static-lifetime descriptive message.
+  /// @param detailCode Optional implementation-specific detail value.
+  /// @return Status populated from the supplied fields.
   static constexpr Status Error(Err err, const char* message, int32_t detailCode = 0) {
     return Status{err, detailCode, message};
   }

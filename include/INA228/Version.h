@@ -12,33 +12,41 @@
 #include <stdint.h>
 
 #ifndef INA228_VERSION_STRING
+/// @brief Semantic version string; may be overridden by the build.
 #define INA228_VERSION_STRING "3.0.2"
 #endif
 
 #ifndef INA228_BUILD_DATE
+/// @brief Build date string; defaults to the compiler date.
 #define INA228_BUILD_DATE __DATE__
 #endif
 
 #ifndef INA228_BUILD_TIME
+/// @brief Build time string; defaults to the compiler time.
 #define INA228_BUILD_TIME __TIME__
 #endif
 
 #ifndef INA228_BUILD_TIMESTAMP
+/// @brief Combined build date and time string.
 #define INA228_BUILD_TIMESTAMP INA228_BUILD_DATE " " INA228_BUILD_TIME
 #endif
 
 #ifndef INA228_GIT_COMMIT
+/// @brief Source commit identifier supplied by the build when available.
 #define INA228_GIT_COMMIT "unknown"
 #endif
 
 #ifndef INA228_GIT_STATUS
+/// @brief Source worktree state supplied by the build when available.
 #define INA228_GIT_STATUS "unknown"
 #endif
 
 #ifndef INA228_VERSION_FULL
+/// @brief Version string combined with commit, timestamp, and worktree state.
 #define INA228_VERSION_FULL INA228_VERSION_STRING " (" INA228_GIT_COMMIT ", " INA228_BUILD_TIMESTAMP ", " INA228_GIT_STATUS ")"
 #endif
 
+/// @brief Version and build metadata constants for INA228.
 namespace INA228 {
 
 /// @brief Major version (breaking changes).

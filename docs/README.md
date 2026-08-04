@@ -2,8 +2,7 @@
 
 The root `README.md` remains the main user-facing guide; public API details come
 from Doxygen comments in `include/INA228/`. This directory contains integration
-guidance, vendor reference material, design audits, and dated validation/release
-evidence.
+guidance, vendor reference material, and dated validation/release evidence.
 
 ## Integration
 
@@ -12,6 +11,8 @@ evidence.
 
 ## Reference
 
+- [CLI and HIL reference](CLI.md) - shared Arduino/ESP-IDF commands, parsing
+  rules, destructive operations, framing, verdicts, and provenance gates.
 - [INA228 device reference](reference/ina228-device-reference.md) - compact
   register, scaling, timing, alert, and reset notes used by the driver.
 - [Application notes](reference/application-notes.md) - concise relevance notes
@@ -28,8 +29,6 @@ evidence.
   - repeatable hardware/HIL procedure and required evidence.
 - [Release checklist](validation/release-checklist.md) - version, CI, package,
   documentation, and tag gates.
-- [HIL command sequence](../tools/INA228_HIL_COMMAND_SEQUENCE.md) - manual
-  cooperative transfer checks, suite composition, and the release command.
 - `validation/hardware/` - generated reports and serial transcripts for the
   exact dated fixtures described by each run.
 

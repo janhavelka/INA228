@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Consolidated duplicated conversion-wait, ADC-configuration, alert-bit, and
+  calibration-planning paths, and removed orphaned private state, helpers,
+  constants, includes, and redundant lifecycle invalidations. Public API,
+  transfer bounds, device wait durations, and retry behavior are unchanged.
+- Clarified triggered-timestamp ownership, idle `tick()` behavior, accumulator
+  evidence lifecycle, and the current release installation pin in user and API
+  documentation.
+- Kept the Arduino and native ESP-IDF diagnostic CLIs on one checked command
+  and alias contract, made raw writes require explicit confirmation, and
+  documented command parsing, destructive reads, framing, verdicts, and
+  firmware provenance in one CLI/HIL reference.
+- Tightened public API Doxygen coverage with extraction limited to documented
+  interfaces and warnings treated as errors; added focused READMEs for both
+  diagnostic CLI examples.
+
+### Fixed
+
+- `tick()` is now bus-silent when no driver-tracked conversion is pending; it
+  no longer performs non-advancing, status-clearing `DIAG_ALRT` reads merely
+  because the accumulator epoch is invalid.
+- Hookless synchronous recovery and accumulator-reset conveniences no longer
+  fabricate timestamp zero or consume an unrelated deferred trigger origin.
+- A verified accumulator reset clears obsolete conversion-ready and
+  accumulator-overflow bits from the latest diagnostic snapshot while keeping
+  sticky diagnostic event history intact.
+- Legacy calibration planning now rejects finite current-LSB values that do
+  not fit the public nanoampere fields before any narrowing conversion or I2C.
+- Failed or ambiguous ADC-configuration writes and raw conversion-invalidating
+  writes now discard pending trigger timing, so an older deadline cannot be
+  trusted after hardware state becomes uncertain.
+- HIL soak report generation no longer references a removed summary field;
+  the parser self-test now exercises report construction as well as parsing.
+- CLI integer, floating-point, boolean, and enum arguments now reject malformed,
+  overflowed, negative-unsigned, and non-finite input instead of accepting
+  partial strings or silently converting junk to zero. Local command rejection
+  now produces an explicit `INVALID_PARAM` HIL status.
+- Expected-invalid HIL cases no longer hide unrelated transport failure text,
+  and maximum-consecutive-failure accounting now resets on every non-failure
+  verdict, including unstored soak passes. Framed runs use only the matching
+  payload to satisfy expectations and provenance, while stale or trailing
+  failure text cannot produce a pass. They reject mismatched library versions,
+  exact 12-character commit identities, source status, and profile-specific
+  framework versions.
+- Native ESP-IDF argument splitting rejects overlong tokens instead of silently
+  truncating them, and its generated commit/status provenance refreshes before
+  every incremental build.
+
+### Validation
+
+- Added native fake-bus regressions for idle-tick bus silence, hookless
+  synchronous jobs with a deferred trigger origin, and accumulator-reset
+  diagnostic cleanup, ambiguous trigger invalidation, legacy range-boundary
+  planning, and failed calibration/alert writes preserving committed cache
+  state while marking the affected hardware registers dirty.
+- Added standalone HIL parser regressions and strengthened CLI/ESP-IDF static
+  contracts to cover every published alias, strict parsing, raw-write
+  confirmation, exact cross-framework help parity, and embedded provenance.
+  The final local software evidence is recorded in
+  `docs/validation/validation-status.md`; no new hardware validation is claimed.
+
 ## [3.0.2] - 2026-08-03
 
 ### Changed
@@ -368,7 +430,8 @@ converted values.
 - `recover()` now re-validates manufacturer ID, device ID, and MEMSTAT before reapplying cached configuration and calibration.
 - Bringup `scan` now includes an INA228-specific address probe, and startup can auto-detect a single healthy INA228 on `0x40..0x4F`.
 
-[Unreleased]: https://github.com/janhavelka/INA228/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/janhavelka/INA228/compare/v3.0.2...HEAD
+[3.0.2]: https://github.com/janhavelka/INA228/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/janhavelka/INA228/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/janhavelka/INA228/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/janhavelka/INA228/compare/v1.3.0...v2.0.0

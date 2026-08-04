@@ -9,6 +9,9 @@
 *.elf
 *.bin
 *.map
+/examples/esp_idf/basic/build/
+/examples/esp_idf/basic/sdkconfig
+/examples/esp_idf/basic/sdkconfig.old
 
 # Python (for scripts/)
 __pycache__/

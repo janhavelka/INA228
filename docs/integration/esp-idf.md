@@ -19,6 +19,9 @@ headers directly so CI can validate both ESP32-S2 and ESP32-S3.
 
 The callback adapter should retain the IDF handles in application-owned context:
 
+The declarations below are an adapter sketch. The application provides the
+function bodies, bus lifetime, locking, timeout enforcement, and error mapping.
+
 ```cpp
 struct Ina228TransportContext {
   i2c_master_bus_handle_t bus;
@@ -36,6 +39,9 @@ reconfigure or recover the bus inside a driver callback. A callback is one
 physical transfer attempt and must honor `timeoutMs`.
 
 ## Fixed-unit configuration
+
+This fragment assumes application-defined `write`, `writeRead`, `transport`,
+and `monotonicMilliseconds` symbols.
 
 ```cpp
 INA228::Config config;
@@ -156,6 +162,7 @@ before comparing results:
 idf.py --version
 python tools/check_idf_example_contract.py
 python tools/check_owner_contract.py
+python tools/test_run_i2c_hil_parser.py
 idf.py -C examples/esp_idf/basic set-target esp32s3 build
 idf.py -C examples/esp_idf/basic set-target esp32s2 build
 ```

@@ -21,6 +21,7 @@ REQUIRED_FILES = [
     "idf_component.yml",
     "examples/esp_idf/basic/CMakeLists.txt",
     "examples/esp_idf/basic/main/CMakeLists.txt",
+    "examples/esp_idf/basic/main/GenerateGitProvenance.cmake",
     "examples/esp_idf/basic/main/main.cpp",
     "examples/esp_idf/basic/main/Ina228IdfI2cTransport.h",
     "examples/esp_idf/basic/main/Ina228IdfI2cTransport.cpp",
@@ -149,6 +150,20 @@ def command_has_dispatch(cli: str, command: str) -> bool:
     return any(re.search(pattern, cli) for pattern in patterns)
 
 
+def help_items(text: str) -> list[tuple[str, str]]:
+    return re.findall(r'printHelpItem\("([^"]+)",\s*"([^"]+)"\)', text)
+
+
+def aliases_from_help(items: list[tuple[str, str]]) -> set[str]:
+    aliases: set[str] = set()
+    for command_spec, _ in items:
+        for alternative in command_spec.split(" / "):
+            alias = alternative.strip().split(" ", 1)[0]
+            if alias:
+                aliases.add(alias)
+    return aliases
+
+
 def main() -> int:
     for rel in REQUIRED_FILES:
         if not (ROOT / rel).exists():
@@ -180,7 +195,7 @@ def main() -> int:
     cmake = (
         ROOT / "examples" / "esp_idf" / "basic" / "main" / "CMakeLists.txt"
     ).read_text(encoding="utf-8", errors="replace")
-    if "../../../.." in cmake or "examples/common" in cmake:
+    if re.search(r"INCLUDE_DIRS[^\r\n]*\.\./", cmake) or "examples/common" in cmake:
         fail("ESP-IDF main CMake must not expose repo root or examples/common include paths")
     for component in REQUIRED_COMPONENTS:
         if re.search(rf"\b{re.escape(component)}\b", cmake) is None:
@@ -231,6 +246,36 @@ def main() -> int:
         if not command_has_dispatch(idf_main, command):
             fail(f"native ESP-IDF CLI missing dispatch '{command}'")
 
+    arduino_help = help_items(cli)
+    idf_help = help_items(idf_main)
+    if arduino_help != idf_help:
+        missing = [item for item in arduino_help if item not in idf_help]
+        extra = [item for item in idf_help if item not in arduino_help]
+        fail(f"Arduino/native help rows differ: missing={missing}, extra={extra}")
+    aliases = aliases_from_help(arduino_help)
+    for command in sorted(aliases):
+        if not command_has_dispatch(cli, command):
+            fail(f"Arduino help alias '{command}' has no dispatch")
+        if not command_has_dispatch(idf_main, command):
+            fail(f"native ESP-IDF help alias '{command}' has no dispatch")
+    if ".toInt()" in cli:
+        fail("Arduino CLI must use strict full-token numeric parsing")
+    for text, label in ((cli, "Arduino CLI"), (idf_main, "native ESP-IDF CLI")):
+        for token in (
+            "rejectInvalidCommand",
+            "parseBool01",
+            "wreg16 <addr> <val> confirm",
+            "Confirmation required: wreg16",
+        ):
+            require_token(text, token, label)
+    for token in (
+        "firstSourceLen >= firstLen",
+        "secondSourceLen >= secondLen",
+    ):
+        require_token(idf_main, token, "native ESP-IDF full-token parser")
+    if "std::strncpy(first" in idf_main or "std::strncpy(second" in idf_main:
+        fail("native ESP-IDF argument splitting must reject instead of truncate")
+
     manifest = (ROOT / "idf_component.yml").read_text(encoding="utf-8", errors="replace")
     for token in ("esp32s2", "esp32s3", "idf:"):
         require_token(manifest, token, "idf_component.yml")
@@ -240,6 +285,41 @@ def main() -> int:
     )
     for token in BUILD_DOC_REQUIRED_TOKENS:
         require_token(build_doc, token, "ESP-IDF build guide")
+
+    provenance = (
+        ROOT
+        / "examples"
+        / "esp_idf"
+        / "basic"
+        / "main"
+        / "GenerateGitProvenance.cmake"
+    ).read_text(encoding="utf-8", errors="replace")
+    for token in (
+        "add_custom_target(ina228_example_git_provenance ALL",
+        "add_dependencies(${COMPONENT_LIB} ina228_example_git_provenance)",
+        "ina228_git_provenance.h",
+    ):
+        require_token(cmake, token, "ESP-IDF firmware provenance build hook")
+    require_token(
+        idf_main,
+        '#include "ina228_git_provenance.h"',
+        "ESP-IDF firmware provenance include",
+    )
+    for token in (
+        "rev-parse --short=12 HEAD",
+        "status --porcelain --untracked-files=normal",
+        "INA228_GIT_COMMIT",
+        "INA228_GIT_STATUS",
+        "copy_if_different",
+    ):
+        require_token(provenance, token, "ESP-IDF firmware provenance generator")
+
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8", errors="replace")
+    for token in (
+        "/examples/esp_idf/basic/build/",
+        "/examples/esp_idf/basic/sdkconfig",
+    ):
+        require_token(gitignore, token, "ESP-IDF generated-file ignore policy")
 
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
         encoding="utf-8", errors="replace"

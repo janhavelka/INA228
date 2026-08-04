@@ -16,19 +16,20 @@ generated from it and committed.
 
 Run and record:
 
-```bash
-python -m py_compile tools/run_i2c_hil.py
+```powershell
+python -m py_compile tools/run_i2c_hil.py tools/test_run_i2c_hil_parser.py
 python tools/run_i2c_hil.py --parser-self-test
 python tools/run_i2c_hil.py --dry-run --suite exhaustive --include-not-run --benchmark-count 100
+python tools/test_run_i2c_hil_parser.py
 python tools/check_core_timing_guard.py
 python tools/check_owner_contract.py
 python tools/check_cli_contract.py
 python tools/check_idf_example_contract.py
 python scripts/generate_version.py check
-python -m platformio test -e native
-python -m platformio run -e esp32s3dev
-python -m platformio run -e esp32s2dev
-python -m platformio pkg pack
+.\scripts\pio.cmd test -e native
+.\scripts\pio.cmd run -e esp32s3dev
+.\scripts\pio.cmd run -e esp32s2dev
+.\scripts\pio.cmd pkg pack
 doxygen Doxyfile
 git diff --check
 ```
@@ -54,6 +55,9 @@ Before merging or tagging, verify a completed CI run for the final branch or PR:
 - Guard scripts pass.
 - Effective Arduino compile commands use GNU++17 and do not retain GNU++11.
 - HIL runner `py_compile` and parser self-test pass.
+- Standalone HIL parser regressions pass, including fail-closed expected-error
+  handling, frame identity/completion, stale/trailing-input isolation,
+  failure-run accounting, and both firmware provenance profiles.
 - PlatformIO ESP32-S3 build passes.
 - PlatformIO ESP32-S2 build passes.
 - Package validation passes.
@@ -72,6 +76,9 @@ Before merging or tagging, verify a completed CI run for the final branch or PR:
 - `docs/validation/hardware-validation-procedure.md` matches the CLI examples.
 - The release HIL gate is one framed `exhaustive` run with no FAIL/UNKNOWN rows;
   `targeted` and `transfer` are diagnostic subsets, not additional gates.
+- The release runner uses the matching `arduino` or `idf` profile and rejects a
+  mismatched library version, exact 12-character commit identity, source
+  status, or framework token.
 - Wording separates implemented behavior, native tests, CI configuration,
   ESP-IDF build proof, and hardware validation.
 - No production, field, 85 V safety, or hardware validation claims appear

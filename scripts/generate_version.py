@@ -113,7 +113,7 @@ def _macro_prefix(namespace: str) -> str:
 def _get_git_info(project_root: Path) -> Tuple[str, str]:
     try:
         commit_result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
+            ["git", "rev-parse", "--short=12", "HEAD"],
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -123,7 +123,7 @@ def _get_git_info(project_root: Path) -> Tuple[str, str]:
         commit = commit_result.stdout.strip() if commit_result.returncode == 0 else "unknown"
 
         status_result = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -182,33 +182,41 @@ def _render_version_header(namespace: str, version: str) -> str:
 #include <stdint.h>
 
 #ifndef {prefix}_VERSION_STRING
+/// @brief Semantic version string; may be overridden by the build.
 #define {prefix}_VERSION_STRING "{version}"
 #endif
 
 #ifndef {prefix}_BUILD_DATE
+/// @brief Build date string; defaults to the compiler date.
 #define {prefix}_BUILD_DATE __DATE__
 #endif
 
 #ifndef {prefix}_BUILD_TIME
+/// @brief Build time string; defaults to the compiler time.
 #define {prefix}_BUILD_TIME __TIME__
 #endif
 
 #ifndef {prefix}_BUILD_TIMESTAMP
+/// @brief Combined build date and time string.
 #define {prefix}_BUILD_TIMESTAMP {prefix}_BUILD_DATE " " {prefix}_BUILD_TIME
 #endif
 
 #ifndef {prefix}_GIT_COMMIT
+/// @brief Source commit identifier supplied by the build when available.
 #define {prefix}_GIT_COMMIT "unknown"
 #endif
 
 #ifndef {prefix}_GIT_STATUS
+/// @brief Source worktree state supplied by the build when available.
 #define {prefix}_GIT_STATUS "unknown"
 #endif
 
 #ifndef {prefix}_VERSION_FULL
+/// @brief Version string combined with commit, timestamp, and worktree state.
 #define {prefix}_VERSION_FULL {prefix}_VERSION_STRING " (" {prefix}_GIT_COMMIT ", " {prefix}_BUILD_TIMESTAMP ", " {prefix}_GIT_STATUS ")"
 #endif
 
+/// @brief Version and build metadata constants for {namespace}.
 namespace {namespace} {{
 
 /// @brief Major version (breaking changes).

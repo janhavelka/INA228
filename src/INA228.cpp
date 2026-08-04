@@ -5,14 +5,12 @@
 
 #include "INA228/INA228.h"
 
-#include <cstring>
-#include <limits>
 #include <cmath>
+#include <limits>
 
 namespace INA228 {
 namespace {
 
-static constexpr size_t MAX_WRITE_LEN = 6;
 static constexpr uint32_t RESET_STARTUP_MS =
     (cmd::POR_STARTUP_US + 999U) / 1000U;
 static constexpr uint16_t DIAG_EVIDENCE_MASK =
@@ -201,6 +199,54 @@ static Status computeCalibration(float shuntOhm, float maxCurrentA, AdcRange ran
 
   shuntCal = roundedCal;
   currentLsb = actualLsbFloat;
+  return Status::Ok();
+}
+
+static Status buildLegacyCalibrationPlan(float shuntOhm, float maxCurrentA,
+                                         AdcRange range, CalibrationPlan& plan,
+                                         float& currentLsb) {
+  uint16_t shuntCal = 0;
+  bool clamped = false;
+  bool exceedsShuntRange = false;
+  Status st = computeCalibration(shuntOhm, maxCurrentA, range, shuntCal,
+                                 currentLsb, clamped, exceedsShuntRange);
+  if (!st.ok()) {
+    return st;
+  }
+
+  CalibrationPlan candidate{};
+  candidate.shuntCal = shuntCal;
+  candidate.shuntFullScaleMicrovolts =
+      range == AdcRange::MV_40_96 ? 40960U : 163840U;
+  candidate.clamped = clamped;
+  candidate.maxCurrentExceedsShuntRange = exceedsShuntRange;
+  if (clamped || exceedsShuntRange) {
+    plan = candidate;
+    return Status::Ok();
+  }
+
+  const double selectedNanoAmps = std::round(
+      static_cast<double>(maxCurrentA) * 1.0e9 / 524288.0);
+  const double effectiveNanoAmps = std::round(
+      static_cast<double>(currentLsb) * 1.0e9);
+  const double uint32Max =
+      static_cast<double>(std::numeric_limits<uint32_t>::max());
+  if (!std::isfinite(selectedNanoAmps) || selectedNanoAmps <= 0.0 ||
+      selectedNanoAmps > uint32Max || !std::isfinite(effectiveNanoAmps) ||
+      effectiveNanoAmps <= 0.0 || effectiveNanoAmps > uint32Max) {
+    return Status::Error(Err::INVALID_PARAM,
+                         "Current LSB is not representable in nanoamps");
+  }
+  candidate.selectedCurrentLsbNanoAmps =
+      static_cast<uint32_t>(selectedNanoAmps);
+  candidate.effectiveCurrentLsbNanoAmps =
+      static_cast<uint32_t>(effectiveNanoAmps);
+  candidate.representableCurrentMilliAmps = static_cast<uint32_t>(
+      (static_cast<uint64_t>(candidate.effectiveCurrentLsbNanoAmps) *
+       524287ULL) / 1000000ULL);
+  candidate.quantized = candidate.selectedCurrentLsbNanoAmps !=
+                        candidate.effectiveCurrentLsbNanoAmps;
+  plan = candidate;
   return Status::Ok();
 }
 
@@ -400,36 +446,18 @@ Status INA228::_validateBinding(const Config& config, CalibrationPlan& plan,
         config.adcRange == AdcRange::MV_40_96 ? 40960U : 163840U;
     return Status::Ok();
   }
-  uint16_t shuntCal = 0;
   float legacyCurrentLsb = 0.0f;
-  bool clamped = false;
-  bool exceeds = false;
-  Status st = computeCalibration(config.shuntResistanceOhm,
-                                 config.maxExpectedCurrentA, config.adcRange,
-                                 shuntCal, legacyCurrentLsb, clamped, exceeds);
+  Status st = buildLegacyCalibrationPlan(
+      config.shuntResistanceOhm, config.maxExpectedCurrentA, config.adcRange,
+      plan, legacyCurrentLsb);
   if (!st.ok()) {
     return Status::Error(Err::INVALID_CONFIG, st.msg, st.detail);
   }
-  if (clamped || exceeds) {
+  if (plan.clamped || plan.maxCurrentExceedsShuntRange) {
     return Status::Error(Err::INVALID_CONFIG,
-                         clamped ? "Legacy SHUNT_CAL would clamp" :
-                                   "Legacy maximum current exceeds shunt range");
+                         plan.clamped ? "Legacy SHUNT_CAL would clamp" :
+                                        "Legacy maximum current exceeds shunt range");
   }
-  plan = CalibrationPlan{};
-  plan.shuntCal = shuntCal;
-  plan.selectedCurrentLsbNanoAmps = static_cast<uint32_t>(std::round(
-      static_cast<double>(config.maxExpectedCurrentA) * 1.0e9 / 524288.0));
-  plan.effectiveCurrentLsbNanoAmps = static_cast<uint32_t>(std::round(
-      static_cast<double>(legacyCurrentLsb) * 1.0e9));
-  plan.representableCurrentMilliAmps = static_cast<uint32_t>(
-      (static_cast<uint64_t>(plan.effectiveCurrentLsbNanoAmps) * 524287ULL) /
-      1000000ULL);
-  plan.shuntFullScaleMicrovolts =
-      config.adcRange == AdcRange::MV_40_96 ? 40960U : 163840U;
-  plan.quantized = plan.selectedCurrentLsbNanoAmps !=
-                   plan.effectiveCurrentLsbNanoAmps;
-  plan.clamped = clamped;
-  plan.maxCurrentExceedsShuntRange = exceeds;
   return Status::Ok();
 }
 
@@ -468,7 +496,6 @@ Status INA228::bind(const Config& config) {
   _accumulationReady = false;
   _configurationGeneration = 0;
   _accumulatorGeneration = 0;
-  _accumulatorResetAtMs = 0;
   _lastOkMs = 0;
   _lastErrorMs = 0;
   _lastError = Status::Ok();
@@ -488,13 +515,16 @@ uint16_t INA228::_desiredDiagConfigBits() const {
   return bits;
 }
 
-uint16_t INA228::_triggeredAllAdcConfig() const {
-  return static_cast<uint16_t>(
-      (static_cast<uint16_t>(Mode::TRIG_ALL) << cmd::BIT_ADC_MODE) |
-      (static_cast<uint16_t>(_config.vbusConvTime) << cmd::BIT_ADC_VBUSCT) |
-      (static_cast<uint16_t>(_config.vshuntConvTime) << cmd::BIT_ADC_VSHCT) |
-      (static_cast<uint16_t>(_config.vtempConvTime) << cmd::BIT_ADC_VTCT) |
-      (static_cast<uint16_t>(_config.averaging) << cmd::BIT_ADC_AVG));
+uint32_t INA228::_instantaneousSampleWaitUs() const {
+  return (static_cast<uint32_t>(convTimeUs(_config.vbusConvTime)) +
+          convTimeUs(_config.vshuntConvTime) +
+          convTimeUs(_config.vtempConvTime)) * avgCount(_config.averaging) +
+         static_cast<uint32_t>(_config.convDelayMs2) * 2000U +
+         cmd::SHUTDOWN_WAKEUP_US;
+}
+
+uint32_t INA228::_instantaneousSampleWaitMs() const {
+  return (_instantaneousSampleWaitUs() + 999U) / 1000U;
 }
 
 float INA228::_plannedCurrentLsbAmps() const {
@@ -536,7 +566,6 @@ void INA228::_clearCooperativeState() {
   _jobTouchedRegisterMask = 0;
   _jobIdentityScratch = DeviceIdentity{};
   _sampleScratch = InstantaneousSample{};
-  _jobReadback = 0;
   _jobWaitStartMs = 0;
   _deferredTimeOrigin = DeferredTimeOrigin::NONE;
   _jobDeferredStatus = Status::Ok();
@@ -574,7 +603,6 @@ Status INA228::_startJob(JobKind kind, JobPhase firstPhase,
   _sampleScratch.operationId = id;
   _sampleScratch.requestToken = requestToken;
   _sampleScratch.configurationGeneration = _configurationGeneration;
-  _jobReadback = 0;
   _jobWaitStartMs = 0;
   if (_deferredTimeOrigin == DeferredTimeOrigin::JOB_WAIT) {
     _deferredTimeOrigin = DeferredTimeOrigin::NONE;
@@ -661,20 +689,20 @@ Status INA228::_finishJob(const Status& status, JobState state,
   return status;
 }
 
-Status INA228::_failJob(const Status& status, bool failedWrite,
+Status INA228::_failJob(const Status& status, bool failedSideEffectingTransfer,
                         uint32_t nowMs) {
   const bool identityJob = _jobSnapshot.kind == JobKind::INITIALIZE ||
                            _jobSnapshot.kind == JobKind::REINITIALIZE;
   const bool resetMayHaveInvalidatedTrigger =
       _jobSnapshot.kind == JobKind::RESET &&
-      (failedWrite || _jobHadSuccessfulWrite);
+      (failedSideEffectingTransfer || _jobHadSuccessfulWrite);
   JobEffect effect = JobEffect::NONE;
-  if (failedWrite) {
+  if (failedSideEffectingTransfer) {
     effect = JobEffect::INDETERMINATE;
   } else if (_jobHadSuccessfulWrite) {
     effect = JobEffect::PARTIAL;
   }
-  if (failedWrite || _jobHadSuccessfulWrite || identityJob ||
+  if (failedSideEffectingTransfer || _jobHadSuccessfulWrite || identityJob ||
       _jobSnapshot.kind == JobKind::VERIFY_CONFIGURATION ||
       _jobSnapshot.kind == JobKind::INSTANTANEOUS_SAMPLE) {
     _hardwareState = HardwareState::RESYNC_REQUIRED;
@@ -689,12 +717,8 @@ Status INA228::_failJob(const Status& status, bool failedWrite,
   if (_deferredTimeOrigin == DeferredTimeOrigin::JOB_WAIT) {
     _deferredTimeOrigin = DeferredTimeOrigin::NONE;
   }
-  if ((identityJob || resetMayHaveInvalidatedTrigger) && _trigPending) {
-    _trigPending = false;
-    _trigStartMs = 0;
-    if (_deferredTimeOrigin == DeferredTimeOrigin::TRIGGERED_CONVERSION) {
-      _deferredTimeOrigin = DeferredTimeOrigin::NONE;
-    }
+  if (identityJob || resetMayHaveInvalidatedTrigger) {
+    _invalidateTriggeredConversionTiming();
   }
   return _finishJob(status, JobState::FAILED, effect, nowMs);
 }
@@ -722,12 +746,8 @@ Status INA228::_cancelJob(const Status& status, JobState state) {
   if (_deferredTimeOrigin == DeferredTimeOrigin::JOB_WAIT) {
     _deferredTimeOrigin = DeferredTimeOrigin::NONE;
   }
-  if ((identityJob || resetInvalidatedTrigger) && _trigPending) {
-    _trigPending = false;
-    _trigStartMs = 0;
-    if (_deferredTimeOrigin == DeferredTimeOrigin::TRIGGERED_CONVERSION) {
-      _deferredTimeOrigin = DeferredTimeOrigin::NONE;
-    }
+  if (identityJob || resetInvalidatedTrigger) {
+    _invalidateTriggeredConversionTiming();
   }
   _sampleScratch = InstantaneousSample{};
   return _finishJob(status, state, effect, _nowMs());
@@ -766,14 +786,7 @@ Status INA228::getJobLimits(JobKind kind, JobLimits& out) const {
     case JobKind::INSTANTANEOUS_SAMPLE:
       limits.operationClass = OperationClass::STEADY_STATE;
       limits.maxTransfers = 11;
-      limits.maxWaitMicroseconds =
-          (static_cast<uint32_t>(convTimeUs(_config.vbusConvTime)) +
-           convTimeUs(_config.vshuntConvTime) +
-           convTimeUs(_config.vtempConvTime)) * avgCount(_config.averaging) +
-          static_cast<uint32_t>(_config.convDelayMs2) * 2000U +
-          cmd::SHUTDOWN_WAKEUP_US;
-      limits.maxWaitMicroseconds =
-          ((limits.maxWaitMicroseconds + 999U) / 1000U) * 1000U;
+      limits.maxWaitMicroseconds = _instantaneousSampleWaitMs() * 1000U;
       break;
     case JobKind::RESET:
       limits.operationClass = OperationClass::MAINTENANCE;
@@ -941,7 +954,7 @@ Status INA228::_pollJobTransfer(uint32_t nowMs) {
     case JobPhase::WRITE_ADC_SHUTDOWN: {
       _jobTouchedRegisterMask |= (1ULL << cmd::REG_ADC_CONFIG);
       const uint16_t shutdown = static_cast<uint16_t>(
-          _buildAdcConfig() & ~cmd::MASK_ADC_MODE);
+          _buildAdcConfig() & static_cast<uint16_t>(~cmd::MASK_ADC_MODE));
       st = writeReg16(cmd::REG_ADC_CONFIG, shutdown);
       if (!st.ok()) return _failJob(st, true, nowMs);
       _jobHadSuccessfulWrite = true;
@@ -1082,7 +1095,7 @@ Status INA228::_pollJobTransfer(uint32_t nowMs) {
 
     case JobPhase::SAMPLE_TRIGGER:
       _jobTouchedRegisterMask |= (1ULL << cmd::REG_ADC_CONFIG);
-      st = writeReg16(cmd::REG_ADC_CONFIG, _triggeredAllAdcConfig());
+      st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig(Mode::TRIG_ALL));
       if (!st.ok()) return _failJob(st, true, nowMs);
       _jobHadSuccessfulWrite = true;
       _armPostWriteTimeOrigin(DeferredTimeOrigin::JOB_WAIT);
@@ -1179,7 +1192,7 @@ Status INA228::_pollJobTransfer(uint32_t nowMs) {
         return _finishJob(_jobDeferredStatus, JobState::FAILED,
                           JobEffect::CONFIRMED, nowMs);
       }
-      st = _fillPowerSampleUnits(_sampleScratch.raw, _sampleScratch.values);
+      st = convertRawSample(_sampleScratch.raw, _sampleScratch.values);
       if (!st.ok()) {
         return _finishJob(st, JobState::FAILED, JobEffect::CONFIRMED, nowMs);
       }
@@ -1239,8 +1252,8 @@ Status INA228::_pollJobTransfer(uint32_t nowMs) {
           cmd::CONFIG_ADCRANGE | cmd::CONFIG_RST | cmd::CONFIG_RSTACC);
       if (!st.ok()) return _failJob(st, false, nowMs);
       _accumulatorGeneration = _configurationGeneration;
-      _accumulatorResetAtMs = nowMs;
       _accumulationReady = true;
+      _clearCapturedAccumulatorEvidence();
       return _finishJob(Status::Ok(), JobState::SUCCEEDED,
                         JobEffect::CONFIRMED, nowMs);
 
@@ -1254,6 +1267,11 @@ Status INA228::_pollJobTransfer(uint32_t nowMs) {
 }
 
 Status INA228::pollJob(uint32_t nowMs, uint8_t maxTransfers) {
+  return _pollJobImpl(nowMs, maxTransfers, true);
+}
+
+Status INA228::_pollJobImpl(uint32_t nowMs, uint8_t maxTransfers,
+                            bool explicitTimestamp) {
   if (!_cooperativeJobActive()) {
     return Status::Error(Err::INVALID_PARAM, "No active job to poll");
   }
@@ -1266,7 +1284,8 @@ Status INA228::pollJob(uint32_t nowMs, uint8_t maxTransfers) {
     _deferredTimeOrigin = DeferredTimeOrigin::NONE;
     return Status{Err::IN_PROGRESS, 0, "Post-write wait origin established"};
   }
-  if (_deferredTimeOrigin == DeferredTimeOrigin::TRIGGERED_CONVERSION) {
+  if (explicitTimestamp &&
+      _deferredTimeOrigin == DeferredTimeOrigin::TRIGGERED_CONVERSION) {
     _trigStartMs = nowMs;
     _deferredTimeOrigin = DeferredTimeOrigin::NONE;
     return Status{Err::IN_PROGRESS, 0,
@@ -1275,13 +1294,7 @@ Status INA228::pollJob(uint32_t nowMs, uint8_t maxTransfers) {
   _jobPollActive = true;
 
   if (_jobPhase == JobPhase::SAMPLE_WAIT) {
-    const uint32_t conversionUs =
-        (static_cast<uint32_t>(convTimeUs(_config.vbusConvTime)) +
-         convTimeUs(_config.vshuntConvTime) +
-         convTimeUs(_config.vtempConvTime)) * avgCount(_config.averaging) +
-        static_cast<uint32_t>(_config.convDelayMs2) * 2000U +
-        cmd::SHUTDOWN_WAKEUP_US;
-    const uint32_t waitMs = (conversionUs + 999U) / 1000U;
+    const uint32_t waitMs = _instantaneousSampleWaitMs();
     if ((nowMs - _jobWaitStartMs) >= waitMs) {
       _setJobPhase(JobPhase::SAMPLE_DIAG);
     }
@@ -1298,13 +1311,7 @@ Status INA228::pollJob(uint32_t nowMs, uint8_t maxTransfers) {
   uint8_t used = 0;
   while (used < maxTransfers && _cooperativeJobActive()) {
     if (_jobPhase == JobPhase::SAMPLE_WAIT) {
-      const uint32_t conversionUs =
-          (static_cast<uint32_t>(convTimeUs(_config.vbusConvTime)) +
-           convTimeUs(_config.vshuntConvTime) +
-           convTimeUs(_config.vtempConvTime)) * avgCount(_config.averaging) +
-          static_cast<uint32_t>(_config.convDelayMs2) * 2000U +
-          cmd::SHUTDOWN_WAKEUP_US;
-      const uint32_t waitMs = (conversionUs + 999U) / 1000U;
+      const uint32_t waitMs = _instantaneousSampleWaitMs();
       if ((nowMs - _jobWaitStartMs) < waitMs) {
         _jobPollActive = false;
         return Status{Err::IN_PROGRESS, 0, "Conversion wait in progress"};
@@ -1340,39 +1347,32 @@ Status INA228::pollJob(uint32_t nowMs, uint8_t maxTransfers) {
 void INA228::_invalidateAccumulatorEpoch() {
   _accumulationReady = false;
   _accumulatorGeneration = 0;
-  _accumulatorResetAtMs = 0;
 }
 
 Status INA228::begin(const Config& config) {
   // Legacy synchronous convenience: drive the same verified initialization
   // engine with its finite 14-transfer maximum. External bus owners should use
   // bind()/startInitialize()/pollJob() to retain scheduling authority.
-  {
-    Status staged = bind(config);
-    if (!staged.ok()) return staged;
-    uint32_t operationId = 0;
-    staged = startInitialize(0, operationId);
-    if (!staged.ok()) return staged;
-    staged = pollJob(_nowMs(), 14);
-    if (staged.inProgress()) {
-      (void)cancelJob();
-      JobResult cancelled{};
-      (void)takeJobResult(operationId, cancelled);
-      return Status::Error(Err::INVALID_CONFIG,
-                           "Initialization exceeded declared transfer bound");
-    }
-    JobResult result{};
-    Status taken = takeJobResult(operationId, result);
-    return taken.ok() ? staged : taken;
+  Status staged = bind(config);
+  if (!staged.ok()) return staged;
+  uint32_t operationId = 0;
+  staged = startInitialize(0, operationId);
+  if (!staged.ok()) return staged;
+  staged = _pollJobImpl(_nowMs(), 14, _config.nowMs != nullptr);
+  if (staged.inProgress()) {
+    (void)cancelJob();
+    JobResult cancelled{};
+    (void)takeJobResult(operationId, cancelled);
+    return Status::Error(Err::INVALID_CONFIG,
+                         "Initialization exceeded declared transfer bound");
   }
-
+  JobResult result{};
+  Status taken = takeJobResult(operationId, result);
+  return taken.ok() ? staged : taken;
 }
 
 void INA228::tick(uint32_t nowMs) {
-  if (!_initialized) {
-    return;
-  }
-  if (!_trigPending && (_accumulationReady || !_modeSupportsAnyAccumulation())) {
+  if (!_initialized || !_trigPending) {
     return;
   }
   bool ready = false;
@@ -1404,7 +1404,6 @@ void INA228::end() {
   _diagnosticEvents = DiagnosticEvents{};
   _configurationGeneration = 0;
   _accumulatorGeneration = 0;
-  _accumulatorResetAtMs = 0;
   _clearCooperativeState();
   _config = Config{};
 }
@@ -1444,26 +1443,23 @@ Status INA228::probe() {
 
 Status INA228::recover() {
   // Legacy bounded convenience over the verified reinitialization job.
-  {
-    if (!_bound) {
-      return Status::Error(Err::NOT_BOUND, "bind() has not completed");
-    }
-    uint32_t operationId = 0;
-    Status staged = startReinitialize(0, operationId);
-    if (!staged.ok()) return staged;
-    staged = pollJob(_nowMs(), 14);
-    if (staged.inProgress()) {
-      (void)cancelJob();
-      JobResult cancelled{};
-      (void)takeJobResult(operationId, cancelled);
-      return Status::Error(Err::INVALID_CONFIG,
-                           "Reinitialization exceeded declared transfer bound");
-    }
-    JobResult result{};
-    Status taken = takeJobResult(operationId, result);
-    return taken.ok() ? staged : taken;
+  if (!_bound) {
+    return Status::Error(Err::NOT_BOUND, "bind() has not completed");
   }
-
+  uint32_t operationId = 0;
+  Status staged = startReinitialize(0, operationId);
+  if (!staged.ok()) return staged;
+  staged = _pollJobImpl(_nowMs(), 14, _config.nowMs != nullptr);
+  if (staged.inProgress()) {
+    (void)cancelJob();
+    JobResult cancelled{};
+    (void)takeJobResult(operationId, cancelled);
+    return Status::Error(Err::INVALID_CONFIG,
+                         "Reinitialization exceeded declared transfer bound");
+  }
+  JobResult result{};
+  Status taken = takeJobResult(operationId, result);
+  return taken.ok() ? staged : taken;
 }
 
 Status INA228::getSettings(SettingsSnapshot& out) const {
@@ -1637,7 +1633,7 @@ Status INA228::readRawSample(RawSample& out) {
   result.power = raw24;
 
   uint16_t diag = 0;
-  st = _readAccumulatorDiag(diag);
+  st = _readDiagAlertTracked(diag);
   if (!st.ok()) return st;
   result.diagAlertValid = true;
   result.diagAlertRaw = diag;
@@ -1666,39 +1662,36 @@ Status INA228::readPowerSampleRawStep(RawSample& rawOut, IntegerSample& integerO
                                       uint8_t maxInstructions) {
   // Deprecated compatibility surface over the unified triggered sample job.
   // It needs a time hook because this signature cannot accept caller time.
-  {
-    if (maxInstructions == 0) {
-      return Status::Error(Err::INVALID_PARAM, "Instruction budget must be > 0");
-    }
-    if (_config.nowMs == nullptr) {
-      return Status::Error(Err::INVALID_CONFIG,
-                           "Use startInstantaneousSample/pollJob without a time hook");
-    }
-    uint32_t operationId = 0;
-    if (!_cooperativeJobActive()) {
-      Status started = startInstantaneousSample(0, operationId);
-      if (!started.ok()) return started;
-    } else {
-      if (_jobSnapshot.kind != JobKind::INSTANTANEOUS_SAMPLE) {
-        return Status::Error(Err::BUSY, "Another cooperative job is active");
-      }
-      operationId = _jobSnapshot.operationId;
-    }
-    Status polled = pollJob(_nowMs(), maxInstructions);
-    if (polled.inProgress()) return polled;
-    JobResult result{};
-    Status taken = takeJobResult(operationId, result);
-    if (!taken.ok()) return taken;
-    if (!polled.ok()) return polled;
-    if (!result.hasInstantaneousSample) {
-      return Status::Error(Err::RESULT_NOT_AVAILABLE,
-                           "Sample job completed without a sample");
-    }
-    rawOut = result.instantaneousSample.raw;
-    integerOut = result.instantaneousSample.values;
-    return Status::Ok();
+  if (maxInstructions == 0) {
+    return Status::Error(Err::INVALID_PARAM, "Instruction budget must be > 0");
   }
-
+  if (_config.nowMs == nullptr) {
+    return Status::Error(Err::INVALID_CONFIG,
+                         "Use startInstantaneousSample/pollJob without a time hook");
+  }
+  uint32_t operationId = 0;
+  if (!_cooperativeJobActive()) {
+    Status started = startInstantaneousSample(0, operationId);
+    if (!started.ok()) return started;
+  } else {
+    if (_jobSnapshot.kind != JobKind::INSTANTANEOUS_SAMPLE) {
+      return Status::Error(Err::BUSY, "Another cooperative job is active");
+    }
+    operationId = _jobSnapshot.operationId;
+  }
+  Status polled = _pollJobImpl(_nowMs(), maxInstructions, true);
+  if (polled.inProgress()) return polled;
+  JobResult result{};
+  Status taken = takeJobResult(operationId, result);
+  if (!taken.ok()) return taken;
+  if (!polled.ok()) return polled;
+  if (!result.hasInstantaneousSample) {
+    return Status::Error(Err::RESULT_NOT_AVAILABLE,
+                         "Sample job completed without a sample");
+  }
+  rawOut = result.instantaneousSample.raw;
+  integerOut = result.instantaneousSample.values;
+  return Status::Ok();
 }
 
 Status INA228::readIntegerSample(IntegerSample& out) {
@@ -1903,7 +1896,7 @@ Status INA228::readEnergy(double& out) {
   }
 
   uint16_t diag = 0;
-  Status st = _readAccumulatorDiag(diag);
+  Status st = _readDiagAlertTracked(diag);
   if (!st.ok()) return st;
 
   st = _validateAccumulatorDiag(diag, cmd::DIAG_ENERGYOF, "Energy accumulator overflow");
@@ -1936,7 +1929,7 @@ Status INA228::readCharge(double& out) {
   }
 
   uint16_t diag = 0;
-  Status st = _readAccumulatorDiag(diag);
+  Status st = _readDiagAlertTracked(diag);
   if (!st.ok()) return st;
 
   st = _validateAccumulatorDiag(diag, cmd::DIAG_CHARGEOF, "Charge accumulator overflow");
@@ -1966,6 +1959,8 @@ Status INA228::pollConversionReady(uint32_t nowMs, bool& ready) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
   if (_deferredTimeOrigin == DeferredTimeOrigin::TRIGGERED_CONVERSION) {
     _trigStartMs = nowMs;
     _deferredTimeOrigin = DeferredTimeOrigin::NONE;
@@ -2034,17 +2029,13 @@ Status INA228::setMode(Mode mode) {
     return Status::Error(Err::INVALID_PARAM, "Invalid mode");
   }
 
-  uint16_t adcCfg = _buildAdcConfig();
-  adcCfg = (adcCfg & ~cmd::MASK_ADC_MODE) |
-           (static_cast<uint16_t>(mode) << cmd::BIT_ADC_MODE);
-  Status st = writeReg16(cmd::REG_ADC_CONFIG, adcCfg);
+  Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig(mode));
   if (!st.ok()) {
     _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
     return st;
   }
 
   _config.mode = mode;
-  _invalidateAccumulatorEpoch();
   if (isTriggeredMode(mode)) {
     _markTriggeredConversionStarted();
     return Status{Err::IN_PROGRESS, 0, "Conversion started"};
@@ -2071,25 +2062,18 @@ Status INA228::triggerConversion(Mode mode) {
     return Status::Error(Err::INVALID_PARAM, "Not a triggered mode (0x1-0x7)");
   }
 
-  uint16_t adcCfg = _buildAdcConfig();
-  adcCfg = (adcCfg & ~cmd::MASK_ADC_MODE) |
-           (static_cast<uint16_t>(mode) << cmd::BIT_ADC_MODE);
-  Status st = writeReg16(cmd::REG_ADC_CONFIG, adcCfg);
+  Status st = writeReg16(cmd::REG_ADC_CONFIG, _buildAdcConfig(mode));
   if (!st.ok()) {
     _markHardwareDirty(cmd::REG_ADC_CONFIG, st);
     return st;
   }
 
   _config.mode = mode;
-  _invalidateAccumulatorEpoch();
   _markTriggeredConversionStarted();
   return Status{Err::IN_PROGRESS, 0, "Conversion started"};
 }
 
 Status INA228::startTriggeredMeasurement(Mode mode) {
-  if (_cooperativeJobActive()) {
-    return Status::Error(Err::BUSY, "Another cooperative job is active");
-  }
   return triggerConversion(mode);
 }
 
@@ -2226,35 +2210,20 @@ Status INA228::setAdcRange(AdcRange range) {
     newMaxCurrentExceedsRange = newPlan.maxCurrentExceedsShuntRange;
   } else if (_config.shuntResistanceOhm > 0.0f &&
              _config.maxExpectedCurrentA > 0.0f) {
-    Status st = computeCalibration(_config.shuntResistanceOhm,
-                                   _config.maxExpectedCurrentA,
-                                   range,
-                                   newShuntCal,
-                                   newCurrentLsb,
-                                   newClamped,
-                                   newMaxCurrentExceedsRange);
+    Status st = buildLegacyCalibrationPlan(_config.shuntResistanceOhm,
+                                           _config.maxExpectedCurrentA,
+                                           range, newPlan, newCurrentLsb);
     if (!st.ok()) {
       return st;
     }
+    newShuntCal = newPlan.shuntCal;
+    newClamped = newPlan.clamped;
+    newMaxCurrentExceedsRange = newPlan.maxCurrentExceedsShuntRange;
     if (newClamped || newMaxCurrentExceedsRange) {
       return Status::Error(Err::INVALID_CONFIG,
                            newClamped ? "SHUNT_CAL would clamp" :
                                         "Maximum current exceeds shunt range");
     }
-    newPlan.shuntCal = newShuntCal;
-    newPlan.selectedCurrentLsbNanoAmps = static_cast<uint32_t>(std::round(
-        static_cast<double>(_config.maxExpectedCurrentA) * 1.0e9 / 524288.0));
-    newPlan.effectiveCurrentLsbNanoAmps = static_cast<uint32_t>(std::round(
-        static_cast<double>(newCurrentLsb) * 1.0e9));
-    newPlan.representableCurrentMilliAmps = static_cast<uint32_t>(
-        (static_cast<uint64_t>(newPlan.effectiveCurrentLsbNanoAmps) * 524287ULL) /
-        1000000ULL);
-    newPlan.shuntFullScaleMicrovolts =
-        range == AdcRange::MV_40_96 ? 40960U : 163840U;
-    newPlan.quantized = newPlan.selectedCurrentLsbNanoAmps !=
-                        newPlan.effectiveCurrentLsbNanoAmps;
-    newPlan.clamped = newClamped;
-    newPlan.maxCurrentExceedsShuntRange = newMaxCurrentExceedsRange;
   }
 
   _config.adcRange = range;
@@ -2309,58 +2278,40 @@ Status INA228::setCalibration(float shuntOhm, float maxCurrentA) {
     return Status::Error(Err::INVALID_CONFIG,
                          "Rebind to change a fixed-unit calibration contract");
   }
-  Status st = validatePositiveFinite(shuntOhm, "Shunt must be finite and > 0");
+  CalibrationPlan newPlan{};
+  float newCurrentLsb = 0.0f;
+  Status st = buildLegacyCalibrationPlan(shuntOhm, maxCurrentA,
+                                         _config.adcRange, newPlan,
+                                         newCurrentLsb);
   if (!st.ok()) {
     return st;
   }
-  st = validatePositiveFinite(maxCurrentA, "Max current must be finite and > 0");
+  if (newPlan.clamped || newPlan.maxCurrentExceedsShuntRange) {
+    return Status::Error(
+        Err::INVALID_CONFIG,
+        newPlan.clamped ? "SHUNT_CAL would clamp" :
+                          "Maximum current exceeds shunt range");
+  }
+
+  st = writeReg16(cmd::REG_SHUNT_CAL, newPlan.shuntCal);
   if (!st.ok()) {
+    _markHardwareDirty(cmd::REG_SHUNT_CAL, st);
     return st;
   }
 
-  const float oldShuntOhm = _config.shuntResistanceOhm;
-  const float oldMaxCurrentA = _config.maxExpectedCurrentA;
-  const float oldCurrentLsb = _currentLsb;
-  const uint16_t oldShuntCal = _shuntCal;
-  const bool oldClamped = _calibrationClamped;
-  const bool oldMaxCurrentExceedsRange = _maxCurrentExceedsShuntRange;
   _config.shuntResistanceOhm = shuntOhm;
   _config.maxExpectedCurrentA = maxCurrentA;
-  st = _applyCalibration();
-  if (!st.ok()) {
-    _config.shuntResistanceOhm = oldShuntOhm;
-    _config.maxExpectedCurrentA = oldMaxCurrentA;
-    _currentLsb = oldCurrentLsb;
-    _shuntCal = oldShuntCal;
-    _calibrationClamped = oldClamped;
-    _maxCurrentExceedsShuntRange = oldMaxCurrentExceedsRange;
-    if (st.code != Err::INVALID_PARAM && st.code != Err::INVALID_CONFIG) {
-      _markHardwareDirty(cmd::REG_SHUNT_CAL);
-    }
-  } else {
-    _calibrationPlan.shuntCal = _shuntCal;
-    _calibrationPlan.selectedCurrentLsbNanoAmps = static_cast<uint32_t>(
-        std::round(static_cast<double>(maxCurrentA) * 1.0e9 / 524288.0));
-    _calibrationPlan.effectiveCurrentLsbNanoAmps = static_cast<uint32_t>(
-        std::round(static_cast<double>(_currentLsb) * 1.0e9));
-    _calibrationPlan.representableCurrentMilliAmps = static_cast<uint32_t>(
-        (static_cast<uint64_t>(_calibrationPlan.effectiveCurrentLsbNanoAmps) *
-         524287ULL) / 1000000ULL);
-    _calibrationPlan.shuntFullScaleMicrovolts =
-        _config.adcRange == AdcRange::MV_40_96 ? 40960U : 163840U;
-    _calibrationPlan.quantized =
-        _calibrationPlan.selectedCurrentLsbNanoAmps !=
-        _calibrationPlan.effectiveCurrentLsbNanoAmps;
-    _calibrationPlan.clamped = _calibrationClamped;
-    _calibrationPlan.maxCurrentExceedsShuntRange =
-        _maxCurrentExceedsShuntRange;
-    _clearHardwareDirty();
-    _markThresholdsDirty();
-    ++_configurationGeneration;
-    if (_configurationGeneration == 0) ++_configurationGeneration;
-    _invalidateAccumulatorEpoch();
-  }
-  return st;
+  _currentLsb = newCurrentLsb;
+  _shuntCal = newPlan.shuntCal;
+  _calibrationClamped = newPlan.clamped;
+  _maxCurrentExceedsShuntRange = newPlan.maxCurrentExceedsShuntRange;
+  _calibrationPlan = newPlan;
+  _clearHardwareDirty();
+  _markThresholdsDirty();
+  ++_configurationGeneration;
+  if (_configurationGeneration == 0) ++_configurationGeneration;
+  _invalidateAccumulatorEpoch();
+  return Status::Ok();
 }
 
 Status INA228::setShuntTempCoeff(uint16_t ppmPerC) {
@@ -2472,73 +2423,25 @@ Status INA228::readAndClearDiagAlert(uint16_t& raw) {
 }
 
 Status INA228::setAlertLatch(bool latch) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
-  Status clean = _ensureHardwareClean();
-  if (!clean.ok()) return clean;
-
-  uint16_t diag = _diagAlertConfigBits;
-  if (latch) {
-    diag |= cmd::DIAG_ALATCH;
-  } else {
-    diag &= ~cmd::DIAG_ALATCH;
-  }
-  Status st = _writeDiagAlertConfig(diag);
+  Status st = _setAlertConfigBit(cmd::DIAG_ALATCH, latch);
   if (st.ok()) _config.alerts.latched = latch;
   return st;
 }
 
 Status INA228::setConversionReadyAlert(bool enable) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
-  Status clean = _ensureHardwareClean();
-  if (!clean.ok()) return clean;
-
-  uint16_t diag = _diagAlertConfigBits;
-  if (enable) {
-    diag |= cmd::DIAG_CNVR;
-  } else {
-    diag &= ~cmd::DIAG_CNVR;
-  }
-  Status st = _writeDiagAlertConfig(diag);
+  Status st = _setAlertConfigBit(cmd::DIAG_CNVR, enable);
   if (st.ok()) _config.alerts.conversionReady = enable;
   return st;
 }
 
 Status INA228::setSlowAlert(bool enable) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
-  Status clean = _ensureHardwareClean();
-  if (!clean.ok()) return clean;
-
-  uint16_t diag = _diagAlertConfigBits;
-  if (enable) {
-    diag |= cmd::DIAG_SLOWALERT;
-  } else {
-    diag &= ~cmd::DIAG_SLOWALERT;
-  }
-  Status st = _writeDiagAlertConfig(diag);
+  Status st = _setAlertConfigBit(cmd::DIAG_SLOWALERT, enable);
   if (st.ok()) _config.alerts.slowAlert = enable;
   return st;
 }
 
 Status INA228::setAlertPolarity(bool activeHigh) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
-  Status clean = _ensureHardwareClean();
-  if (!clean.ok()) return clean;
-
-  uint16_t diag = _diagAlertConfigBits;
-  if (activeHigh) {
-    diag |= cmd::DIAG_APOL;
-  } else {
-    diag &= ~cmd::DIAG_APOL;
-  }
-  Status st = _writeDiagAlertConfig(diag);
+  Status st = _setAlertConfigBit(cmd::DIAG_APOL, activeHigh);
   if (st.ok()) _config.alerts.activeHigh = activeHigh;
   return st;
 }
@@ -2645,7 +2548,8 @@ Status INA228::setPowerOverlimitThreshold(float powerW) {
     return Status::Error(Err::INVALID_PARAM, "Power threshold out of range");
   }
 
-  const double powerLsb = cmd::POWER_COEFF * _currentLsb;
+  const double powerLsb =
+      cmd::POWER_COEFF * static_cast<double>(_currentLsb);
   const double limitLsb = 256.0 * powerLsb;
   const double scaled = std::round(static_cast<double>(powerW) / limitLsb);
   if (scaled < 0.0 || scaled > 65535.0) {
@@ -2685,7 +2589,7 @@ Status INA228::resetAccumulators() {
   uint32_t operationId = 0;
   Status staged = startAccumulatorReset(0, operationId);
   if (!staged.ok()) return staged;
-  staged = pollJob(_nowMs(), 2);
+  staged = _pollJobImpl(_nowMs(), 2, _config.nowMs != nullptr);
   JobResult result{};
   Status taken = takeJobResult(operationId, result);
   return taken.ok() ? staged : taken;
@@ -2884,6 +2788,9 @@ Status INA228::writeRegister16(uint8_t reg, uint16_t value) {
        reg == cmd::REG_SHUNT_CAL || reg == cmd::REG_ADC_CONFIG ||
        reg == cmd::REG_SHUNT_TEMPCO)) {
     _markHardwareDirty(reg, st);
+    if (reg == cmd::REG_CONFIG && (value & cmd::CONFIG_RST) != 0) {
+      _invalidateTriggeredConversionTiming();
+    }
   } else if (st.ok() && reg == cmd::REG_DIAG_ALRT) {
     _diagAlertConfigBits = value & cmd::DIAG_CONFIG_MASK;
     _config.alerts.latched = (value & cmd::DIAG_ALATCH) != 0;
@@ -2892,7 +2799,7 @@ Status INA228::writeRegister16(uint8_t reg, uint16_t value) {
     _config.alerts.activeHigh = (value & cmd::DIAG_APOL) != 0;
   } else if (st.ok() && reg == cmd::REG_CONFIG &&
              ((value & cmd::CONFIG_RST) != 0)) {
-    _markAccumulationInvalid();
+    _invalidateAccumulatorEpoch();
     _markConfigReplayDirty(
         Status::Error(Err::HARDWARE_DIRTY, "Raw software reset write"));
     _markCalibrationDirty(
@@ -2900,7 +2807,7 @@ Status INA228::writeRegister16(uint8_t reg, uint16_t value) {
     _markThresholdsDirty();
   } else if (st.ok() && reg == cmd::REG_CONFIG &&
              ((value & cmd::CONFIG_RSTACC) != 0)) {
-    _markAccumulationInvalid();
+    _invalidateAccumulatorEpoch();
     _markHardwareDirty(reg);
   } else if (st.ok() && (reg == cmd::REG_CONFIG || reg == cmd::REG_SHUNT_CAL ||
                          reg == cmd::REG_ADC_CONFIG || reg == cmd::REG_SHUNT_TEMPCO)) {
@@ -2927,7 +2834,6 @@ Status INA228::_readDiagAlertTracked(uint16_t& raw) {
   }
   return st;
 }
-
 
 void INA228::_captureDiagAlert(uint16_t raw) {
   _captureDiagAlert(raw, _nowMs());
@@ -2962,11 +2868,6 @@ void INA228::_captureDiagAlert(uint16_t raw, uint32_t observedAtMs) {
       }
     }
   }
-  if (((raw & cmd::DIAG_CNVRF) != 0) && _modeSupportsAnyAccumulation() &&
-      _accumulatorGeneration != 0 &&
-      _accumulatorGeneration == _configurationGeneration) {
-    _accumulationReady = true;
-  }
   if (_trigPending && ((raw & cmd::DIAG_CNVRF) != 0)) {
     _completeTriggeredConversion();
   }
@@ -2981,6 +2882,22 @@ Status INA228::_writeDiagAlertConfig(uint16_t configBits) {
     _markHardwareDirty(cmd::REG_DIAG_ALRT, st);
   }
   return st;
+}
+
+Status INA228::_setAlertConfigBit(uint16_t bit, bool enabled) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  Status clean = _ensureHardwareClean();
+  if (!clean.ok()) return clean;
+
+  uint16_t configBits = _diagAlertConfigBits;
+  if (enabled) {
+    configBits |= bit;
+  } else {
+    configBits &= static_cast<uint16_t>(~bit);
+  }
+  return _writeDiagAlertConfig(configBits);
 }
 
 // ===========================================================================
@@ -3028,8 +2945,6 @@ Status INA228::_updateHealth(const Status& st) {
 
   return st;
 }
-
-
 
 Status INA228::_ensureNormalI2cAllowed() const {
   if (!_hardwareAccessAllowed()) {
@@ -3103,16 +3018,6 @@ Status INA228::_ensureCalibrated() const {
   return Status::Ok();
 }
 
-
-
-
-
-Status INA228::_fillPowerSampleUnits(const RawSample& raw,
-                                     IntegerSample& out) const {
-  return convertRawSample(raw, out);
-}
-
-
 bool INA228::_triggerDeadlineElapsed(uint32_t nowMs) const {
   return _deferredTimeOrigin != DeferredTimeOrigin::TRIGGERED_CONVERSION &&
          (nowMs - _trigStartMs) >= estimateConversionTimeMs();
@@ -3125,14 +3030,6 @@ bool INA228::_modeSupportsEnergyAccumulation() const {
 
 bool INA228::_modeSupportsChargeAccumulation() const {
   return isContinuousMode(_config.mode) && modeHasShunt(_config.mode);
-}
-
-bool INA228::_modeSupportsAnyAccumulation() const {
-  return _modeSupportsEnergyAccumulation() || _modeSupportsChargeAccumulation();
-}
-
-void INA228::_markAccumulationInvalid() {
-  _accumulationReady = false;
 }
 
 Status INA228::_ensureEnergyAccumulatorReadable() const {
@@ -3159,15 +3056,6 @@ Status INA228::_ensureChargeAccumulatorReadable() const {
       _accumulatorGeneration != _configurationGeneration) {
     return Status::Error(Err::ACCUMULATION_INVALID,
                          "Charge accumulation not ready");
-  }
-  return Status::Ok();
-}
-
-Status INA228::_readAccumulatorDiag(uint16_t& raw) {
-  raw = 0;
-  Status st = _readDiagAlertTracked(raw);
-  if (!st.ok()) {
-    return st;
   }
   return Status::Ok();
 }
@@ -3208,14 +3096,18 @@ void INA228::_markTriggeredConversionStarted() {
   _clearCapturedConversionReadyFlag();
 }
 
-void INA228::_completeTriggeredConversion() {
-  const bool wasTriggeredMode = isTriggeredMode(_config.mode);
+void INA228::_invalidateTriggeredConversionTiming() {
   _trigPending = false;
   _trigStartMs = 0;
   if (_deferredTimeOrigin == DeferredTimeOrigin::TRIGGERED_CONVERSION) {
     _deferredTimeOrigin = DeferredTimeOrigin::NONE;
   }
-  _markAccumulationInvalid();
+}
+
+void INA228::_completeTriggeredConversion() {
+  const bool wasTriggeredMode = isTriggeredMode(_config.mode);
+  _invalidateTriggeredConversionTiming();
+  _invalidateAccumulatorEpoch();
   if (wasTriggeredMode) {
     _config.mode = Mode::SHUTDOWN;
   }
@@ -3225,7 +3117,7 @@ void INA228::_clearCapturedConversionReadyFlag() {
   if (!_diagAlertSnapshot.valid || ((_diagAlertSnapshot.raw & cmd::DIAG_CNVRF) == 0)) {
     return;
   }
-  _diagAlertSnapshot.raw &= ~cmd::DIAG_CNVRF;
+  _diagAlertSnapshot.raw &= static_cast<uint16_t>(~cmd::DIAG_CNVRF);
   parseDiagAlert(_diagAlertSnapshot.raw, _diagAlertSnapshot.diag);
 }
 
@@ -3257,6 +3149,9 @@ void INA228::_markHardwareDirty(uint8_t reg, const Status& cause) {
   }
   if (reg < 64) {
     _dirtyRegisterMask |= (uint64_t{1} << reg);
+  }
+  if (reg == cmd::REG_ADC_CONFIG) {
+    _invalidateTriggeredConversionTiming();
   }
 }
 
@@ -3290,63 +3185,6 @@ bool INA228::_isThresholdRegister(uint8_t reg) const {
          reg == cmd::REG_PWR_LIMIT;
 }
 
-
-
-Status INA228::_applyCalibration() {
-  if (_usesFixedCalibration) {
-    Status st = writeReg16(cmd::REG_SHUNT_CAL, _calibrationPlan.shuntCal);
-    if (!st.ok()) return st;
-    _shuntCal = _calibrationPlan.shuntCal;
-    _currentLsb = _plannedCurrentLsbAmps();
-    _calibrationClamped = _calibrationPlan.clamped;
-    _maxCurrentExceedsShuntRange =
-        _calibrationPlan.maxCurrentExceedsShuntRange;
-    return Status::Ok();
-  }
-  if (_config.shuntResistanceOhm <= 0.0f || _config.maxExpectedCurrentA <= 0.0f) {
-    Status st = writeReg16(cmd::REG_SHUNT_CAL, 0);
-    if (!st.ok()) {
-      return st;
-    }
-    _currentLsb = 0.0f;
-    _shuntCal = 0;
-    _calibrationClamped = false;
-    _maxCurrentExceedsShuntRange = false;
-    return Status::Ok();
-  }
-
-  uint16_t newShuntCal = 0;
-  float newCurrentLsb = 0.0f;
-  bool newClamped = false;
-  bool newMaxCurrentExceedsRange = false;
-  Status st = computeCalibration(_config.shuntResistanceOhm,
-                                 _config.maxExpectedCurrentA,
-                                 _config.adcRange,
-                                 newShuntCal,
-                                 newCurrentLsb,
-                                 newClamped,
-                                 newMaxCurrentExceedsRange);
-  if (!st.ok()) {
-    return st;
-  }
-  if (newClamped || newMaxCurrentExceedsRange) {
-    return Status::Error(Err::INVALID_CONFIG,
-                         newClamped ? "SHUNT_CAL would clamp" :
-                                      "Maximum current exceeds shunt range");
-  }
-
-  st = writeReg16(cmd::REG_SHUNT_CAL, newShuntCal);
-  if (!st.ok()) {
-    return st;
-  }
-
-  _shuntCal = newShuntCal;
-  _currentLsb = newCurrentLsb;
-  _calibrationClamped = newClamped;
-  _maxCurrentExceedsShuntRange = newMaxCurrentExceedsRange;
-  return Status::Ok();
-}
-
 uint32_t INA228::_nowMs() const {
   if (_config.nowMs != nullptr) {
     return _config.nowMs(_config.timeUser);
@@ -3370,8 +3208,12 @@ void INA228::_armPostWriteTimeOrigin(DeferredTimeOrigin origin) {
 }
 
 uint16_t INA228::_buildAdcConfig() const {
+  return _buildAdcConfig(_config.mode);
+}
+
+uint16_t INA228::_buildAdcConfig(Mode mode) const {
   return static_cast<uint16_t>(
-    (static_cast<uint16_t>(_config.mode) << cmd::BIT_ADC_MODE) |
+    (static_cast<uint16_t>(mode) << cmd::BIT_ADC_MODE) |
     (static_cast<uint16_t>(_config.vbusConvTime) << cmd::BIT_ADC_VBUSCT) |
     (static_cast<uint16_t>(_config.vshuntConvTime) << cmd::BIT_ADC_VSHCT) |
     (static_cast<uint16_t>(_config.vtempConvTime) << cmd::BIT_ADC_VTCT) |

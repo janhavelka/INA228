@@ -18,6 +18,9 @@ REQUIRED_COMMON = [
 
 MANDATORY_COMMANDS = [
     "help",
+    "?",
+    "version",
+    "ver",
     "scan",
     "probe",
     "recover",
@@ -30,6 +33,30 @@ MANDATORY_COMMANDS = [
     "xfer_stats",
     "xfer_assert",
 ]
+
+
+def help_items(text: str) -> list[tuple[str, str]]:
+    return re.findall(r'cli::printHelpItem\("([^"]+)",\s*"([^"]+)"\)', text)
+
+
+def aliases_from_help(items: list[tuple[str, str]]) -> set[str]:
+    aliases: set[str] = set()
+    for command_spec, _ in items:
+        for alternative in command_spec.split(" / "):
+            alias = alternative.strip().split(" ", 1)[0]
+            if alias:
+                aliases.add(alias)
+    return aliases
+
+
+def command_has_dispatch(text: str, command: str) -> bool:
+    quoted = re.escape(f'"{command}"')
+    prefix_quoted = re.escape(f'"{command} "')
+    patterns = (
+        rf"cmd\s*==\s*{quoted}",
+        rf"cmd\.startsWith\(\s*{prefix_quoted}\s*\)",
+    )
+    return any(re.search(pattern, text) for pattern in patterns)
 
 
 def fail(msg: str) -> None:
@@ -67,9 +94,16 @@ def main() -> int:
 
     text = bringup_main.read_text(encoding="utf-8", errors="replace")
 
+    items = help_items(text)
+    if not items:
+        fail("no CLI help items found")
+    aliases = aliases_from_help(items)
     for cmd in MANDATORY_COMMANDS:
-        if re.search(rf"\b{re.escape(cmd)}\b", text) is None:
-            fail(f"mandatory command '{cmd}' missing in {bringup_main.as_posix()}")
+        if cmd not in aliases:
+            fail(f"mandatory command '{cmd}' missing from CLI help")
+    for cmd in sorted(aliases):
+        if not command_has_dispatch(text, cmd):
+            fail(f"help command or alias '{cmd}' has no visible dispatch")
 
     if re.search(r"\bcfg\b", text) is None and re.search(r"\bsettings\b", text) is None:
         fail("either 'cfg' or 'settings' command must be present")
@@ -78,6 +112,17 @@ def main() -> int:
     for token in ("CLI_MAX_LINE_LEN", "CLI_MAX_BYTES_PER_LOOP", "MAX_STRESS_COUNT"):
         if token not in text:
             fail(f"bringup CLI missing bounded console/stress token '{token}'")
+    if ".toInt()" in text:
+        fail("bringup CLI must use strict full-token numeric parsing, not String::toInt()")
+    for token in (
+        "parseI32",
+        "parseBool01",
+        "rejectInvalidCommand",
+        "wreg16 <addr> <val> confirm",
+        "Confirmation required: wreg16",
+    ):
+        if token not in text:
+            fail(f"bringup CLI missing strict parsing/safety token '{token}'")
 
     print("CLI contract PASSED")
     return 0

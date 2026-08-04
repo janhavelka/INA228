@@ -5,6 +5,7 @@
 #include <cstdint>
 
 namespace INA228 {
+/// @brief Register addresses, fields, masks, reset values, and scaling constants.
 namespace cmd {
 
 // ============================================================================
@@ -51,11 +52,11 @@ static constexpr uint16_t CONFIG_RSTACC      = 0x4000; ///< Bit 14: Reset accumu
 static constexpr uint16_t CONFIG_TEMPCOMP    = 0x0020; ///< Bit 5: Temperature compensation enable
 static constexpr uint16_t CONFIG_ADCRANGE    = 0x0010; ///< Bit 4: ADC range (0=±163.84mV, 1=±40.96mV)
 
-static constexpr uint8_t  BIT_CONFIG_RST       = 15;
-static constexpr uint8_t  BIT_CONFIG_RSTACC    = 14;
+static constexpr uint8_t  BIT_CONFIG_RST       = 15; ///< CONFIG.RST bit position
+static constexpr uint8_t  BIT_CONFIG_RSTACC    = 14; ///< CONFIG.RSTACC bit position
 static constexpr uint8_t  BIT_CONFIG_CONVDLY   = 6;  ///< CONVDLY field starts at bit 6
-static constexpr uint8_t  BIT_CONFIG_TEMPCOMP  = 5;
-static constexpr uint8_t  BIT_CONFIG_ADCRANGE  = 4;
+static constexpr uint8_t  BIT_CONFIG_TEMPCOMP  = 5;  ///< CONFIG.TEMPCOMP bit position
+static constexpr uint8_t  BIT_CONFIG_ADCRANGE  = 4;  ///< CONFIG.ADCRANGE bit position
 
 static constexpr uint16_t MASK_CONFIG_CONVDLY  = 0x3FC0; ///< Bits 13:6 (8-bit field)
 
@@ -124,12 +125,12 @@ static constexpr uint16_t DIAG_CLEAR_ON_READ_MASK =
 // Threshold Register Defaults
 // ============================================================================
 
-static constexpr uint16_t SOVL_RESET       = 0x7FFF;
-static constexpr uint16_t SUVL_RESET       = 0x8000;
-static constexpr uint16_t BOVL_RESET       = 0x7FFF;
-static constexpr uint16_t BUVL_RESET       = 0x0000;
-static constexpr uint16_t TEMP_LIMIT_RESET = 0x7FFF;
-static constexpr uint16_t PWR_LIMIT_RESET  = 0xFFFF;
+static constexpr uint16_t SOVL_RESET       = 0x7FFF; ///< SOVL reset value
+static constexpr uint16_t SUVL_RESET       = 0x8000; ///< SUVL reset value
+static constexpr uint16_t BOVL_RESET       = 0x7FFF; ///< BOVL reset value
+static constexpr uint16_t BUVL_RESET       = 0x0000; ///< BUVL reset value
+static constexpr uint16_t TEMP_LIMIT_RESET = 0x7FFF; ///< TEMP_LIMIT reset value
+static constexpr uint16_t PWR_LIMIT_RESET  = 0xFFFF; ///< PWR_LIMIT reset value
 
 // ============================================================================
 // ADC LSB Constants
@@ -162,6 +163,7 @@ static constexpr double SHUNT_CAL_FACTOR = 13107.2e6;
 // Conversion Time Lookup (microseconds)
 // ============================================================================
 
+/// @brief Conversion-time lookup in microseconds, indexed by ConvTime code.
 static constexpr uint16_t CONV_TIME_US[] = {
   50, 84, 150, 280, 540, 1052, 2074, 4120
 };
@@ -170,6 +172,7 @@ static constexpr uint16_t CONV_TIME_US[] = {
 // Averaging Count Lookup
 // ============================================================================
 
+/// @brief Averaging sample-count lookup, indexed by Averaging code.
 static constexpr uint16_t AVG_COUNT[] = {
   1, 4, 16, 64, 128, 256, 512, 1024
 };

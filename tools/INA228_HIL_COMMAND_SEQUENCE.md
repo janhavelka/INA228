@@ -188,6 +188,23 @@ ALERT is monitoring only and is not a safety interlock.
 
 ## Automated suites
 
+The runner requires Python with `pyserial`. By default it reads the expected
+library version from `library.json`, the expected 12-character commit identity
+from the host checkout, and requires firmware source status `clean`. The
+`arduino` profile additionally requires the pinned Arduino-ESP32 and ESP-IDF
+tokens; the `idf` profile requires the pinned native ESP-IDF token. Use
+`--expected-library-version any`, `--expected-commit any`, or
+`--expected-git-status any` only for non-release diagnosis and record why the
+provenance gate was relaxed.
+
+Each automated command is sent as `hilrun <token> <sequence> <command>`. A
+valid result must contain one matching begin/end frame, sequence, command
+identity, and terminal CLI status. Missing, truncated, nested, stale, or
+mismatched frames are `UNKNOWN`, never `PASS`. Expected validation rejections
+are removed from classification only after their exact status is found; an
+unrelated timeout/NACK/bus error in the same response still makes the step
+`FAIL`.
+
 | Suite | Composition and purpose |
 | --- | --- |
 | `smoke` | Stack version, discovery, initialization, basic settings, health, diagnostics, and raw conversion read. |
@@ -196,11 +213,24 @@ ALERT is monitoring only and is not a safety interlock.
 | `transfer` | `smoke` plus exact cooperative callback-budget assertions; useful for diagnosis. |
 | `exhaustive` | `smoke`, `functional`, the feature sweep, v3 cooperative cases, and transfer-budget assertions. This is the single release feature gate. |
 
-The canonical release run is:
+The canonical Arduino release run is:
 
 ```powershell
-python tools\run_i2c_hil.py --port COMx --baud 115200 --suite exhaustive --require-framed --fail-on-unknown --include-not-run --benchmark-count 100 --report hil-exhaustive.md --transcript hil-exhaustive-transcript.txt
+$Version = (Get-Content library.json -Raw | ConvertFrom-Json).version
+$Commit = git rev-parse --short=12 HEAD
+python tools\run_i2c_hil.py --port COMx --baud 115200 --profile arduino --expected-library-version $Version --expected-commit $Commit --expected-git-status clean --suite exhaustive --require-framed --fail-on-unknown --include-not-run --benchmark-count 100 --operator "<name>" --board "<board/revision>" --environment "esp32s3dev" --fixture "<fixture/load>" --safety "<approved limits>" --report hil-exhaustive.md --transcript hil-exhaustive-transcript.txt
 ```
+
+For the native ESP-IDF CLI, use the same command with `--profile idf` and an
+accurate ESP-IDF environment string. Both profiles execute the same command
+contract; their required `version` framework tokens differ.
+
+Runner verdicts have distinct meanings: `PASS` means all required positive or
+expected-rejection evidence was present with no failure evidence; `FAIL` means
+explicit failure evidence or a provenance mismatch; `UNKNOWN` means output was
+missing, incomplete, ambiguous, or unframed; `NOT RUN` records a declared
+fixture/tooling gap and is never counted as a pass. Release evidence contains
+no `FAIL` or `UNKNOWN` rows and explains every `NOT RUN` row.
 
 ## Stress and soak
 

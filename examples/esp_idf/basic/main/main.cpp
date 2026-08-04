@@ -10,18 +10,23 @@
  * applications need an external bus manager, locking, and stable device handles.
  */
 
+#include <cerrno>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <sys/select.h>
 #include <unistd.h>
 
+#include "ina228_git_provenance.h"
 #include "INA228/INA228.h"
 #include "Ina228IdfI2cTransport.h"
 #include "driver/i2c_master.h"
 #include "esp_err.h"
+#include "esp_idf_version.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -136,20 +141,25 @@ bool splitTwoArgs(const char* input, char* first, size_t firstLen, char* second,
   if (copy[0] == '\0' || tail[0] == '\0') {
     return false;
   }
-  std::strncpy(first, copy, firstLen - 1U);
-  std::strncpy(second, tail, secondLen - 1U);
-  first[firstLen - 1U] = '\0';
-  second[secondLen - 1U] = '\0';
+  const size_t firstSourceLen = std::strlen(copy);
+  const size_t secondSourceLen = std::strlen(tail);
+  if (firstSourceLen >= firstLen || secondSourceLen >= secondLen) {
+    return false;
+  }
+  std::memcpy(first, copy, firstSourceLen + 1U);
+  std::memcpy(second, tail, secondSourceLen + 1U);
   return true;
 }
 
 bool parseU32(const char* token, uint32_t& out) {
-  if (token == nullptr || token[0] == '\0') {
+  if (token == nullptr || token[0] == '\0' || token[0] == '-') {
     return false;
   }
+  errno = 0;
   char* end = nullptr;
   const unsigned long value = std::strtoul(token, &end, 0);
-  if (end == token || *end != '\0') {
+  if (end == token || *end != '\0' || errno == ERANGE ||
+      value > std::numeric_limits<uint32_t>::max()) {
     return false;
   }
   out = static_cast<uint32_t>(value);
@@ -173,9 +183,12 @@ bool parseI32(const char* token, int32_t& out) {
   if (token == nullptr || token[0] == '\0') {
     return false;
   }
+  errno = 0;
   char* end = nullptr;
   const long value = std::strtol(token, &end, 0);
-  if (end == token || *end != '\0') {
+  if (end == token || *end != '\0' || errno == ERANGE ||
+      value < std::numeric_limits<int32_t>::min() ||
+      value > std::numeric_limits<int32_t>::max()) {
     return false;
   }
   out = static_cast<int32_t>(value);
@@ -186,9 +199,10 @@ bool parseFloatArg(const char* token, float& out) {
   if (token == nullptr || token[0] == '\0') {
     return false;
   }
+  errno = 0;
   char* end = nullptr;
   const float value = std::strtof(token, &end);
-  if (end == token || *end != '\0') {
+  if (end == token || *end != '\0' || errno == ERANGE || !std::isfinite(value)) {
     return false;
   }
   out = value;
@@ -314,6 +328,11 @@ void printStatus(const INA228::Status& st) {
   if (st.msg != nullptr && st.msg[0] != '\0') {
     std::printf("  Message: %s%s%s\n", COLOR_YELLOW, st.msg, COLOR_RESET);
   }
+}
+
+void rejectInvalidCommand(const char* message) {
+  hilCommandStatus = INA228::Err::INVALID_PARAM;
+  std::printf("%s\n", message);
 }
 
 INA228::Config makeExampleConfig(uint8_t address) {
@@ -1044,7 +1063,7 @@ void printHelp() {
   printHelpItem("energy", "Read accumulated energy (continuous accumulation only)");
   printHelpItem("charge", "Read accumulated charge (continuous accumulation only)");
   printHelpItem("ready", "Check if conversion is ready");
-  printHelpItem("trigger [mode]", "Trigger single-shot conversion (0-7)");
+  printHelpItem("trigger [mode]", "Trigger single-shot conversion (1-7)");
   printHelpItem("ready_step <budget>", "Poll readiness with maxInstructions budget");
   printHelpItem("sample_step <budget>", "Start/advance sample by at most budget I2C transfers");
 
@@ -1053,7 +1072,7 @@ void printHelp() {
   printHelpItem("convtime [vbus|vsh|temp <0..7>]", "Set conversion time per channel");
   printHelpItem("averaging [0..7]", "Set averaging count");
   printHelpItem("adcrange [0|1]", "Set shunt ADC range");
-  printHelpItem("cal <shunt_ohm> <max_current_a>", "Show or update calibration");
+  printHelpItem("cal [shunt_ohm max_current_a]", "Show calibration; fixed profile rejects runtime changes");
   printHelpItem("tempco [ppm]", "Show or set shunt temp coefficient");
   printHelpItem("tempcomp [0|1]", "Show or enable temp compensation");
   printHelpItem("delay [0..255]", "Show or set conversion delay (2 ms steps)");
@@ -1086,7 +1105,7 @@ void printHelp() {
   printHelpItem("reg16 <addr>", "Read 16-bit register (diagnostic; may clear flags)");
   printHelpItem("reg24 <addr>", "Read 24-bit register (diagnostic; may clear flags)");
   printHelpItem("reg40 <addr>", "Read 40-bit register (diagnostic; may clear flags)");
-  printHelpItem("wreg16 <addr> <val>", "Write 16-bit register (diagnostic only; may desync cached config)");
+  printHelpItem("wreg16 <addr> <val> confirm", "Write 16-bit register; may desync cached config");
 
   std::printf("\n%s[Diagnostics]%s\n", COLOR_GREEN, COLOR_RESET);
   printHelpItem("drv", "Show driver state and health");
@@ -1106,6 +1125,7 @@ void printHelp() {
 void printVersionInfo() {
   std::printf("=== Version Info ===\n");
   std::printf("  Example firmware build: %s %s\n", __DATE__, __TIME__);
+  std::printf("  Runtime: native ESP-IDF %s\n", IDF_VER);
   std::printf("  INA228 library version: %s\n", INA228::VERSION);
   std::printf("  INA228 library full: %s\n", INA228::VERSION_FULL);
   std::printf("  INA228 library build: %s\n", INA228::BUILD_TIMESTAMP);
@@ -1453,7 +1473,7 @@ void processCommand(char* cmd) {
     uint32_t expectedWrite = 0;
     uint32_t expectedTotal = 0;
     if (!parseThreeU32(arg, expectedRead, expectedWrite, expectedTotal)) {
-      std::printf("Usage: xfer_assert <read> <write> <total>\n");
+      rejectInvalidCommand("Usage: xfer_assert <read> <write> <total>");
       return;
     }
     const Ina228IdfTransferStats stats = ina228IdfTransferStats();
@@ -1501,7 +1521,7 @@ void processCommand(char* cmd) {
   } else if ((arg = argAfter(cmd, "ready_step ")) != nullptr) {
     uint32_t budget = 0;
     if (!parseU32(arg, budget) || budget > 255U) {
-      std::printf("Usage: ready_step <0..255>\n");
+      rejectInvalidCommand("Usage: ready_step <0..255>");
       return;
     }
     bool ready = false;
@@ -1513,7 +1533,7 @@ void processCommand(char* cmd) {
   } else if ((arg = argAfter(cmd, "sample_step ")) != nullptr) {
     uint32_t budget = 0;
     if (!parseU32(arg, budget) || budget > 255U) {
-      std::printf("Usage: sample_step <0..255>\n");
+      rejectInvalidCommand("Usage: sample_step <0..255>");
       return;
     }
     printPowerSampleStep(static_cast<uint8_t>(budget));
@@ -1524,8 +1544,8 @@ void processCommand(char* cmd) {
     if (!accepted) printStatus(st);
   } else if ((arg = argAfter(cmd, "trigger ")) != nullptr) {
     int32_t value = 0;
-    if (!parseI32(arg, value) || value < 0 || value > 7) {
-      std::printf("Invalid trigger mode (0-7 for TRIG_* modes)\n");
+    if (!parseI32(arg, value) || value < 1 || value > 7) {
+      rejectInvalidCommand("Invalid trigger mode (1-7 for TRIG_* modes)");
       return;
     }
     INA228::Status st = device.triggerConversion(static_cast<INA228::Mode>(value));
@@ -1539,7 +1559,7 @@ void processCommand(char* cmd) {
   } else if ((arg = argAfter(cmd, "mode ")) != nullptr) {
     int32_t value = 0;
     if (!parseI32(arg, value) || value < 0 || value > 15) {
-      std::printf("Invalid mode (0-15)\n");
+      rejectInvalidCommand("Invalid mode (0-15)");
       return;
     }
     INA228::Status st = device.setMode(static_cast<INA228::Mode>(value));
@@ -1556,9 +1576,12 @@ void processCommand(char* cmd) {
     char which[16] = {};
     char valueText[16] = {};
     uint32_t value = 0;
-    if (!splitTwoArgs(arg, which, sizeof(which), valueText, sizeof(valueText)) ||
-        !parseU32(valueText, value) || value > 7U) {
-      std::printf("Usage: convtime vbus|vsh|temp <0..7>\n");
+    if (!splitTwoArgs(arg, which, sizeof(which), valueText, sizeof(valueText))) {
+      rejectInvalidCommand("Usage: convtime vbus|vsh|temp <0..7>");
+      return;
+    }
+    if (!parseU32(valueText, value) || value > 7U) {
+      rejectInvalidCommand("Invalid conversion time index (0-7)");
       return;
     }
     const INA228::ConvTime ct = static_cast<INA228::ConvTime>(value);
@@ -1570,6 +1593,7 @@ void processCommand(char* cmd) {
     } else if (std::strcmp(which, "temp") == 0) {
       st = device.setTempConvTime(ct);
     } else {
+      hilCommandStatus = INA228::Err::INVALID_PARAM;
       std::printf("Invalid target: %s (use vbus|vsh|temp)\n", which);
       return;
     }
@@ -1580,7 +1604,7 @@ void processCommand(char* cmd) {
   } else if ((arg = argAfter(cmd, "averaging ")) != nullptr) {
     uint32_t value = 0;
     if (!parseU32(arg, value) || value > 7U) {
-      std::printf("Invalid averaging index (0-7)\n");
+      rejectInvalidCommand("Invalid averaging index (0-7)");
       return;
     }
     INA228::Status st = device.setAveraging(static_cast<INA228::Averaging>(value));
@@ -1592,7 +1616,7 @@ void processCommand(char* cmd) {
   } else if ((arg = argAfter(cmd, "adcrange ")) != nullptr) {
     uint32_t value = 0;
     if (!parseU32(arg, value) || value > 1U) {
-      std::printf("Invalid ADC range (0 or 1)\n");
+      rejectInvalidCommand("Invalid ADC range (0 or 1)");
       return;
     }
     INA228::Status st = device.setAdcRange(static_cast<INA228::AdcRange>(value));
@@ -1612,7 +1636,7 @@ void processCommand(char* cmd) {
         !parseFloatArg(shuntText, shuntOhm) ||
         !parseFloatArg(currentText, maxCurrentA) ||
         shuntOhm <= 0.0f || maxCurrentA <= 0.0f) {
-      std::printf("Usage: cal <shunt_ohm> <max_current_a>\n");
+      rejectInvalidCommand("Usage: cal <shunt_ohm> <max_current_a>");
       return;
     }
     INA228::Status st = device.setCalibration(shuntOhm, maxCurrentA);
@@ -1623,7 +1647,7 @@ void processCommand(char* cmd) {
   } else if ((arg = argAfter(cmd, "tempco ")) != nullptr) {
     uint32_t ppm = 0;
     if (!parseU32(arg, ppm) || ppm > INA228::cmd::TEMPCO_MAX) {
-      std::printf("Usage: tempco <0..16383>\n");
+      rejectInvalidCommand("Usage: tempco <0..16383>");
       return;
     }
     INA228::Status st = device.setShuntTempCoeff(static_cast<uint16_t>(ppm));
@@ -1634,7 +1658,7 @@ void processCommand(char* cmd) {
   } else if ((arg = argAfter(cmd, "tempcomp ")) != nullptr) {
     bool value = false;
     if (!parseBool01(arg, value)) {
-      std::printf("Usage: tempcomp <0|1>\n");
+      rejectInvalidCommand("Usage: tempcomp <0|1>");
       return;
     }
     INA228::Status st = device.setTempCompensation(value);
@@ -1647,7 +1671,7 @@ void processCommand(char* cmd) {
   } else if ((arg = argAfter(cmd, "delay ")) != nullptr) {
     uint32_t steps = 0;
     if (!parseU32(arg, steps) || steps > 255U) {
-      std::printf("Usage: delay <0..255>\n");
+      rejectInvalidCommand("Usage: delay <0..255>");
       return;
     }
     INA228::Status st = device.setConversionDelay(static_cast<uint8_t>(steps));
@@ -1665,7 +1689,7 @@ void processCommand(char* cmd) {
   } else if ((arg = argAfter(cmd, "addr ")) != nullptr) {
     uint8_t address = 0;
     if (!parseAddressArg(arg, address)) {
-      std::printf("Invalid address. Use 0x40-0x4F\n");
+      rejectInvalidCommand("Invalid address. Use 0x40-0x4F");
       return;
     }
     selectedAddress = address;
@@ -1675,7 +1699,7 @@ void processCommand(char* cmd) {
     bool allowFallback = true;
     if (arg != nullptr) {
       if (!parseAddressArg(arg, address)) {
-        std::printf("Invalid address. Use init 0x40-0x4F\n");
+        rejectInvalidCommand("Invalid address. Use init 0x40-0x4F");
         return;
       }
       allowFallback = false;
@@ -1700,7 +1724,7 @@ void processCommand(char* cmd) {
   } else if ((arg = argAfter(cmd, "reset_step ")) != nullptr) {
     uint32_t budget = 0;
     if (!parseU32(arg, budget) || budget > 255U) {
-      std::printf("Usage: reset_step <0..255>\n");
+      rejectInvalidCommand("Usage: reset_step <0..255>");
       return;
     }
     INA228::JobResult result{};
@@ -1725,7 +1749,7 @@ void processCommand(char* cmd) {
              (arg = argAfter(cmd, "replay_step ")) != nullptr) {
     uint32_t budget = 0;
     if (!parseU32(arg, budget) || budget > 255U) {
-      std::printf("Usage: apply_step|replay_step <0..255>\n");
+      rejectInvalidCommand("Usage: apply_step|replay_step <0..255>");
       return;
     }
     INA228::JobResult result{};
@@ -1763,25 +1787,25 @@ void processCommand(char* cmd) {
     else std::printf("Alert polarity: %s\n", diag.apol ? "active-high" : "active-low");
   } else if ((arg = argAfter(cmd, "alatch ")) != nullptr) {
     bool value = false;
-    if (!parseBool01(arg, value)) { std::printf("Usage: alatch <0|1>\n"); return; }
+    if (!parseBool01(arg, value)) { rejectInvalidCommand("Usage: alatch <0|1>"); return; }
     INA228::Status st = device.setAlertLatch(value);
     std::printf("setAlertLatch(%s): %s\n", boolStr(value), errToStr(st.code));
     if (!st.ok()) printStatus(st);
   } else if ((arg = argAfter(cmd, "cnvralert ")) != nullptr) {
     bool value = false;
-    if (!parseBool01(arg, value)) { std::printf("Usage: cnvralert <0|1>\n"); return; }
+    if (!parseBool01(arg, value)) { rejectInvalidCommand("Usage: cnvralert <0|1>"); return; }
     INA228::Status st = device.setConversionReadyAlert(value);
     std::printf("setConversionReadyAlert(%s): %s\n", boolStr(value), errToStr(st.code));
     if (!st.ok()) printStatus(st);
   } else if ((arg = argAfter(cmd, "alslow ")) != nullptr) {
     bool value = false;
-    if (!parseBool01(arg, value)) { std::printf("Usage: alslow <0|1>\n"); return; }
+    if (!parseBool01(arg, value)) { rejectInvalidCommand("Usage: alslow <0|1>"); return; }
     INA228::Status st = device.setSlowAlert(value);
     std::printf("setSlowAlert(%s): %s\n", boolStr(value), errToStr(st.code));
     if (!st.ok()) printStatus(st);
   } else if ((arg = argAfter(cmd, "apol ")) != nullptr) {
     bool value = false;
-    if (!parseBool01(arg, value)) { std::printf("Usage: apol <0|1>\n"); return; }
+    if (!parseBool01(arg, value)) { rejectInvalidCommand("Usage: apol <0|1>"); return; }
     INA228::Status st = device.setAlertPolarity(value);
     std::printf("setAlertPolarity(%s): %s\n", boolStr(value), errToStr(st.code));
     if (!st.ok()) printStatus(st);
@@ -1789,7 +1813,7 @@ void processCommand(char* cmd) {
     printShuntAlertLimit("SOVL", INA228::cmd::REG_SOVL);
   } else if ((arg = argAfter(cmd, "sovl ")) != nullptr) {
     float value = 0.0f;
-    if (!parseFloatArg(arg, value)) { std::printf("Usage: sovl <volts>\n"); return; }
+    if (!parseFloatArg(arg, value)) { rejectInvalidCommand("Usage: sovl <volts>"); return; }
     INA228::Status st = device.setShuntOvervoltageThreshold(value);
     std::printf("setShuntOvervoltageThreshold(%.7f): %s\n", value, errToStr(st.code));
     if (!st.ok()) printStatus(st);
@@ -1797,7 +1821,7 @@ void processCommand(char* cmd) {
     printShuntAlertLimit("SUVL", INA228::cmd::REG_SUVL);
   } else if ((arg = argAfter(cmd, "suvl ")) != nullptr) {
     float value = 0.0f;
-    if (!parseFloatArg(arg, value)) { std::printf("Usage: suvl <volts>\n"); return; }
+    if (!parseFloatArg(arg, value)) { rejectInvalidCommand("Usage: suvl <volts>"); return; }
     INA228::Status st = device.setShuntUndervoltageThreshold(value);
     std::printf("setShuntUndervoltageThreshold(%.7f): %s\n", value, errToStr(st.code));
     if (!st.ok()) printStatus(st);
@@ -1805,7 +1829,7 @@ void processCommand(char* cmd) {
     printBusAlertLimit("BOVL", INA228::cmd::REG_BOVL);
   } else if ((arg = argAfter(cmd, "bovl ")) != nullptr) {
     float value = 0.0f;
-    if (!parseFloatArg(arg, value)) { std::printf("Usage: bovl <volts>\n"); return; }
+    if (!parseFloatArg(arg, value)) { rejectInvalidCommand("Usage: bovl <volts>"); return; }
     INA228::Status st = device.setBusOvervoltageThreshold(value);
     std::printf("setBusOvervoltageThreshold(%.4f): %s\n", value, errToStr(st.code));
     if (!st.ok()) printStatus(st);
@@ -1813,7 +1837,7 @@ void processCommand(char* cmd) {
     printBusAlertLimit("BUVL", INA228::cmd::REG_BUVL);
   } else if ((arg = argAfter(cmd, "buvl ")) != nullptr) {
     float value = 0.0f;
-    if (!parseFloatArg(arg, value)) { std::printf("Usage: buvl <volts>\n"); return; }
+    if (!parseFloatArg(arg, value)) { rejectInvalidCommand("Usage: buvl <volts>"); return; }
     INA228::Status st = device.setBusUndervoltageThreshold(value);
     std::printf("setBusUndervoltageThreshold(%.4f): %s\n", value, errToStr(st.code));
     if (!st.ok()) printStatus(st);
@@ -1821,7 +1845,7 @@ void processCommand(char* cmd) {
     printTemperatureAlertLimit();
   } else if ((arg = argAfter(cmd, "tmplim ")) != nullptr) {
     float value = 0.0f;
-    if (!parseFloatArg(arg, value)) { std::printf("Usage: tmplim <degC>\n"); return; }
+    if (!parseFloatArg(arg, value)) { rejectInvalidCommand("Usage: tmplim <degC>"); return; }
     INA228::Status st = device.setTemperatureOverlimitThreshold(value);
     std::printf("setTemperatureOverlimitThreshold(%.2f): %s\n", value, errToStr(st.code));
     if (!st.ok()) printStatus(st);
@@ -1829,7 +1853,7 @@ void processCommand(char* cmd) {
     printPowerAlertLimit();
   } else if ((arg = argAfter(cmd, "pwrlim ")) != nullptr) {
     float value = 0.0f;
-    if (!parseFloatArg(arg, value)) { std::printf("Usage: pwrlim <watts>\n"); return; }
+    if (!parseFloatArg(arg, value)) { rejectInvalidCommand("Usage: pwrlim <watts>"); return; }
     INA228::Status st = device.setPowerOverlimitThreshold(value);
     std::printf("setPowerOverlimitThreshold(%.6f): %s\n", value, errToStr(st.code));
     if (!st.ok()) printStatus(st);
@@ -1842,34 +1866,44 @@ void processCommand(char* cmd) {
     INA228::Status st = device.readDeviceId(id);
     if (st.ok()) std::printf("Device ID: 0x%04X\n", id); else printStatus(st);
   } else if ((arg = argAfter(cmd, "wreg16 ")) != nullptr) {
+    char writeArgs[MAX_LINE_LEN] = {};
+    std::strncpy(writeArgs, arg, sizeof(writeArgs) - 1U);
+    trimInPlace(writeArgs);
+    char* confirmText = std::strrchr(writeArgs, ' ');
+    if (confirmText == nullptr || std::strcmp(confirmText + 1, "confirm") != 0) {
+      rejectInvalidCommand("Confirmation required: wreg16 <addr> <val> confirm");
+      return;
+    }
+    *confirmText = '\0';
+    trimInPlace(writeArgs);
     char regText[16] = {};
     char valueText[16] = {};
     uint32_t reg = 0;
     uint32_t value = 0;
-    if (!splitTwoArgs(arg, regText, sizeof(regText), valueText, sizeof(valueText)) ||
+    if (!splitTwoArgs(writeArgs, regText, sizeof(regText), valueText, sizeof(valueText)) ||
         !parseU32(regText, reg) || !parseU32(valueText, value) ||
         reg > 0xFFU || value > 0xFFFFU) {
-      std::printf("Usage: wreg16 <addr> <val> (diagnostic only)\n");
+      rejectInvalidCommand("Usage: wreg16 <addr> <val> confirm");
       return;
     }
     printStatus(device.writeRegister16(static_cast<uint8_t>(reg), static_cast<uint16_t>(value)));
   } else if ((arg = argAfter(cmd, "reg16 ")) != nullptr) {
     uint32_t reg = 0;
-    if (!parseU32(arg, reg) || reg > 0xFFU) { std::printf("Usage: reg16 <addr>\n"); return; }
+    if (!parseU32(arg, reg) || reg > 0xFFU) { rejectInvalidCommand("Usage: reg16 <addr>"); return; }
     uint16_t value = 0;
     INA228::Status st = device.readRegister16(static_cast<uint8_t>(reg), value);
     if (st.ok()) std::printf("  Reg 0x%02lX = 0x%04X (%u)\n", static_cast<unsigned long>(reg), value, value);
     else printStatus(st);
   } else if ((arg = argAfter(cmd, "reg24 ")) != nullptr) {
     uint32_t reg = 0;
-    if (!parseU32(arg, reg) || reg > 0xFFU) { std::printf("Usage: reg24 <addr>\n"); return; }
+    if (!parseU32(arg, reg) || reg > 0xFFU) { rejectInvalidCommand("Usage: reg24 <addr>"); return; }
     uint32_t value = 0;
     INA228::Status st = device.readRegister24(static_cast<uint8_t>(reg), value);
     if (st.ok()) std::printf("  Reg 0x%02lX = 0x%06lX (%lu)\n", static_cast<unsigned long>(reg), static_cast<unsigned long>(value), static_cast<unsigned long>(value));
     else printStatus(st);
   } else if ((arg = argAfter(cmd, "reg40 ")) != nullptr) {
     uint32_t reg = 0;
-    if (!parseU32(arg, reg) || reg > 0xFFU) { std::printf("Usage: reg40 <addr>\n"); return; }
+    if (!parseU32(arg, reg) || reg > 0xFFU) { rejectInvalidCommand("Usage: reg40 <addr>"); return; }
     uint64_t value = 0;
     INA228::Status st = device.readRegister40(static_cast<uint8_t>(reg), value);
     if (st.ok()) std::printf("  Reg 0x%02lX = 0x%02lX%08lX\n", static_cast<unsigned long>(reg), static_cast<unsigned long>((value >> 32) & 0xFFU), static_cast<unsigned long>(value & 0xFFFFFFFFU));
@@ -1910,7 +1944,7 @@ void processCommand(char* cmd) {
     std::printf("Verbose mode: %s\n", verboseMode ? "ON" : "OFF");
   } else if ((arg = argAfter(cmd, "verbose ")) != nullptr) {
     bool value = false;
-    if (!parseBool01(arg, value)) { std::printf("Usage: verbose [0|1]\n"); return; }
+    if (!parseBool01(arg, value)) { rejectInvalidCommand("Usage: verbose <0|1>"); return; }
     verboseMode = value;
     std::printf("Verbose mode: %s\n", verboseMode ? "ON" : "OFF");
   } else if (std::strcmp(cmd, "selftest") == 0) {
@@ -1921,7 +1955,7 @@ void processCommand(char* cmd) {
     int32_t count = 0;
     if (!parseI32(arg, count) || count <= 0 ||
         static_cast<uint32_t>(count) > MAX_STRESS_COUNT) {
-      std::printf("Invalid stress_mix count\n");
+      rejectInvalidCommand("Invalid stress_mix count");
       return;
     }
     runStressMix(static_cast<uint32_t>(count));
@@ -1931,7 +1965,7 @@ void processCommand(char* cmd) {
     int32_t count = 0;
     if (!parseI32(arg, count) || count <= 0 ||
         static_cast<uint32_t>(count) > MAX_STRESS_COUNT) {
-      std::printf("Invalid stress count\n");
+      rejectInvalidCommand("Invalid stress count");
       return;
     }
     runStress(static_cast<uint32_t>(count));

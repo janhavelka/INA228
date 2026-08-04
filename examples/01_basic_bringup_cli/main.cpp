@@ -2,6 +2,9 @@
 /// @brief Basic bringup example for INA228
 /// @note This is an EXAMPLE, not part of the library
 
+#include <cerrno>
+#include <cmath>
+#include <cstring>
 #include <cstdlib>
 #include <limits>
 
@@ -562,6 +565,11 @@ void printStatus(const INA228::Status& st) {
   }
 }
 
+void rejectInvalidCommand(const char* message) {
+  hilCommandStatus = INA228::Err::INVALID_PARAM;
+  LOGW("%s", message);
+}
+
 void printDriverHealth() {
   const uint32_t now = millis();
   const uint32_t totalOk = device.totalSuccess();
@@ -649,12 +657,42 @@ void printVersionInfo() {
 }
 
 bool parseU32(const String& token, uint32_t& out) {
+  if (token.length() == 0U || token.charAt(0) == '-') {
+    return false;
+  }
+  errno = 0;
   char* end = nullptr;
   const unsigned long value = strtoul(token.c_str(), &end, 0);
-  if (end == token.c_str() || *end != '\0') {
+  if (end == token.c_str() || *end != '\0' || errno == ERANGE ||
+      value > std::numeric_limits<uint32_t>::max()) {
     return false;
   }
   out = static_cast<uint32_t>(value);
+  return true;
+}
+
+bool parseI32(const String& token, int32_t& out) {
+  if (token.length() == 0U) {
+    return false;
+  }
+  errno = 0;
+  char* end = nullptr;
+  const long value = strtol(token.c_str(), &end, 0);
+  if (end == token.c_str() || *end != '\0' || errno == ERANGE ||
+      value < std::numeric_limits<int32_t>::min() ||
+      value > std::numeric_limits<int32_t>::max()) {
+    return false;
+  }
+  out = static_cast<int32_t>(value);
+  return true;
+}
+
+bool parseBool01(const String& token, bool& out) {
+  int32_t value = 0;
+  if (!parseI32(token, value) || (value != 0 && value != 1)) {
+    return false;
+  }
+  out = value != 0;
   return true;
 }
 
@@ -679,9 +717,14 @@ bool parseThreeU32(String args, uint32_t& first, uint32_t& second, uint32_t& thi
 }
 
 bool parseFloat(const String& token, float& out) {
+  if (token.length() == 0U) {
+    return false;
+  }
+  errno = 0;
   char* end = nullptr;
   const float value = strtof(token.c_str(), &end);
-  if (end == token.c_str() || *end != '\0') {
+  if (end == token.c_str() || *end != '\0' || errno == ERANGE ||
+      !std::isfinite(value)) {
     return false;
   }
   out = value;
@@ -1101,6 +1144,9 @@ void resetStressStats(int target) {
 void noteStressError(const INA228::Status& st) {
   stressStats.errors++;
   stressStats.lastError = st;
+  if (hilCommandStatus == INA228::Err::OK) {
+    hilCommandStatus = st.code;
+  }
 }
 
 void updateStressStats(const INA228::Measurement& m) {
@@ -1265,6 +1311,9 @@ void runStressMix(int count) {
       stats[op].ok++;
     } else {
       stats[op].fail++;
+      if (hilCommandStatus == INA228::Err::OK) {
+        hilCommandStatus = st.code;
+      }
       if (verboseMode) {
         Serial.printf("  [%d] %s failed: %s\n", i, stats[op].name, errToStr(st.code));
       }
@@ -1488,7 +1537,7 @@ void printHelp() {
   cli::printHelpItem("energy", "Read accumulated energy (continuous accumulation only)");
   cli::printHelpItem("charge", "Read accumulated charge (continuous accumulation only)");
   cli::printHelpItem("ready", "Check if conversion is ready");
-  cli::printHelpItem("trigger [mode]", "Trigger single-shot conversion (0-7)");
+  cli::printHelpItem("trigger [mode]", "Trigger single-shot conversion (1-7)");
   cli::printHelpItem("ready_step <budget>", "Poll readiness with maxInstructions budget");
   cli::printHelpItem("sample_step <budget>", "Start/advance sample by at most budget I2C transfers");
 
@@ -1497,7 +1546,7 @@ void printHelp() {
   cli::printHelpItem("convtime [vbus|vsh|temp <0..7>]", "Set conversion time per channel");
   cli::printHelpItem("averaging [0..7]", "Set averaging count");
   cli::printHelpItem("adcrange [0|1]", "Set shunt ADC range");
-  cli::printHelpItem("cal <shunt_ohm> <max_current_a>", "Show or update calibration");
+  cli::printHelpItem("cal [shunt_ohm max_current_a]", "Show calibration; fixed profile rejects runtime changes");
   cli::printHelpItem("tempco [ppm]", "Show or set shunt temp coefficient");
   cli::printHelpItem("tempcomp [0|1]", "Show or enable temp compensation");
   cli::printHelpItem("delay [0..255]", "Show or set conversion delay (2 ms steps)");
@@ -1530,7 +1579,7 @@ void printHelp() {
   cli::printHelpItem("reg16 <addr>", "Read 16-bit register (diagnostic; may clear flags)");
   cli::printHelpItem("reg24 <addr>", "Read 24-bit register (diagnostic; may clear flags)");
   cli::printHelpItem("reg40 <addr>", "Read 40-bit register (diagnostic; may clear flags)");
-  cli::printHelpItem("wreg16 <addr> <val>", "Write 16-bit register (diagnostic only; may desync cached config)");
+  cli::printHelpItem("wreg16 <addr> <val> confirm", "Write 16-bit register; may desync cached config");
 
   cli::printHelpSection("Diagnostics");
   cli::printHelpItem("drv", "Show driver state and health");
@@ -1635,7 +1684,7 @@ void processCommand(const String& cmdLine) {
     uint32_t expectedWrite = 0;
     uint32_t expectedTotal = 0;
     if (!parseThreeU32(cmd.substring(12), expectedRead, expectedWrite, expectedTotal)) {
-      LOGW("Usage: xfer_assert <read> <write> <total>");
+      rejectInvalidCommand("Usage: xfer_assert <read> <write> <total>");
       return;
     }
     const auto stats = transport::transferStats();
@@ -1764,7 +1813,7 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("ready_step ")) {
     uint32_t budget = 0;
     if (!parseU32(cmd.substring(11), budget) || budget > 255u) {
-      LOGW("Usage: ready_step <0..255>");
+      rejectInvalidCommand("Usage: ready_step <0..255>");
       return;
     }
     bool ready = false;
@@ -1783,7 +1832,7 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("sample_step ")) {
     uint32_t budget = 0;
     if (!parseU32(cmd.substring(12), budget) || budget > 255u) {
-      LOGW("Usage: sample_step <0..255>");
+      rejectInvalidCommand("Usage: sample_step <0..255>");
       return;
     }
     printPowerSampleStep(static_cast<uint8_t>(budget));
@@ -1800,15 +1849,16 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd.startsWith("trigger ")) {
-    const int val = cmd.substring(8).toInt();
-    if (val < 0 || val > 7) {
-      LOGW("Invalid trigger mode (0-7 for TRIG_* modes)");
+    int32_t val = 0;
+    if (!parseI32(cmd.substring(8), val) || val < 1 || val > 7) {
+      rejectInvalidCommand("Invalid trigger mode (1-7 for TRIG_* modes)");
       return;
     }
     auto st = device.triggerConversion(static_cast<Mode>(val));
     const bool accepted = st.ok() || st.inProgress();
-    LOGI("triggerConversion(%d): %s%s%s",
-         val, LOG_COLOR_RESULT(accepted), errToStr(st.code), LOG_COLOR_RESET);
+    LOGI("triggerConversion(%ld): %s%s%s",
+         static_cast<long>(val), LOG_COLOR_RESULT(accepted),
+         errToStr(st.code), LOG_COLOR_RESET);
     if (!accepted) printStatus(st);
     return;
   }
@@ -1826,14 +1876,14 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd.startsWith("mode ")) {
-    const int val = cmd.substring(5).toInt();
-    if (val < 0 || val > 15) {
-      LOGW("Invalid mode (0-15)");
+    int32_t val = 0;
+    if (!parseI32(cmd.substring(5), val) || val < 0 || val > 15) {
+      rejectInvalidCommand("Invalid mode (0-15)");
       return;
     }
     auto st = device.setMode(static_cast<Mode>(val));
-    LOGI("setMode(%d = %s): %s%s%s",
-         val, modeToStr(static_cast<Mode>(val)),
+    LOGI("setMode(%ld = %s): %s%s%s",
+         static_cast<long>(val), modeToStr(static_cast<Mode>(val)),
          LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
     if (!st.ok()) printStatus(st);
     return;
@@ -1844,15 +1894,15 @@ void processCommand(const String& cmdLine) {
     args.trim();
     const int split = args.indexOf(' ');
     if (split < 0) {
-      LOGW("Usage: convtime vbus|vsh|temp <0..7>");
+      rejectInvalidCommand("Usage: convtime vbus|vsh|temp <0..7>");
       return;
     }
     const String which = args.substring(0, split);
     String value = args.substring(split + 1);
     value.trim();
-    const int val = value.toInt();
-    if (val < 0 || val > 7) {
-      LOGW("Invalid conversion time index (0-7)");
+    int32_t val = 0;
+    if (!parseI32(value, val) || val < 0 || val > 7) {
+      rejectInvalidCommand("Invalid conversion time index (0-7)");
       return;
     }
     const ConvTime ct = static_cast<ConvTime>(val);
@@ -1864,6 +1914,7 @@ void processCommand(const String& cmdLine) {
     } else if (which == "temp") {
       st = device.setTempConvTime(ct);
     } else {
+      hilCommandStatus = INA228::Err::INVALID_PARAM;
       LOGW("Invalid target: %s (use vbus|vsh|temp)", which.c_str());
       return;
     }
@@ -1889,9 +1940,9 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd.startsWith("averaging ")) {
-    const int val = cmd.substring(10).toInt();
-    if (val < 0 || val > 7) {
-      LOGW("Invalid averaging index (0-7)");
+    int32_t val = 0;
+    if (!parseI32(cmd.substring(10), val) || val < 0 || val > 7) {
+      rejectInvalidCommand("Invalid averaging index (0-7)");
       return;
     }
     auto st = device.setAveraging(static_cast<Averaging>(val));
@@ -1908,9 +1959,9 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd.startsWith("adcrange ")) {
-    const int val = cmd.substring(9).toInt();
-    if (val < 0 || val > 1) {
-      LOGW("Invalid ADC range (0 or 1)");
+    int32_t val = 0;
+    if (!parseI32(cmd.substring(9), val) || val < 0 || val > 1) {
+      rejectInvalidCommand("Invalid ADC range (0 or 1)");
       return;
     }
     auto st = device.setAdcRange(static_cast<AdcRange>(val));
@@ -1935,7 +1986,7 @@ void processCommand(const String& cmdLine) {
     args.trim();
     const int split = args.indexOf(' ');
     if (split < 0) {
-      LOGW("Usage: cal <shunt_ohm> <max_current_a>");
+      rejectInvalidCommand("Usage: cal <shunt_ohm> <max_current_a>");
       return;
     }
 
@@ -1947,7 +1998,7 @@ void processCommand(const String& cmdLine) {
     if (!parseFloat(shuntTok, shuntOhm) ||
         !parseFloat(maxTok, maxCurrentA) ||
         shuntOhm <= 0.0f || maxCurrentA <= 0.0f) {
-      LOGW("Usage: cal <shunt_ohm> <max_current_a>");
+      rejectInvalidCommand("Usage: cal <shunt_ohm> <max_current_a>");
       return;
     }
 
@@ -1967,7 +2018,7 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("tempco ")) {
     uint32_t ppm = 0;
     if (!parseU32(cmd.substring(7), ppm) || ppm > INA228::cmd::TEMPCO_MAX) {
-      LOGW("Usage: tempco <0..16383>");
+      rejectInvalidCommand("Usage: tempco <0..16383>");
       return;
     }
     auto st = device.setShuntTempCoeff(static_cast<uint16_t>(ppm));
@@ -1984,14 +2035,14 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd.startsWith("tempcomp ")) {
-    const int val = cmd.substring(9).toInt();
-    if (val != 0 && val != 1) {
-      LOGW("Usage: tempcomp <0|1>");
+    bool enabled = false;
+    if (!parseBool01(cmd.substring(9), enabled)) {
+      rejectInvalidCommand("Usage: tempcomp <0|1>");
       return;
     }
-    auto st = device.setTempCompensation(val != 0);
+    auto st = device.setTempCompensation(enabled);
     LOGI("setTempCompensation(%s): %s%s%s",
-         log_bool_str(val != 0),
+         log_bool_str(enabled),
          LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
     if (!st.ok()) printStatus(st);
     return;
@@ -2008,7 +2059,7 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("delay ")) {
     uint32_t steps = 0;
     if (!parseU32(cmd.substring(6), steps) || steps > 255u) {
-      LOGW("Usage: delay <0..255>");
+      rejectInvalidCommand("Usage: delay <0..255>");
       return;
     }
     auto st = device.setConversionDelay(static_cast<uint8_t>(steps));
@@ -2037,7 +2088,7 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("addr ")) {
     uint8_t address = 0;
     if (!parseAddressArg(cmd.substring(5), address)) {
-      LOGW("Invalid address. Use 0x40-0x4F");
+      rejectInvalidCommand("Invalid address. Use 0x40-0x4F");
       return;
     }
     selectedAddress = address;
@@ -2050,7 +2101,7 @@ void processCommand(const String& cmdLine) {
     bool allowAutoDetectFallback = true;
     if (cmd.length() > 4) {
       if (!parseAddressArg(cmd.substring(4), address)) {
-        LOGW("Invalid address. Use init 0x40-0x4F");
+        rejectInvalidCommand("Invalid address. Use init 0x40-0x4F");
         return;
       }
       allowAutoDetectFallback = false;
@@ -2093,7 +2144,7 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("reset_step ")) {
     uint32_t budget = 0;
     if (!parseU32(cmd.substring(11), budget) || budget > 255u) {
-      LOGW("Usage: reset_step <0..255>");
+      rejectInvalidCommand("Usage: reset_step <0..255>");
       return;
     }
     INA228::JobResult result{};
@@ -2131,7 +2182,7 @@ void processCommand(const String& cmdLine) {
     const int prefixLen = cmd.startsWith("apply_step ") ? 11 : 12;
     uint32_t budget = 0;
     if (!parseU32(cmd.substring(prefixLen), budget) || budget > 255u) {
-      LOGW("Usage: apply_step|replay_step <0..255>");
+      rejectInvalidCommand("Usage: apply_step|replay_step <0..255>");
       return;
     }
     INA228::JobResult result{};
@@ -2192,56 +2243,56 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd.startsWith("alatch ")) {
-    const int val = cmd.substring(7).toInt();
-    if (val != 0 && val != 1) {
-      LOGW("Usage: alatch <0|1>");
+    bool enabled = false;
+    if (!parseBool01(cmd.substring(7), enabled)) {
+      rejectInvalidCommand("Usage: alatch <0|1>");
       return;
     }
-    auto st = device.setAlertLatch(val != 0);
+    auto st = device.setAlertLatch(enabled);
     LOGI("setAlertLatch(%s): %s%s%s",
-         log_bool_str(val != 0),
+         log_bool_str(enabled),
          LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
     if (!st.ok()) printStatus(st);
     return;
   }
 
   if (cmd.startsWith("cnvralert ")) {
-    const int val = cmd.substring(10).toInt();
-    if (val != 0 && val != 1) {
-      LOGW("Usage: cnvralert <0|1>");
+    bool enabled = false;
+    if (!parseBool01(cmd.substring(10), enabled)) {
+      rejectInvalidCommand("Usage: cnvralert <0|1>");
       return;
     }
-    auto st = device.setConversionReadyAlert(val != 0);
+    auto st = device.setConversionReadyAlert(enabled);
     LOGI("setConversionReadyAlert(%s): %s%s%s",
-         log_bool_str(val != 0),
+         log_bool_str(enabled),
          LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
     if (!st.ok()) printStatus(st);
     return;
   }
 
   if (cmd.startsWith("alslow ")) {
-    const int val = cmd.substring(7).toInt();
-    if (val != 0 && val != 1) {
-      LOGW("Usage: alslow <0|1>");
+    bool enabled = false;
+    if (!parseBool01(cmd.substring(7), enabled)) {
+      rejectInvalidCommand("Usage: alslow <0|1>");
       return;
     }
-    auto st = device.setSlowAlert(val != 0);
+    auto st = device.setSlowAlert(enabled);
     LOGI("setSlowAlert(%s): %s%s%s",
-         log_bool_str(val != 0),
+         log_bool_str(enabled),
          LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
     if (!st.ok()) printStatus(st);
     return;
   }
 
   if (cmd.startsWith("apol ")) {
-    const int val = cmd.substring(5).toInt();
-    if (val != 0 && val != 1) {
-      LOGW("Usage: apol <0|1>");
+    bool activeHigh = false;
+    if (!parseBool01(cmd.substring(5), activeHigh)) {
+      rejectInvalidCommand("Usage: apol <0|1>");
       return;
     }
-    auto st = device.setAlertPolarity(val != 0);
+    auto st = device.setAlertPolarity(activeHigh);
     LOGI("setAlertPolarity(%s): %s%s%s",
-         log_bool_str(val != 0),
+         log_bool_str(activeHigh),
          LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
     if (!st.ok()) printStatus(st);
     return;
@@ -2255,7 +2306,7 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("sovl ")) {
     float value = 0.0f;
     if (!parseFloat(cmd.substring(5), value)) {
-      LOGW("Usage: sovl <volts>");
+      rejectInvalidCommand("Usage: sovl <volts>");
       return;
     }
     auto st = device.setShuntOvervoltageThreshold(value);
@@ -2273,7 +2324,7 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("suvl ")) {
     float value = 0.0f;
     if (!parseFloat(cmd.substring(5), value)) {
-      LOGW("Usage: suvl <volts>");
+      rejectInvalidCommand("Usage: suvl <volts>");
       return;
     }
     auto st = device.setShuntUndervoltageThreshold(value);
@@ -2291,7 +2342,7 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("bovl ")) {
     float value = 0.0f;
     if (!parseFloat(cmd.substring(5), value)) {
-      LOGW("Usage: bovl <volts>");
+      rejectInvalidCommand("Usage: bovl <volts>");
       return;
     }
     auto st = device.setBusOvervoltageThreshold(value);
@@ -2309,7 +2360,7 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("buvl ")) {
     float value = 0.0f;
     if (!parseFloat(cmd.substring(5), value)) {
-      LOGW("Usage: buvl <volts>");
+      rejectInvalidCommand("Usage: buvl <volts>");
       return;
     }
     auto st = device.setBusUndervoltageThreshold(value);
@@ -2327,7 +2378,7 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("tmplim ")) {
     float value = 0.0f;
     if (!parseFloat(cmd.substring(7), value)) {
-      LOGW("Usage: tmplim <degC>");
+      rejectInvalidCommand("Usage: tmplim <degC>");
       return;
     }
     auto st = device.setTemperatureOverlimitThreshold(value);
@@ -2345,7 +2396,7 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("pwrlim ")) {
     float value = 0.0f;
     if (!parseFloat(cmd.substring(7), value)) {
-      LOGW("Usage: pwrlim <watts>");
+      rejectInvalidCommand("Usage: pwrlim <watts>");
       return;
     }
     auto st = device.setPowerOverlimitThreshold(value);
@@ -2374,9 +2425,16 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("wreg16 ")) {
     String args = cmd.substring(7);
     args.trim();
+    static constexpr const char* CONFIRM_SUFFIX = " confirm";
+    if (!args.endsWith(CONFIRM_SUFFIX)) {
+      rejectInvalidCommand("Confirmation required: wreg16 <addr> <val> confirm");
+      return;
+    }
+    args.remove(args.length() - strlen(CONFIRM_SUFFIX));
+    args.trim();
     const int split = args.indexOf(' ');
     if (split < 0) {
-      LOGW("Usage: wreg16 <addr> <val> (diagnostic only)");
+      rejectInvalidCommand("Usage: wreg16 <addr> <val> confirm");
       return;
     }
     uint32_t addr = 0;
@@ -2384,7 +2442,7 @@ void processCommand(const String& cmdLine) {
     if (!parseU32(args.substring(0, split), addr) ||
         !parseU32(args.substring(split + 1), value) ||
         addr > 0xFFu || value > 0xFFFFu) {
-      LOGW("Usage: wreg16 <addr> <val> (diagnostic only)");
+      rejectInvalidCommand("Usage: wreg16 <addr> <val> confirm");
       return;
     }
     auto st = device.writeRegister16(static_cast<uint8_t>(addr), static_cast<uint16_t>(value));
@@ -2395,7 +2453,7 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("reg16 ")) {
     uint32_t addr = 0;
     if (!parseU32(cmd.substring(6), addr) || addr > 0xFFu) {
-      LOGW("Usage: reg16 <addr>");
+      rejectInvalidCommand("Usage: reg16 <addr>");
       return;
     }
     uint16_t value = 0;
@@ -2414,7 +2472,7 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("reg24 ")) {
     uint32_t addr = 0;
     if (!parseU32(cmd.substring(6), addr) || addr > 0xFFu) {
-      LOGW("Usage: reg24 <addr>");
+      rejectInvalidCommand("Usage: reg24 <addr>");
       return;
     }
     uint32_t value = 0;
@@ -2433,7 +2491,7 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("reg40 ")) {
     uint32_t addr = 0;
     if (!parseU32(cmd.substring(6), addr) || addr > 0xFFu) {
-      LOGW("Usage: reg40 <addr>");
+      rejectInvalidCommand("Usage: reg40 <addr>");
       return;
     }
     uint64_t value = 0;
@@ -2493,8 +2551,12 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd.startsWith("verbose ")) {
-    const int val = cmd.substring(8).toInt();
-    verboseMode = (val != 0);
+    bool enabled = false;
+    if (!parseBool01(cmd.substring(8), enabled)) {
+      rejectInvalidCommand("Usage: verbose <0|1>");
+      return;
+    }
+    verboseMode = enabled;
     LOGI("Verbose mode: %s%s%s",
          onOffColor(verboseMode),
          verboseMode ? "ON" : "OFF",
@@ -2513,26 +2575,26 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd.startsWith("stress_mix ")) {
-    int count = cmd.substring(11).toInt();
-    if (count <= 0 || count > MAX_STRESS_COUNT) {
-      LOGW("Invalid stress_mix count");
+    int32_t count = 0;
+    if (!parseI32(cmd.substring(11), count) ||
+        count <= 0 || count > MAX_STRESS_COUNT) {
+      rejectInvalidCommand("Invalid stress_mix count");
       return;
     }
     runStressMix(count);
     return;
   }
 
-  if (cmd.startsWith("stress")) {
-    int count = 10;
-    if (cmd.length() > 6) {
-      count = cmd.substring(6).toInt();
-    }
-    if (count <= 0) {
-      LOGW("Invalid stress count");
-      return;
-    }
-    if (count > MAX_STRESS_COUNT) {
-      LOGW("Invalid stress count");
+  if (cmd == "stress") {
+    runStress(10);
+    return;
+  }
+
+  if (cmd.startsWith("stress ")) {
+    int32_t count = 0;
+    if (!parseI32(cmd.substring(7), count) ||
+        count <= 0 || count > MAX_STRESS_COUNT) {
+      rejectInvalidCommand("Invalid stress count");
       return;
     }
     runStress(count);

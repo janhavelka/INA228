@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import platform
 import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Iterable, Sequence
@@ -49,6 +51,9 @@ class SoakSummary:
     max_latency_s: float = 0.0
     command_counts: dict[str, int] = field(default_factory=dict)
     command_failures: dict[str, int] = field(default_factory=dict)
+    leading_failure_count: int = 0
+    current_failure_run: int = 0
+    max_failure_run: int = 0
 
     def record(self, result: Result) -> None:
         self.total += 1
@@ -58,6 +63,13 @@ class SoakSummary:
             self.fail_count += 1
         elif result.verdict == "UNKNOWN":
             self.unknown_count += 1
+        if result.verdict == "FAIL":
+            self.current_failure_run += 1
+            self.max_failure_run = max(self.max_failure_run, self.current_failure_run)
+            if self.leading_failure_count == self.total - 1:
+                self.leading_failure_count += 1
+        else:
+            self.current_failure_run = 0
         self.command_counts[result.step.command] = (
             self.command_counts.get(result.step.command, 0) + 1
         )
@@ -88,8 +100,8 @@ class SoakSummary:
 
 
 SMOKE_STEPS: tuple[Step, ...] = (
-    Step("version", ("Arduino-ESP32: 3.3.11", "ESP-IDF: v5.5.5",
-                     "INA228 library version"), "version and framework stack"),
+    Step("version", ("INA228 library version", "INA228 library commit"),
+         "version, framework stack, and firmware provenance"),
     Step("scan", ("INA228 Address Probe", "Healthy INA228 devices"), "scan"),
     Step("init", ("initialize", "OK"), "initialize discovered INA228"),
     Step("probe", ("Status: OK",), "probe"),
@@ -292,27 +304,60 @@ def feature_sweep_steps() -> tuple[Step, ...]:
     ])
 
     steps.extend([
-        Step("mode -1", ("Invalid mode",), "reject invalid negative mode", "targeted"),
-        Step("mode 16", ("Invalid mode",), "reject invalid high mode", "targeted"),
-        Step("trigger 8", ("Invalid trigger mode",), "reject invalid trigger mode", "targeted"),
-        Step("convtime vbus 8", ("Invalid conversion time",), "reject invalid conversion index", "targeted"),
-        Step("convtime bogus 1", ("Invalid target",), "reject invalid conversion target", "targeted"),
-        Step("averaging 8", ("Invalid averaging",), "reject invalid averaging", "targeted"),
-        Step("adcrange 2", ("Invalid ADC range",), "reject invalid ADC range", "targeted"),
-        Step("delay 256", ("Usage: delay",), "reject invalid conversion delay", "targeted"),
-        Step("tempco 16384", ("Usage: tempco",), "reject invalid tempco", "targeted"),
-        Step("tempcomp 2", ("Usage: tempcomp",), "reject invalid temp compensation", "targeted"),
-        Step("alatch 2", ("Usage: alatch",), "reject invalid latch", "targeted"),
-        Step("cnvralert 2", ("Usage: cnvralert",), "reject invalid conversion alert", "targeted"),
-        Step("alslow 2", ("Usage: alslow",), "reject invalid slow alert", "targeted"),
-        Step("apol 2", ("Usage: apol",), "reject invalid alert polarity", "targeted"),
-        Step("cal 0 10", ("Usage: cal",), "reject zero shunt calibration", "targeted"),
-        Step("reg16 0x100", ("Usage: reg16",), "reject invalid raw16 register", "targeted"),
-        Step("reg24 0x100", ("Usage: reg24",), "reject invalid raw24 register", "targeted"),
-        Step("reg40 0x100", ("Usage: reg40",), "reject invalid raw40 register", "targeted"),
+        Step("mode -1", ("Invalid mode", "INVALID_PARAM"),
+             "reject invalid negative mode", "targeted", expect_failure=True),
+        Step("mode 16", ("Invalid mode", "INVALID_PARAM"),
+             "reject invalid high mode", "targeted", expect_failure=True),
+        Step("mode nonsense", ("Invalid mode", "INVALID_PARAM"),
+             "reject malformed mode token", "targeted", expect_failure=True),
+        Step("trigger 0", ("Invalid trigger mode", "INVALID_PARAM"),
+             "reject shutdown as a trigger mode", "targeted", expect_failure=True),
+        Step("trigger 8", ("Invalid trigger mode", "INVALID_PARAM"),
+             "reject invalid trigger mode", "targeted", expect_failure=True),
+        Step("trigger nonsense", ("Invalid trigger mode", "INVALID_PARAM"),
+             "reject malformed trigger token", "targeted", expect_failure=True),
+        Step("convtime vbus 8", ("Invalid conversion time", "INVALID_PARAM"),
+             "reject invalid conversion index", "targeted", expect_failure=True),
+        Step("convtime bogus 1", ("Invalid target", "INVALID_PARAM"),
+             "reject invalid conversion target", "targeted", expect_failure=True),
+        Step("averaging 8", ("Invalid averaging", "INVALID_PARAM"),
+             "reject invalid averaging", "targeted", expect_failure=True),
+        Step("averaging nonsense", ("Invalid averaging", "INVALID_PARAM"),
+             "reject malformed averaging token", "targeted", expect_failure=True),
+        Step("adcrange 2", ("Invalid ADC range", "INVALID_PARAM"),
+             "reject invalid ADC range", "targeted", expect_failure=True),
+        Step("delay 256", ("Usage: delay", "INVALID_PARAM"),
+             "reject invalid conversion delay", "targeted", expect_failure=True),
+        Step("tempco 16384", ("Usage: tempco", "INVALID_PARAM"),
+             "reject invalid tempco", "targeted", expect_failure=True),
+        Step("tempcomp 2", ("Usage: tempcomp", "INVALID_PARAM"),
+             "reject invalid temp compensation", "targeted", expect_failure=True),
+        Step("tempcomp nonsense", ("Usage: tempcomp", "INVALID_PARAM"),
+             "reject malformed boolean token", "targeted", expect_failure=True),
+        Step("alatch 2", ("Usage: alatch", "INVALID_PARAM"),
+             "reject invalid latch", "targeted", expect_failure=True),
+        Step("cnvralert 2", ("Usage: cnvralert", "INVALID_PARAM"),
+             "reject invalid conversion alert", "targeted", expect_failure=True),
+        Step("alslow 2", ("Usage: alslow", "INVALID_PARAM"),
+             "reject invalid slow alert", "targeted", expect_failure=True),
+        Step("apol 2", ("Usage: apol", "INVALID_PARAM"),
+             "reject invalid alert polarity", "targeted", expect_failure=True),
+        Step("cal 0 10", ("Usage: cal", "INVALID_PARAM"),
+             "reject zero shunt calibration", "targeted", expect_failure=True),
+        Step("reg16 0x100", ("Usage: reg16", "INVALID_PARAM"),
+             "reject invalid raw16 register", "targeted", expect_failure=True),
+        Step("reg24 0x100", ("Usage: reg24", "INVALID_PARAM"),
+             "reject invalid raw24 register", "targeted", expect_failure=True),
+        Step("reg40 0x100", ("Usage: reg40", "INVALID_PARAM"),
+             "reject invalid raw40 register", "targeted", expect_failure=True),
+        Step("verbose nonsense", ("Usage: verbose", "INVALID_PARAM"),
+             "reject malformed verbosity token", "targeted", expect_failure=True),
+        Step("wreg16 0x00 0", ("Confirmation required", "INVALID_PARAM"),
+             "reject unconfirmed raw register write", "targeted", expect_failure=True),
         Step("unknown_hil_command", ("Unknown command", "INVALID_PARAM"),
              "reject unknown command with framed status", "targeted", expect_failure=True),
-        Step("init 0x50", ("Invalid address",), "reject invalid init address", "targeted"),
+        Step("init 0x50", ("Invalid address", "INVALID_PARAM"),
+             "reject invalid init address", "targeted", expect_failure=True),
         Step("end", ("Device shut down",), "end driver", "targeted"),
         Step("vbus", ("NOT_INITIALIZED",),
              "read after end must fail visibly", "targeted", expect_failure=True),
@@ -512,7 +557,10 @@ def classify_step(output: str, step: Step) -> str:
     text = clean_output(output)
     expected_seen = all(token in text for token in step.expected)
     if step.expect_failure and expected_seen:
-        return "PASS"
+        unexpected_text = text
+        for token in step.expected:
+            unexpected_text = unexpected_text.replace(token, "")
+        return "FAIL" if has_failure(unexpected_text) else "PASS"
     if has_failure(text):
         return "FAIL"
     if expected_seen:
@@ -534,6 +582,71 @@ def git_text(args: Sequence[str]) -> str:
         return "unavailable"
     text = result.stdout.strip()
     return text if text else "none"
+
+
+def configured_library_version() -> str:
+    try:
+        data = json.loads((ROOT / "library.json").read_text(encoding="utf-8"))
+        return str(data["version"])
+    except (OSError, KeyError, TypeError, ValueError):
+        return "unknown"
+
+
+DEFAULT_FRAMEWORK_TOKENS: dict[str, tuple[str, ...]] = {
+    "arduino": ("Arduino-ESP32: 3.3.11", "ESP-IDF: v5.5.5"),
+    "idf": ("Runtime: native ESP-IDF v6.0.1",),
+}
+VERSION_PATTERN = re.compile(r"(?m)^\s*INA228 library version:\s*(\S+)\s*$")
+COMMIT_PATTERN = re.compile(
+    r"(?m)^\s*INA228 library commit:\s*([0-9a-f]{12}|unknown)\s*"
+    r"\((clean|dirty|unknown)\)\s*$",
+    re.IGNORECASE,
+)
+
+
+def version_contract_errors(output: str, profile: str, expected_version: str,
+                            expected_commit: str, expected_git_status: str,
+                            framework_tokens: Sequence[str] | None = None) -> list[str]:
+    text = clean_output(output)
+    errors: list[str] = []
+    required_framework = tuple(framework_tokens or DEFAULT_FRAMEWORK_TOKENS[profile])
+    for token in required_framework:
+        if token not in text:
+            errors.append(f"missing framework token: {token}")
+
+    version_match = VERSION_PATTERN.search(text)
+    if version_match is None:
+        errors.append("missing INA228 library version field")
+    elif expected_version != "any" and version_match.group(1) != expected_version:
+        errors.append(
+            f"library version mismatch: firmware={version_match.group(1)} "
+            f"expected={expected_version}"
+        )
+
+    commit_match = COMMIT_PATTERN.search(text)
+    if commit_match is None:
+        errors.append("missing INA228 commit/status field")
+        return errors
+
+    actual_commit = commit_match.group(1).lower()
+    actual_status = commit_match.group(2).lower()
+    normalized_expected = expected_commit.lower()
+    if normalized_expected != "any":
+        commit_matches = (
+            actual_commit != "unknown"
+            and actual_commit == normalized_expected
+        )
+        if not commit_matches:
+            errors.append(
+                f"firmware commit mismatch: firmware={actual_commit} "
+                f"expected={normalized_expected}"
+            )
+    if expected_git_status != "any" and actual_status != expected_git_status:
+        errors.append(
+            f"firmware status mismatch: firmware={actual_status} "
+            f"expected={expected_git_status}"
+        )
+    return errors
 
 
 def selected_steps(suite: str) -> tuple[Step, ...]:
@@ -573,7 +686,7 @@ def parser_self_test() -> int:
         if got != want:
             print(f"parser self-test FAILED: expected {want}, got {got}")
             return 1
-    payload, ok = strip_hilrun_frame(
+    payload, _, ok = strip_hilrun_frame(
         "noise\nHIL_BEGIN token=T1 seq=7\nStatus: OK\nold HILMARK text\n"
         "HIL_END token=T1 seq=7 status=OK elapsed_ms=3\n",
         "T1",
@@ -582,11 +695,11 @@ def parser_self_test() -> int:
     if not ok or "old HILMARK text" not in payload:
         print("parser self-test FAILED: complete frame")
         return 1
-    _, ok = strip_hilrun_frame("HIL_BEGIN token=T1 seq=7\n", "T1", "7")
+    _, _, ok = strip_hilrun_frame("HIL_BEGIN token=T1 seq=7\n", "T1", "7")
     if ok:
         print("parser self-test FAILED: truncated frame accepted")
         return 1
-    _, ok = strip_hilrun_frame(
+    _, _, ok = strip_hilrun_frame(
         "HIL_BEGIN token=T1 seq=7\nHIL_END token=T2 seq=7 status=OK elapsed_ms=3\n",
         "T1",
         "7",
@@ -594,7 +707,7 @@ def parser_self_test() -> int:
     if ok:
         print("parser self-test FAILED: wrong token accepted")
         return 1
-    _, ok = strip_hilrun_frame(
+    _, _, ok = strip_hilrun_frame(
         "HIL_BEGIN token=T1 seq=7\nHIL_END token=T1 seq=8 status=OK elapsed_ms=3\n",
         "T1",
         "7",
@@ -602,7 +715,7 @@ def parser_self_test() -> int:
     if ok:
         print("parser self-test FAILED: wrong sequence accepted")
         return 1
-    payload, ok = strip_hilrun_frame(
+    payload, _, ok = strip_hilrun_frame(
         "HIL_BEGIN token=T1 seq=7\nHIL_END token=T1 seq=7 status=INVALID_PARAM elapsed_ms=0\n",
         "T1",
         "7",
@@ -611,6 +724,67 @@ def parser_self_test() -> int:
                         "nested hilrun rejection", expect_failure=True)
     if not ok or classify_step(payload, invalid_step) != "PASS":
         print("parser self-test FAILED: nested/invalid frame status")
+        return 1
+    if classify_step(
+        "Status: INVALID_PARAM\nStatus: I2C_TIMEOUT\n", invalid_step
+    ) != "FAIL":
+        print("parser self-test FAILED: expected rejection hid unrelated failure")
+        return 1
+
+    failure_gap = (
+        Result(invalid_step, "FAIL", 0.0, ""),
+        Result(invalid_step, "UNKNOWN", 0.0, ""),
+        Result(invalid_step, "FAIL", 0.0, ""),
+    )
+    if max_consecutive_failures(failure_gap) != 1:
+        print("parser self-test FAILED: UNKNOWN did not break failure run")
+        return 1
+
+    version_output = (
+        "Arduino-ESP32: 3.3.11\nESP-IDF: v5.5.5\n"
+        "INA228 library version: 3.0.2\n"
+        "INA228 library commit: 0123456789ab (clean)\n"
+    )
+    if version_contract_errors(
+        version_output, "arduino", "3.0.2", "0123456789ab", "clean"
+    ):
+        print("parser self-test FAILED: valid firmware provenance rejected")
+        return 1
+    if not version_contract_errors(
+        version_output, "arduino", "3.0.2", "deadbeefcafe", "clean"
+    ):
+        print("parser self-test FAILED: stale firmware provenance accepted")
+        return 1
+
+    soak_step = Step("vbus", ("Vbus",), "report self-test", "soak")
+    soak_result = Result(soak_step, "PASS", 0.125, "Vbus: 12.0 V")
+    soak_summary = SoakSummary()
+    soak_summary.record(soak_result)
+    report_args = argparse.Namespace(
+        port=None,
+        baud=115200,
+        profile="arduino",
+        suite="smoke",
+        expected_library_version="3.0.2",
+        expected_commit="0123456789ab",
+        expected_git_status="clean",
+        operator=None,
+        board=None,
+        environment=None,
+        fixture=None,
+        safety=None,
+        notes=None,
+        soak_store_every=1,
+    )
+    timestamp = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    with tempfile.TemporaryDirectory(prefix="ina228_hil_self_test_") as temp_dir:
+        report_path = pathlib.Path(temp_dir) / "report.md"
+        write_report(report_path, report_args, (soak_result,), timestamp,
+                     timestamp, None, 1.0, "", soak_summary)
+        report = report_path.read_text(encoding="utf-8")
+    if ("- Soak verdict counts: PASS=1, FAIL=0, UNKNOWN=0" not in report or
+            "- Soak latency min/mean/max: 0.125 / 0.125 / 0.125 s" not in report):
+        print("parser self-test FAILED: soak report generation")
         return 1
     print("parser self-test PASSED")
     return 0
@@ -713,14 +887,18 @@ def strip_hil_marker(text: str, token: str) -> str:
     return text[:index]
 
 
-def strip_hilrun_frame(text: str, token: str, seq: str) -> tuple[str, bool]:
+def strip_hilrun_frame(text: str, token: str, seq: str) -> tuple[str, str, bool]:
     clean = clean_output(text)
     begin_line = f"HIL_BEGIN token={token} seq={seq}"
     end_re = hilrun_end_re(token, seq)
     begin_index = clean.find(begin_line)
     end_match = end_re.search(clean)
     if begin_index < 0 or end_match is None:
-        return clean + f"\n[runner] missing HIL frame token={token} seq={seq}", False
+        return (
+            clean + f"\n[runner] missing HIL frame token={token} seq={seq}",
+            "",
+            False,
+        )
     payload_start = begin_index + len(begin_line)
     payload = clean[payload_start:end_match.start()].strip("\n")
     status = end_match.group(1)
@@ -728,7 +906,8 @@ def strip_hilrun_frame(text: str, token: str, seq: str) -> tuple[str, bool]:
     payload += f"\n[runner] frame_status={status} frame_elapsed_ms={elapsed_ms}"
     if status not in ("OK", "IN_PROGRESS"):
         payload += f"\nStatus: {status}"
-    return payload, True
+    trailer = clean[end_match.end():].strip("\n")
+    return payload, trailer, True
 
 
 def drain_input(serial_port, drain_s: float) -> str:
@@ -748,6 +927,7 @@ def drain_input(serial_port, drain_s: float) -> str:
 def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
     start = time.monotonic()
     marker_missing = False
+    trailer_verdict: str | None = None
     stale = drain_input(serial_port, args.drain_before_command_s)
     token = f"{args.frame_prefix}{time.monotonic_ns()}"
     seq = "0"
@@ -788,19 +968,41 @@ def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
         serial_port.flush()
         frame_output = read_until_hilrun_end(serial_port, args.timeout_s, token, seq,
                                              args.max_frame_bytes)
-        output, frame_ok = strip_hilrun_frame(frame_output, token, seq)
+        output, inline_trailer, frame_ok = strip_hilrun_frame(frame_output, token, seq)
         marker_missing = not frame_ok
+        classification_output = output
         if frame_ok:
-            trailer = drain_input(serial_port, args.post_frame_drain_s)
-            if clean_output(trailer).strip() and not PROMPT_RE.fullmatch(
-                clean_output(trailer).strip()
-            ):
+            drained_trailer = drain_input(serial_port, args.post_frame_drain_s)
+            trailer = "\n".join(
+                part for part in (inline_trailer, drained_trailer) if part
+            )
+            cleaned_trailer = clean_output(trailer).strip()
+            if cleaned_trailer and not PROMPT_RE.fullmatch(cleaned_trailer):
+                trailer_verdict = "FAIL" if has_failure(cleaned_trailer) else "UNKNOWN"
                 output += "\n[runner] drained trailing serial input after frame:\n"
                 output += trailer
+    if args.no_command_framing or args.legacy_marker:
+        classification_output = output
     if stale.strip():
         output = "[runner] drained stale serial input before command:\n" + stale + "\n" + output
     elapsed = time.monotonic() - start
-    verdict = "UNKNOWN" if marker_missing else classify_step(output, step)
+    verdict = "UNKNOWN" if marker_missing else classify_step(classification_output, step)
+    if trailer_verdict == "FAIL":
+        verdict = "FAIL"
+    elif trailer_verdict == "UNKNOWN" and verdict == "PASS":
+        verdict = "UNKNOWN"
+    if verdict == "PASS" and step.command == "version":
+        provenance_errors = version_contract_errors(
+            classification_output,
+            args.profile,
+            args.expected_library_version,
+            args.expected_commit,
+            args.expected_git_status,
+            args.framework_token,
+        )
+        if provenance_errors:
+            verdict = "FAIL"
+            output += "\n[runner] provenance failure: " + "; ".join(provenance_errors)
     return Result(step=step, verdict=verdict, elapsed_s=elapsed, output=clean_output(output))
 
 
@@ -852,9 +1054,31 @@ def max_consecutive_failures(results: Sequence[Result]) -> int:
         if result.verdict == "FAIL":
             current += 1
             max_seen = max(max_seen, current)
-        elif result.verdict == "PASS":
+        else:
             current = 0
     return max_seen
+
+
+def actual_max_consecutive_failures(
+    results: Sequence[Result], soak_summary: SoakSummary | None
+) -> int:
+    if soak_summary is None:
+        return max_consecutive_failures(results)
+    pre_soak = [
+        result
+        for result in results
+        if result.step.suite not in ("soak", "not-run")
+    ]
+    trailing_pre_soak = 0
+    for result in reversed(pre_soak):
+        if result.verdict != "FAIL":
+            break
+        trailing_pre_soak += 1
+    return max(
+        max_consecutive_failures(pre_soak),
+        soak_summary.max_failure_run,
+        trailing_pre_soak + soak_summary.leading_failure_count,
+    )
 
 
 def not_run_results(soak_seconds: float) -> list[Result]:
@@ -900,7 +1124,11 @@ def write_report(path: pathlib.Path, args: argparse.Namespace, results: Sequence
         f.write(f"- Elapsed: {elapsed:.1f} s\n")
         f.write(f"- Port: {args.port or 'NOT RUN'}\n")
         f.write(f"- Baud: {args.baud}\n")
+        f.write(f"- Firmware profile: {args.profile}\n")
         f.write(f"- Suite: {args.suite}\n")
+        f.write(f"- Expected library version: {args.expected_library_version}\n")
+        f.write(f"- Expected firmware commit: {args.expected_commit}\n")
+        f.write(f"- Expected firmware status: {args.expected_git_status}\n")
         f.write(f"- Soak requested: {soak_seconds:.1f} s\n")
         f.write(f"- Operator: {args.operator or 'unspecified'}\n")
         f.write(f"- Board/environment: {args.board or 'unspecified'} / "
@@ -937,7 +1165,8 @@ def write_report(path: pathlib.Path, args: argparse.Namespace, results: Sequence
         f.write(f"- Soak rows recorded in detail: {stored_soak_count}\n")
         f.write(f"- Recorded command latency min/mean/max: {min_elapsed:.3f} / "
                 f"{mean_elapsed:.3f} / {max_elapsed:.3f} s\n\n")
-        f.write(f"- Maximum consecutive FAIL verdicts: {max_consecutive_failures(results)}\n\n")
+        f.write("- Maximum consecutive FAIL verdicts: "
+                f"{actual_max_consecutive_failures(results, soak_summary)}\n\n")
         f.write("## Steps\n\n")
         f.write("| ID | Suite | Command | Expected | Observed | Result | Elapsed s | Notes |\n")
         f.write("| --- | --- | --- | --- | --- | --- | ---: | --- |\n")
@@ -953,14 +1182,12 @@ def write_report(path: pathlib.Path, args: argparse.Namespace, results: Sequence
             f.write(f"- Requested duration: {soak_seconds:.1f} s\n")
             f.write(f"- Executed soak commands: {actual_soak_count}\n")
             f.write(f"- Recorded soak rows: {stored_soak_count}\n")
-            f.write(f"- Soak PASS row storage stride: every {args.soak_store_every} "
-                    "PASS row(s), plus all FAIL/UNKNOWN rows\n")
+            f.write(f"- Soak PASS row storage stride: each {args.soak_store_every}th "
+                    "soak command when it passes, plus all FAIL/UNKNOWN rows\n")
             if soak_summary is not None:
                 f.write(f"- Soak verdict counts: PASS={soak_summary.pass_count}, "
                         f"FAIL={soak_summary.fail_count}, "
                         f"UNKNOWN={soak_summary.unknown_count}\n")
-                f.write("- Empty framed response retries: "
-                        f"{soak_summary.empty_response_retries}\n")
                 f.write("- Soak latency min/mean/max: "
                         f"{soak_summary.min_latency_s:.3f} / "
                         f"{soak_summary.mean_latency_s():.3f} / "
@@ -1131,6 +1358,18 @@ def main(argv: Sequence[str]) -> int:
     )
     parser.add_argument("--port", help="Serial port for hardware run")
     parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--profile", choices=("arduino", "idf"), default="arduino",
+                        help="Flashed diagnostic CLI profile")
+    parser.add_argument("--expected-library-version", default=configured_library_version(),
+                        help="Required firmware library version, or 'any'")
+    parser.add_argument("--expected-commit",
+                        default=git_text(["rev-parse", "--short=12", "HEAD"]),
+                        help="Required 12-character firmware Git commit, or 'any'")
+    parser.add_argument("--expected-git-status", choices=("clean", "dirty", "any"),
+                        default="clean",
+                        help="Required firmware source-tree status")
+    parser.add_argument("--framework-token", action="append",
+                        help="Override profile-default version token; repeat as needed")
     parser.add_argument("--suite", choices=("smoke", "functional", "exhaustive", "targeted",
                                             "transfer"),
                         default="smoke")
@@ -1211,6 +1450,12 @@ def main(argv: Sequence[str]) -> int:
         parser.error("max frame bytes must be positive")
     if args.require_framed and (args.no_command_framing or args.legacy_marker):
         parser.error("--require-framed cannot be combined with raw or legacy framing")
+    if (args.expected_commit != "any" and
+            re.fullmatch(r"[0-9a-fA-F]{12}", args.expected_commit) is None):
+        parser.error("--expected-commit must be a 12-digit Git SHA or 'any'")
+    if (args.expected_library_version != "any" and
+            re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", args.expected_library_version) is None):
+        parser.error("--expected-library-version must be SemVer or 'any'")
 
     soak_seconds = args.soak_seconds
     if args.soak_hours > 0.0:

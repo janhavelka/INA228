@@ -42,12 +42,6 @@ using namespace INA228;
 
 namespace {
 
-struct WriteEvent {
-  uint8_t reg = 0;
-  uint16_t value = 0;
-  bool success = false;
-};
-
 enum class TransferKind : uint8_t {
   WRITE,
   WRITE_READ
@@ -78,11 +72,9 @@ struct FakeBus {
   uint8_t lastReadAddr = 0;
   uint8_t lastWriteReg = 0;
   uint16_t lastWrite16 = 0;
-  uint8_t lastReadReg = 0;
   uint8_t readHistory[256] = {};
   size_t readHistoryCount = 0;
-  WriteEvent writeHistory[256] = {};
-  size_t writeHistoryCount = 0;
+  size_t writeAttemptCount = 0;
   TransferEvent transferHistory[512] = {};
   size_t transferHistoryCount = 0;
   uint8_t writeFailureRegs[8] = {};
@@ -97,9 +89,6 @@ struct FakeBus {
   size_t nthReadFailureCount = 0;
   uint8_t writeMatchCount[64] = {};
   uint8_t readMatchCount[64] = {};
-  uint8_t configResetReadsRemaining = 0;
-  bool configResetNeverClears = false;
-  bool resetLeavesMemstatLow = false;
   bool autoClearAccumulatorReset = false;
   uint8_t configReadOverrideRemaining = 0;
   uint16_t configReadOverrideValue = 0;
@@ -136,14 +125,10 @@ Status fakeWrite(uint8_t addr, const uint8_t* data, size_t len, uint32_t timeout
   if (reg < 64) {
     bus->writeMatchCount[reg]++;
   }
+  bus->writeAttemptCount++;
   const bool applyThenFail =
       bus->applyThenFailWriteReg == reg &&
       bus->applyThenFailWriteMatch == bus->writeMatchCount[reg];
-  auto recordWrite = [&](bool success) {
-    if (bus->writeHistoryCount < sizeof(bus->writeHistory) / sizeof(bus->writeHistory[0])) {
-      bus->writeHistory[bus->writeHistoryCount++] = WriteEvent{reg, value, success};
-    }
-  };
   for (size_t i = 0; i < bus->nthWriteFailureCount; ++i) {
     if (bus->nthWriteFailureRegs[i] == reg &&
         bus->nthWriteFailureMatches[i] == bus->writeMatchCount[reg]) {
@@ -154,7 +139,6 @@ Status fakeWrite(uint8_t addr, const uint8_t* data, size_t len, uint32_t timeout
         bus->nthWriteFailureStatus[j - 1] = bus->nthWriteFailureStatus[j];
       }
       bus->nthWriteFailureCount--;
-      recordWrite(false);
       return status;
     }
   }
@@ -163,12 +147,10 @@ Status fakeWrite(uint8_t addr, const uint8_t* data, size_t len, uint32_t timeout
       bus->writeFailureRegs[i - 1] = bus->writeFailureRegs[i];
     }
     bus->writeFailureCount--;
-    recordWrite(false);
     return bus->writeError;
   }
   if (bus->writeErrorRemaining > 0) {
     bus->writeErrorRemaining--;
-    recordWrite(false);
     return bus->writeError;
   }
   if (len == 3) {
@@ -192,7 +174,7 @@ Status fakeWrite(uint8_t addr, const uint8_t* data, size_t len, uint32_t timeout
       bus->reg16[cmd::REG_BUVL] = cmd::BUVL_RESET;
       bus->reg16[cmd::REG_TEMP_LIMIT] = cmd::TEMP_LIMIT_RESET;
       bus->reg16[cmd::REG_PWR_LIMIT] = cmd::PWR_LIMIT_RESET;
-      bus->diagAlrt = bus->resetLeavesMemstatLow ? 0 : cmd::DIAG_ALRT_RESET;
+      bus->diagAlrt = cmd::DIAG_ALRT_RESET;
       bus->reg16[cmd::REG_CONFIG] = cmd::CONFIG_RST;
     }
     if (reg == cmd::REG_CONFIG && ((value & cmd::CONFIG_RSTACC) != 0)) {
@@ -221,7 +203,6 @@ Status fakeWrite(uint8_t addr, const uint8_t* data, size_t len, uint32_t timeout
   if (applyThenFail) {
     bus->applyThenFailWriteReg = 0xFF;
     bus->applyThenFailWriteMatch = 0;
-    recordWrite(false);
     return bus->writeError;
   }
   if (bus->successfulWriteDurationReg == reg &&
@@ -231,7 +212,6 @@ Status fakeWrite(uint8_t addr, const uint8_t* data, size_t len, uint32_t timeout
     bus->successfulWriteDurationMatch = 0;
     bus->advanceNowMsOnWrite = 0;
   }
-  recordWrite(true);
   return Status::Ok();
 }
 
@@ -255,7 +235,6 @@ Status fakeWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen, uint8_t*
         TransferEvent{TransferKind::WRITE_READ, addr, reg, timeoutMs,
                       txLen, rxLen};
   }
-  bus->lastReadReg = reg;
   if (reg < 64) {
     bus->readMatchCount[reg]++;
   }
@@ -308,13 +287,7 @@ Status fakeWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen, uint8_t*
       return Status::Ok();
     }
     if (reg == cmd::REG_CONFIG && ((bus->reg16[reg] & cmd::CONFIG_RST) != 0)) {
-      if (!bus->configResetNeverClears) {
-        if (bus->configResetReadsRemaining > 0) {
-          bus->configResetReadsRemaining--;
-        } else {
-          bus->reg16[reg] &= ~cmd::CONFIG_RST;
-        }
-      }
+      bus->reg16[reg] &= ~cmd::CONFIG_RST;
     }
     const uint16_t value = bus->reg16[reg];
     rxData[0] = static_cast<uint8_t>(value >> 8);
@@ -387,14 +360,13 @@ bool wasRegisterRead(const FakeBus& bus, uint8_t reg) {
 
 void clearReadHistory(FakeBus& bus) {
   bus.readHistoryCount = 0;
-  bus.lastReadReg = 0;
   for (size_t i = 0; i < 64; ++i) {
     bus.readMatchCount[i] = 0;
   }
 }
 
-void clearWriteHistory(FakeBus& bus) {
-  bus.writeHistoryCount = 0;
+void resetWriteTracking(FakeBus& bus) {
+  bus.writeAttemptCount = 0;
   bus.lastWriteReg = 0;
   bus.lastWrite16 = 0;
   for (size_t i = 0; i < 64; ++i) {
@@ -690,7 +662,7 @@ void test_get_settings_is_bus_silent_and_does_not_consume_diag() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   clearReadHistory(bus);
-  clearWriteHistory(bus);
+  resetWriteTracking(bus);
   const uint32_t readsBefore = bus.readCalls;
   const uint32_t writesBefore = bus.writeCalls;
   bus.clearDiagOnRead = true;
@@ -1039,7 +1011,7 @@ void test_recover_replay_failures_mark_dirty_for_each_write_position() {
     TEST_ASSERT_TRUE(dev.setAlertLatch(true).ok());
     TEST_ASSERT_TRUE(dev.writeRegister16(cmd::REG_SHUNT_TEMPCO, 0x1234).ok());
 
-    clearWriteHistory(bus);
+    resetWriteTracking(bus);
     queueNthWriteFailure(bus, c.reg, c.nth);
     Status st = dev.recover();
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
@@ -1418,6 +1390,25 @@ void test_tick_deadline_is_wraparound_safe() {
                           static_cast<uint8_t>(settings.mode));
 }
 
+void test_tick_is_bus_silent_without_a_pending_trigger() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF |
+                 cmd::DIAG_ENERGYOF | cmd::DIAG_MATHOF;
+  const uint32_t transfersBefore = bus.readCalls + bus.writeCalls;
+  dev.tick(1000U);
+  TEST_ASSERT_EQUAL_UINT32(transfersBefore,
+                           bus.readCalls + bus.writeCalls);
+
+  TEST_ASSERT_TRUE(dev.setVbusConvTime(ConvTime::US_84).ok());
+  const uint32_t transfersAfterSetter = bus.readCalls + bus.writeCalls;
+  dev.tick(2000U);
+  TEST_ASSERT_EQUAL_UINT32(transfersAfterSetter,
+                           bus.readCalls + bus.writeCalls);
+}
+
 void test_configured_trigger_uses_hooked_post_write_origin_for_initialize_and_reinitialize() {
   FakeBus bus;
   bus.nowMs = std::numeric_limits<uint32_t>::max() - 1U;
@@ -1454,7 +1445,7 @@ void test_configured_trigger_uses_hooked_post_write_origin_for_initialize_and_re
   TEST_ASSERT_TRUE(dev.setMode(Mode::TRIG_ALL).inProgress());
   TEST_ASSERT_TRUE(dev.invalidateHardwareState(Status::Ok()).ok());
   clearReadHistory(bus);
-  clearWriteHistory(bus);
+  resetWriteTracking(bus);
   clearTransferHistory(bus);
   bus.nowMs = 4000U;
   bus.successfulWriteDurationReg = cmd::REG_ADC_CONFIG;
@@ -1530,6 +1521,44 @@ void test_configured_trigger_without_hook_anchors_after_successful_terminal() {
   TEST_ASSERT_EQUAL_UINT32(readsBefore + 1U, bus.readCalls);
 }
 
+void test_hookless_internal_sync_jobs_do_not_consume_trigger_origin() {
+  FakeBus bus;
+  bus.autoClearAccumulatorReset = true;
+  INA228::INA228 dev;
+  Config cfg = makeCooperativeConfig(bus);
+  cfg.mode = Mode::TRIG_ALL;
+  cfg.nowMs = nullptr;
+  cfg.timeUser = nullptr;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  SettingsSnapshot settings{};
+  TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+  TEST_ASSERT_TRUE(settings.triggeredConversionPending);
+  TEST_ASSERT_EQUAL_UINT32(0U, settings.triggeredConversionStartMs);
+
+  clearTransferHistory(bus);
+  TEST_ASSERT_TRUE(dev.recover().ok());
+  TEST_ASSERT_EQUAL_UINT32(14U, bus.transferHistoryCount);
+  TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+  TEST_ASSERT_TRUE(settings.triggeredConversionPending);
+  TEST_ASSERT_EQUAL_UINT32(0U, settings.triggeredConversionStartMs);
+
+  clearTransferHistory(bus);
+  TEST_ASSERT_TRUE(dev.resetAccumulators().ok());
+  TEST_ASSERT_EQUAL_UINT32(2U, bus.transferHistoryCount);
+  TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+  TEST_ASSERT_TRUE(settings.triggeredConversionPending);
+  TEST_ASSERT_EQUAL_UINT32(0U, settings.triggeredConversionStartMs);
+
+  const uint32_t readsBefore = bus.readCalls;
+  bool ready = true;
+  TEST_ASSERT_TRUE(dev.pollConversionReady(9000U, ready).ok());
+  TEST_ASSERT_FALSE(ready);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+  TEST_ASSERT_EQUAL_UINT32(9000U, settings.triggeredConversionStartMs);
+}
+
 void test_hookless_configured_trigger_deferral_lifetime_is_bounded() {
   for (uint8_t terminalKind = 0; terminalKind < 3U; ++terminalKind) {
     FakeBus bus;
@@ -1585,7 +1614,7 @@ void test_write_duration_injection_is_consumed_only_by_success() {
     cfg.nowMs = nullptr;
     cfg.timeUser = nullptr;
     TEST_ASSERT_TRUE(dev.begin(cfg).ok());
-    clearWriteHistory(bus);
+    resetWriteTracking(bus);
     bus.nowMs = 6000U;
     bus.successfulWriteDurationReg = cmd::REG_ADC_CONFIG;
     bus.successfulWriteDurationMatch = 1U;
@@ -1607,6 +1636,101 @@ void test_write_duration_injection_is_consumed_only_by_success() {
     SettingsSnapshot settings{};
     TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
     TEST_ASSERT_FALSE(settings.triggeredConversionPending);
+  }
+}
+
+void test_ambiguous_adc_writes_invalidate_pending_trigger_timing() {
+  for (uint8_t applyThenFail = 0; applyThenFail < 2U; ++applyThenFail) {
+    FakeBus bus;
+    INA228::INA228 dev;
+    Config cfg = makeConfig(bus);
+    cfg.nowMs = nullptr;
+    cfg.timeUser = nullptr;
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    TEST_ASSERT_TRUE(dev.triggerConversion(Mode::TRIG_ALL).inProgress());
+
+    SettingsSnapshot settings{};
+    TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+    TEST_ASSERT_TRUE(settings.triggeredConversionPending);
+    resetWriteTracking(bus);
+    if (applyThenFail == 0U) {
+      queueNthWriteFailure(bus, cmd::REG_ADC_CONFIG, 1U);
+    } else {
+      bus.applyThenFailWriteReg = cmd::REG_ADC_CONFIG;
+      bus.applyThenFailWriteMatch = 1U;
+    }
+
+    const Status st = dev.triggerConversion(Mode::TRIG_BUS);
+    TEST_ASSERT_TRUE(st.is(Err::I2C_ERROR));
+    TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+    TEST_ASSERT_FALSE(settings.triggeredConversionPending);
+    TEST_ASSERT_EQUAL_UINT32(0U, settings.triggeredConversionStartMs);
+
+    const uint32_t readsBefore = bus.readCalls;
+    bool ready = true;
+    TEST_ASSERT_TRUE(
+        dev.pollConversionReady(9000U, ready).is(Err::HARDWARE_STATE_UNKNOWN));
+    TEST_ASSERT_FALSE(ready);
+    TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  }
+}
+
+void test_raw_conversion_invalidators_clear_pending_trigger_timing() {
+  const uint8_t registers[] = {cmd::REG_ADC_CONFIG, cmd::REG_CONFIG};
+  const uint16_t values[] = {0x0000U, cmd::CONFIG_RST};
+  for (size_t i = 0; i < 2U; ++i) {
+    FakeBus bus;
+    INA228::INA228 dev;
+    Config cfg = makeConfig(bus);
+    cfg.nowMs = nullptr;
+    cfg.timeUser = nullptr;
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    TEST_ASSERT_TRUE(dev.triggerConversion(Mode::TRIG_ALL).inProgress());
+    TEST_ASSERT_TRUE(dev.writeRegister16(registers[i], values[i]).ok());
+
+    SettingsSnapshot settings{};
+    TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+    TEST_ASSERT_FALSE(settings.triggeredConversionPending);
+    TEST_ASSERT_EQUAL_UINT32(0U, settings.triggeredConversionStartMs);
+  }
+}
+
+void test_legacy_range_change_uses_validated_calibration_plan_at_boundary() {
+  {
+    FakeBus bus;
+    INA228::INA228 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    TEST_ASSERT_TRUE(dev.setCalibration(0.015f, 2.7306f).ok());
+    TEST_ASSERT_TRUE(dev.setAdcRange(AdcRange::MV_40_96).ok());
+
+    CalibrationPlan plan{};
+    TEST_ASSERT_TRUE(dev.getCalibrationPlan(plan).ok());
+    TEST_ASSERT_EQUAL_UINT32(40960U, plan.shuntFullScaleMicrovolts);
+    TEST_ASSERT_GREATER_THAN_UINT32(0U, plan.selectedCurrentLsbNanoAmps);
+    TEST_ASSERT_GREATER_THAN_UINT32(0U, plan.effectiveCurrentLsbNanoAmps);
+    TEST_ASSERT_FALSE(plan.clamped);
+    TEST_ASSERT_FALSE(plan.maxCurrentExceedsShuntRange);
+  }
+
+  {
+    FakeBus bus;
+    INA228::INA228 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    TEST_ASSERT_TRUE(dev.setCalibration(0.015f, 2.7307f).ok());
+    CalibrationPlan oldPlan{};
+    TEST_ASSERT_TRUE(dev.getCalibrationPlan(oldPlan).ok());
+    const uint32_t transfersBefore = bus.readCalls + bus.writeCalls;
+
+    TEST_ASSERT_TRUE(dev.setAdcRange(AdcRange::MV_40_96)
+                         .is(Err::INVALID_CONFIG));
+    TEST_ASSERT_EQUAL_UINT32(transfersBefore, bus.readCalls + bus.writeCalls);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AdcRange::MV_163_84),
+                            static_cast<uint8_t>(dev.getConfig().adcRange));
+    CalibrationPlan plan{};
+    TEST_ASSERT_TRUE(dev.getCalibrationPlan(plan).ok());
+    TEST_ASSERT_EQUAL_HEX16(oldPlan.shuntCal, plan.shuntCal);
+    TEST_ASSERT_EQUAL_UINT32(oldPlan.effectiveCurrentLsbNanoAmps,
+                             plan.effectiveCurrentLsbNanoAmps);
   }
 }
 
@@ -1748,6 +1872,32 @@ void test_alert_config_setters_do_not_read_live_diag_alrt() {
   TEST_ASSERT_TRUE((bus.diagAlrt & cmd::DIAG_SHNTOL) != 0);
   TEST_ASSERT_TRUE((bus.diagAlrt & cmd::DIAG_BUSOL) != 0);
   TEST_ASSERT_TRUE((bus.diagAlrt & cmd::DIAG_CNVRF) != 0);
+}
+
+void test_alert_config_write_failure_preserves_cache_and_marks_diag_dirty() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  const uint16_t oldDiag = bus.diagAlrt;
+  TEST_ASSERT_FALSE(dev.getConfig().alerts.latched);
+
+  bus.writeError = Status::Error(Err::I2C_NACK_DATA, "forced alert NACK", 17);
+  bus.writeErrorRemaining = 1;
+  const Status st = dev.setAlertLatch(true);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(17, st.detail);
+  TEST_ASSERT_EQUAL_STRING("forced alert NACK", st.msg);
+  TEST_ASSERT_FALSE(dev.getConfig().alerts.latched);
+  TEST_ASSERT_EQUAL_HEX16(oldDiag, bus.diagAlrt);
+
+  SettingsSnapshot settings{};
+  TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+  TEST_ASSERT_TRUE(settings.hardwareDirty);
+  TEST_ASSERT_TRUE((settings.dirtyRegisterMask &
+                    (uint64_t{1} << cmd::REG_DIAG_ALRT)) != 0U);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareState::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(dev.hardwareState()));
 }
 
 void test_public_read_diag_alert_is_destructive_and_preserved() {
@@ -2154,7 +2304,7 @@ void test_poll_measurement_ready_delay_gate_and_diag_budget() {
 
 
 
-void test_prompt_negative_raw_vectors_sign_extend() {
+void test_signed_raw_register_vectors_sign_extend() {
   FakeBus bus;
   INA228::INA228 dev;
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
@@ -2190,6 +2340,7 @@ void test_invalid_begin_calibration_configs_do_not_touch_i2c() {
       {0.0162f, -10.0f},
       {std::numeric_limits<float>::quiet_NaN(), 10.0f},
       {0.0162f, std::numeric_limits<float>::infinity()},
+      {1.0e-9f, 1.0e8f},
   };
 
   for (const Case& c : cases) {
@@ -2229,6 +2380,7 @@ void test_set_calibration_invalid_params_do_not_touch_i2c_or_cache() {
       {0.0162f, 0.0f},
       {0.0162f, -10.0f},
       {0.0162f, std::numeric_limits<float>::infinity()},
+      {1.0e-9f, 1.0e8f},
   };
 
   for (const Case& c : cases) {
@@ -2243,6 +2395,57 @@ void test_set_calibration_invalid_params_do_not_touch_i2c_or_cache() {
     TEST_ASSERT_EQUAL_HEX16(oldReg, bus.reg16[cmd::REG_SHUNT_CAL]);
   }
   TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+}
+
+void test_set_calibration_write_failure_preserves_committed_scale() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  TEST_ASSERT_TRUE(dev.setCalibration(0.0162f, 10.0f).ok());
+
+  const Config oldConfig = dev.getConfig();
+  const float oldLsb = dev.currentLsb();
+  const uint16_t oldReg = bus.reg16[cmd::REG_SHUNT_CAL];
+  CalibrationPlan oldPlan{};
+  TEST_ASSERT_TRUE(dev.getCalibrationPlan(oldPlan).ok());
+  JobSnapshot oldJob{};
+  TEST_ASSERT_TRUE(dev.getJobState(oldJob).ok());
+
+  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "forced calibration timeout", 91);
+  bus.writeErrorRemaining = 1;
+  const Status st = dev.setCalibration(0.020f, 5.0f);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(91, st.detail);
+  TEST_ASSERT_EQUAL_STRING("forced calibration timeout", st.msg);
+
+  TEST_ASSERT_FLOAT_WITHIN(0.000001f, oldConfig.shuntResistanceOhm,
+                           dev.getConfig().shuntResistanceOhm);
+  TEST_ASSERT_FLOAT_WITHIN(0.000001f, oldConfig.maxExpectedCurrentA,
+                           dev.getConfig().maxExpectedCurrentA);
+  TEST_ASSERT_FLOAT_WITHIN(oldLsb * 0.0001f, oldLsb, dev.currentLsb());
+  TEST_ASSERT_EQUAL_HEX16(oldReg, bus.reg16[cmd::REG_SHUNT_CAL]);
+
+  CalibrationPlan plan{};
+  TEST_ASSERT_TRUE(dev.getCalibrationPlan(plan).ok());
+  TEST_ASSERT_EQUAL_HEX16(oldPlan.shuntCal, plan.shuntCal);
+  TEST_ASSERT_EQUAL_UINT32(oldPlan.selectedCurrentLsbNanoAmps,
+                           plan.selectedCurrentLsbNanoAmps);
+  TEST_ASSERT_EQUAL_UINT32(oldPlan.effectiveCurrentLsbNanoAmps,
+                           plan.effectiveCurrentLsbNanoAmps);
+
+  SettingsSnapshot settings{};
+  TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+  TEST_ASSERT_TRUE(settings.hardwareDirty);
+  TEST_ASSERT_FALSE(settings.calibrated);
+  TEST_ASSERT_TRUE((settings.dirtyRegisterMask &
+                    (uint64_t{1} << cmd::REG_SHUNT_CAL)) != 0U);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareState::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(dev.hardwareState()));
+  JobSnapshot job{};
+  TEST_ASSERT_TRUE(dev.getJobState(job).ok());
+  TEST_ASSERT_EQUAL_UINT32(oldJob.configurationGeneration,
+                           job.configurationGeneration);
 }
 
 
@@ -3029,7 +3232,7 @@ void test_reinitialize_identity_commit_cancel_and_invalidation_are_atomic() {
 
   clearTransferHistory(bus);
   clearReadHistory(bus);
-  clearWriteHistory(bus);
+  resetWriteTracking(bus);
   uint32_t operationId = 0;
   TEST_ASSERT_TRUE(dev.startReinitialize(0xA100u, operationId).ok());
   TEST_ASSERT_TRUE(dev.pollJob(bus.nowMs, 1).inProgress());
@@ -3102,7 +3305,7 @@ void test_reinitialize_semantic_failures_revoke_verified_identity() {
     TEST_ASSERT_TRUE(dev.getDeviceIdentity(identity).ok());
     clearTransferHistory(bus);
     clearReadHistory(bus);
-    clearWriteHistory(bus);
+    resetWriteTracking(bus);
     if (c.fault == Fault::DIE) {
       bus.deviceId = 0xF228;
     } else if (c.fault == Fault::REVISION) {
@@ -3117,7 +3320,7 @@ void test_reinitialize_semantic_failures_revoke_verified_identity() {
     TEST_ASSERT_TRUE(st.is(c.expected));
     TEST_ASSERT_EQUAL_UINT16(c.transfers,
                              static_cast<uint16_t>(bus.transferHistoryCount));
-    TEST_ASSERT_EQUAL_UINT32(0u, bus.writeHistoryCount);
+    TEST_ASSERT_EQUAL_UINT32(0u, bus.writeAttemptCount);
     JobResult result{};
     TEST_ASSERT_TRUE(dev.takeJobResult(operationId, result).ok());
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobEffect::NONE),
@@ -3153,7 +3356,7 @@ void test_verify_configuration_failure_injection_covers_every_transfer_stage() {
     (void)initializeCooperativeDevice(dev, bus);
     clearTransferHistory(bus);
     clearReadHistory(bus);
-    clearWriteHistory(bus);
+    resetWriteTracking(bus);
     queueNthReadFailure(bus, cases[index].reg, cases[index].occurrence);
     uint32_t operationId = 0;
     TEST_ASSERT_TRUE(dev.startVerifyConfiguration(
@@ -3178,14 +3381,14 @@ void test_verify_configuration_is_read_only_bounded_and_generation_stable() {
   (void)initializeCooperativeDevice(dev, bus);
   clearTransferHistory(bus);
   clearReadHistory(bus);
-  clearWriteHistory(bus);
+  resetWriteTracking(bus);
 
   uint32_t operationId = 0;
   TEST_ASSERT_TRUE(dev.startVerifyConfiguration(0x0F00u, operationId).ok());
   const Status st = pollCooperativeToTerminal(dev, bus);
   TEST_ASSERT_TRUE(st.ok());
   TEST_ASSERT_EQUAL_UINT32(8u, bus.transferHistoryCount);
-  TEST_ASSERT_EQUAL_UINT32(0u, bus.writeHistoryCount);
+  TEST_ASSERT_EQUAL_UINT32(0u, bus.writeAttemptCount);
   const uint8_t regs[] = {
       cmd::REG_MANUFACTURER_ID, cmd::REG_DEVICE_ID, cmd::REG_DIAG_ALRT,
       cmd::REG_CONFIG, cmd::REG_ADC_CONFIG, cmd::REG_SHUNT_CAL,
@@ -3387,7 +3590,7 @@ void test_triggered_sample_sequence_wait_budget_and_atomic_result() {
   (void)initializeCooperativeDevice(dev, bus, 100);
   loadPositiveMeasurementRegisters(bus);
   clearReadHistory(bus);
-  clearWriteHistory(bus);
+  resetWriteTracking(bus);
   clearTransferHistory(bus);
 
   JobLimits limits{};
@@ -3478,7 +3681,7 @@ void test_triggered_sample_wait_is_uint32_wrap_safe() {
   loadPositiveMeasurementRegisters(bus);
   clearTransferHistory(bus);
   clearReadHistory(bus);
-  clearWriteHistory(bus);
+  resetWriteTracking(bus);
 
   bus.nowMs = std::numeric_limits<uint32_t>::max();
   uint32_t operationId = 0;
@@ -3508,7 +3711,7 @@ void test_triggered_sample_without_hook_anchors_on_later_bus_silent_poll() {
   (void)initializeCooperativeDevice(dev, bus);
   loadPositiveMeasurementRegisters(bus);
   clearReadHistory(bus);
-  clearWriteHistory(bus);
+  resetWriteTracking(bus);
   clearTransferHistory(bus);
 
   JobLimits limits{};
@@ -3556,7 +3759,7 @@ void test_hookless_wait_deferral_is_cleared_by_cancel_and_timeout() {
       (void)initializeCooperativeDevice(dev, bus);
       clearTransferHistory(bus);
       clearReadHistory(bus);
-      clearWriteHistory(bus);
+      resetWriteTracking(bus);
 
       uint32_t operationId = 0;
       const Status started = jobKind == 0U
@@ -3607,7 +3810,7 @@ void test_hookless_positive_budget_anchor_is_bus_silent() {
   (void)initializeCooperativeDevice(dev, bus);
   clearTransferHistory(bus);
   clearReadHistory(bus);
-  clearWriteHistory(bus);
+  resetWriteTracking(bus);
 
   uint32_t operationId = 0;
   TEST_ASSERT_TRUE(dev.startInstantaneousSample(0x3501U, operationId).ok());
@@ -3641,7 +3844,7 @@ void test_sample_diagnostic_failures_restore_adc_and_preserve_correlated_evidenc
     (void)initializeCooperativeDevice(dev, bus);
     clearTransferHistory(bus);
     clearReadHistory(bus);
-    clearWriteHistory(bus);
+    resetWriteTracking(bus);
 
     uint32_t operationId = 0;
     const uint32_t token = static_cast<uint32_t>(0x6000u + index);
@@ -3704,7 +3907,7 @@ void test_sample_failure_injection_covers_every_transfer_stage_without_retry() {
     loadPositiveMeasurementRegisters(bus);
     clearTransferHistory(bus);
     clearReadHistory(bus);
-    clearWriteHistory(bus);
+    resetWriteTracking(bus);
     const FailureCase& c = cases[index];
     if (c.kind == TransferKind::WRITE) {
       queueNthWriteFailure(bus, c.reg, c.occurrence);
@@ -3843,7 +4046,7 @@ void test_invalidate_and_configuration_guard_require_verified_reappearance() {
   bus.reg16[cmd::REG_SHUNT_CAL] = 0x0001;
   clearTransferHistory(bus);
   clearReadHistory(bus);
-  clearWriteHistory(bus);
+  resetWriteTracking(bus);
   TEST_ASSERT_TRUE(dev.startInstantaneousSample(3, operationId).ok());
   st = pollCooperativeToTerminal(dev, bus);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CONFIG_MISMATCH),
@@ -3958,6 +4161,48 @@ void test_accumulator_epoch_requires_verified_reset_after_each_generation() {
   TEST_ASSERT_EQUAL_UINT32(beforeSecondInvalidRead, bus.readCalls);
 }
 
+void test_accumulator_reset_clears_obsolete_snapshot_evidence() {
+  FakeBus bus;
+  bus.autoClearAccumulatorReset = true;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  constexpr uint16_t ACCUMULATOR_EVIDENCE =
+      cmd::DIAG_CNVRF | cmd::DIAG_ENERGYOF |
+      cmd::DIAG_CHARGEOF | cmd::DIAG_MATHOF;
+  constexpr uint16_t RETAINED_EVIDENCE = cmd::DIAG_MEMSTAT | cmd::DIAG_BUSOL;
+  bus.diagAlrt = RETAINED_EVIDENCE | ACCUMULATOR_EVIDENCE;
+  uint16_t raw = 0;
+  TEST_ASSERT_TRUE(dev.readDiagAlertRaw(raw).ok());
+  TEST_ASSERT_EQUAL_HEX16(RETAINED_EVIDENCE | ACCUMULATOR_EVIDENCE, raw);
+
+  DiagAlertSnapshot snapshot{};
+  TEST_ASSERT_TRUE(dev.getDiagAlertSnapshot(snapshot).ok());
+  TEST_ASSERT_EQUAL_HEX16(ACCUMULATOR_EVIDENCE,
+                          snapshot.raw & ACCUMULATOR_EVIDENCE);
+  TEST_ASSERT_EQUAL_HEX16(RETAINED_EVIDENCE,
+                          snapshot.raw & RETAINED_EVIDENCE);
+  TEST_ASSERT_TRUE(snapshot.valid);
+  const uint32_t capturedMs = snapshot.capturedMs;
+  DiagnosticEvents events{};
+  TEST_ASSERT_TRUE(dev.getDiagnosticEvents(events).ok());
+  TEST_ASSERT_EQUAL_HEX16(ACCUMULATOR_EVIDENCE,
+                          events.stickyEvents & ACCUMULATOR_EVIDENCE);
+
+  TEST_ASSERT_TRUE(dev.resetAccumulators().ok());
+  TEST_ASSERT_TRUE(dev.getDiagAlertSnapshot(snapshot).ok());
+  TEST_ASSERT_EQUAL_HEX16(0U, snapshot.raw & ACCUMULATOR_EVIDENCE);
+  TEST_ASSERT_EQUAL_HEX16(RETAINED_EVIDENCE,
+                          snapshot.raw & RETAINED_EVIDENCE);
+  TEST_ASSERT_TRUE(snapshot.valid);
+  TEST_ASSERT_EQUAL_UINT32(capturedMs, snapshot.capturedMs);
+  TEST_ASSERT_TRUE(snapshot.diag.memstat);
+  TEST_ASSERT_TRUE(snapshot.diag.busOL);
+  TEST_ASSERT_TRUE(dev.getDiagnosticEvents(events).ok());
+  TEST_ASSERT_EQUAL_HEX16(ACCUMULATOR_EVIDENCE,
+                          events.stickyEvents & ACCUMULATOR_EVIDENCE);
+}
+
 void test_accumulator_reset_cancel_and_ambiguous_write_require_resync() {
   {
     FakeBus bus;
@@ -3985,7 +4230,7 @@ void test_accumulator_reset_cancel_and_ambiguous_write_require_resync() {
     INA228::INA228 dev;
     TEST_ASSERT_TRUE(dev.bind(makeCooperativeConfig(bus)).ok());
     (void)initializeCooperativeDevice(dev, bus);
-    clearWriteHistory(bus);
+    resetWriteTracking(bus);
     bus.applyThenFailWriteReg = cmd::REG_CONFIG;
     bus.applyThenFailWriteMatch = 1;
     uint32_t operationId = 0;
@@ -4037,7 +4282,7 @@ void test_reset_and_accumulator_failure_injection_cover_every_transfer_stage() {
     (void)initializeCooperativeDevice(dev, bus);
     clearTransferHistory(bus);
     clearReadHistory(bus);
-    clearWriteHistory(bus);
+    resetWriteTracking(bus);
     const FailureCase& c = resetCases[index];
     if (c.kind == TransferKind::WRITE) {
       queueNthWriteFailure(bus, c.reg, c.occurrence);
@@ -4067,7 +4312,7 @@ void test_reset_and_accumulator_failure_injection_cover_every_transfer_stage() {
     (void)initializeCooperativeDevice(dev, bus);
     clearTransferHistory(bus);
     clearReadHistory(bus);
-    clearWriteHistory(bus);
+    resetWriteTracking(bus);
     if (stage == 0) {
       queueNthWriteFailure(bus, cmd::REG_CONFIG, 1);
     } else {
@@ -4097,7 +4342,7 @@ void test_reset_job_wait_and_zero_budget_are_wrap_safe_and_bus_silent() {
   (void)initializeCooperativeDevice(dev, bus);
   clearTransferHistory(bus);
   clearReadHistory(bus);
-  clearWriteHistory(bus);
+  resetWriteTracking(bus);
 
   bus.nowMs = std::numeric_limits<uint32_t>::max();
   uint32_t operationId = 0;
@@ -4129,7 +4374,7 @@ void test_reset_wait_origin_is_post_write_with_and_without_hook() {
     (void)initializeCooperativeDevice(dev, bus);
     clearTransferHistory(bus);
     clearReadHistory(bus);
-    clearWriteHistory(bus);
+    resetWriteTracking(bus);
 
     bus.nowMs = 2000U;
     bus.successfulWriteDurationReg = cmd::REG_CONFIG;
@@ -4167,7 +4412,7 @@ void test_reset_wait_origin_is_post_write_with_and_without_hook() {
     (void)initializeCooperativeDevice(dev, bus);
     clearTransferHistory(bus);
     clearReadHistory(bus);
-    clearWriteHistory(bus);
+    resetWriteTracking(bus);
 
     bus.nowMs = 3000U;
     bus.successfulWriteDurationReg = cmd::REG_CONFIG;
@@ -4241,7 +4486,7 @@ void test_retained_configuration_setters_preserve_success_and_failure_contracts(
     (void)initializeCooperativeDevice(dev, bus);
     clearTransferHistory(bus);
     clearReadHistory(bus);
-    clearWriteHistory(bus);
+    resetWriteTracking(bus);
 
     TEST_ASSERT_TRUE(dev.setVbusConvTime(ConvTime::US_50).ok());
     TEST_ASSERT_TRUE(dev.setVshuntConvTime(ConvTime::US_84).ok());
@@ -4281,7 +4526,7 @@ void test_retained_configuration_setters_preserve_success_and_failure_contracts(
     (void)initializeCooperativeDevice(dev, bus);
     clearTransferHistory(bus);
     clearReadHistory(bus);
-    clearWriteHistory(bus);
+    resetWriteTracking(bus);
     queueNthWriteFailure(bus, cmd::REG_ADC_CONFIG, 1);
     TEST_ASSERT_TRUE(dev.setAveraging(Averaging::AVG_4).is(Err::I2C_ERROR));
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Averaging::AVG_1),
@@ -4303,7 +4548,7 @@ void test_retained_configuration_setters_preserve_success_and_failure_contracts(
     const uint16_t oldConfig = bus.reg16[cmd::REG_CONFIG];
     clearTransferHistory(bus);
     clearReadHistory(bus);
-    clearWriteHistory(bus);
+    resetWriteTracking(bus);
     queueNthWriteFailure(bus, cmd::REG_SHUNT_CAL, 1);
     TEST_ASSERT_TRUE(dev.setAdcRange(AdcRange::MV_40_96).is(Err::I2C_ERROR));
     TEST_ASSERT_EQUAL_UINT32(3u, bus.transferHistoryCount);
@@ -4474,14 +4719,20 @@ int main() {
   RUN_TEST(test_triggered_conversion_gates_reads_until_cnvrf);
   RUN_TEST(test_tick_timestamp_completes_trigger_without_now_hook);
   RUN_TEST(test_tick_deadline_is_wraparound_safe);
+  RUN_TEST(test_tick_is_bus_silent_without_a_pending_trigger);
   RUN_TEST(test_configured_trigger_uses_hooked_post_write_origin_for_initialize_and_reinitialize);
   RUN_TEST(test_configured_trigger_without_hook_anchors_after_successful_terminal);
+  RUN_TEST(test_hookless_internal_sync_jobs_do_not_consume_trigger_origin);
   RUN_TEST(test_hookless_configured_trigger_deferral_lifetime_is_bounded);
   RUN_TEST(test_write_duration_injection_is_consumed_only_by_success);
+  RUN_TEST(test_ambiguous_adc_writes_invalidate_pending_trigger_timing);
+  RUN_TEST(test_raw_conversion_invalidators_clear_pending_trigger_timing);
+  RUN_TEST(test_legacy_range_change_uses_validated_calibration_plan_at_boundary);
   RUN_TEST(test_public_diag_read_consuming_cnvrf_does_not_strand_pending_trigger);
   RUN_TEST(test_tick_preserves_diag_alert_evidence_when_polling_cnvrf);
   RUN_TEST(test_readiness_path_preserves_diag_alert_evidence_for_measurement_gate);
   RUN_TEST(test_alert_config_setters_do_not_read_live_diag_alrt);
+  RUN_TEST(test_alert_config_write_failure_preserves_cache_and_marks_diag_dirty);
   RUN_TEST(test_public_read_diag_alert_is_destructive_and_preserved);
   RUN_TEST(test_public_read_diag_alert_raw_is_destructive);
   RUN_TEST(test_read_bus_voltage_requires_init);
@@ -4497,9 +4748,10 @@ int main() {
   RUN_TEST(test_temperature_negative_and_positive_vectors);
   RUN_TEST(test_read_raw_sample_failures_leave_output_unchanged);
   RUN_TEST(test_poll_measurement_ready_delay_gate_and_diag_budget);
-  RUN_TEST(test_prompt_negative_raw_vectors_sign_extend);
+  RUN_TEST(test_signed_raw_register_vectors_sign_extend);
   RUN_TEST(test_invalid_begin_calibration_configs_do_not_touch_i2c);
   RUN_TEST(test_set_calibration_invalid_params_do_not_touch_i2c_or_cache);
+  RUN_TEST(test_set_calibration_write_failure_preserves_committed_scale);
   RUN_TEST(test_begin_uncalibrated_writes_shunt_cal_zero);
   RUN_TEST(test_cached_static_config_write_failures_mark_dirty_registers);
   RUN_TEST(test_threshold_setters_encode_exact_register_vectors);
@@ -4537,6 +4789,7 @@ int main() {
   RUN_TEST(test_invalidate_and_configuration_guard_require_verified_reappearance);
   RUN_TEST(test_diagnostic_event_acknowledgement_and_caller_timestamps_are_deterministic);
   RUN_TEST(test_accumulator_epoch_requires_verified_reset_after_each_generation);
+  RUN_TEST(test_accumulator_reset_clears_obsolete_snapshot_evidence);
   RUN_TEST(test_accumulator_reset_cancel_and_ambiguous_write_require_resync);
   RUN_TEST(test_reset_and_accumulator_failure_injection_cover_every_transfer_stage);
   RUN_TEST(test_reset_job_wait_and_zero_budget_are_wrap_safe_and_bus_silent);

@@ -31,7 +31,7 @@ For a PlatformIO application, pin the current release tag in `platformio.ini`:
 
 ```ini
 lib_deps =
-  https://github.com/janhavelka/INA228.git#v3.0.1
+  https://github.com/janhavelka/INA228.git#v3.0.2
 build_unflags =
   -std=gnu++11
 build_flags =
@@ -63,6 +63,10 @@ branch.
 The external owner first calls `bind()`, which validates and stores the desired
 configuration without touching I2C. It then starts one operation and advances it
 with `pollJob(nowMs, maxTransfers)`.
+
+The following is an integration fragment: `appI2cWrite`, `appI2cWriteRead`,
+`busContext`, `requestToken`, and `monotonicNowMs` are application-owned values,
+not library globals.
 
 ```cpp
 INA228::INA228 monitor;
@@ -140,6 +144,12 @@ full unchanged device wait follows. Hookless `isConversionReady()` cannot
 advance an unresolved origin; use `pollConversionReady(nowMs, ...)` or
 `tick(nowMs)`.
 
+Internal synchronous conveniences never treat a missing timing hook's zero
+fallback as an explicit caller timestamp, so they do not consume an unrelated
+deferred trigger origin. `tick(nowMs)` is bus-silent when no driver-tracked
+trigger is pending; a verified accumulator reset establishes its new epoch
+directly and does not require background diagnostic polling.
+
 The caller owns the operation deadline. `timeoutJob()` and `cancelJob()` are
 idempotent and bus-silent. Their terminal `JobEffect` distinguishes:
 
@@ -192,7 +202,10 @@ Current, power, energy, charge, and power-threshold conversions are unavailable
 without valid calibration. Changing range, calibration, mode/timing, triggered
 operation, temperature-compensation state, or resetting the device invalidates
 the accumulator epoch until the required reset/verified sequence establishes a
-new coherent scale.
+new coherent scale. A verified accumulator reset also removes obsolete
+conversion-ready and accumulator-overflow bits from the latest diagnostic
+snapshot. Sticky diagnostic event history remains available until explicitly
+acknowledged.
 
 ## Identity and diagnostics
 
@@ -209,7 +222,7 @@ cache is bus-silent. Acknowledgement does not claim that hardware has been read.
 
 ## Health, ownership, and concurrency
 
-`HealthPolicy::PASSIVE` is the production default. Transfer counters and last
+`HealthPolicy::PASSIVE` is the default. Transfer counters and last
 success/error information remain diagnostic, but the library does not suppress
 an owner-requested transaction or take recovery authority. The legacy
 `LATCH_OFFLINE` policy is available only for compatibility.
@@ -220,6 +233,13 @@ The core owns no task, queue, mutex, allocation, delay, retry loop, or bus.
 Transport callbacks must honor `i2cTimeoutMs` and return the most precise status
 available (`I2C_NACK_ADDR`, `I2C_NACK_DATA`, `I2C_NACK_UNKNOWN_PHASE`,
 `I2C_TIMEOUT`, `I2C_BUS`, or `I2C_ERROR`).
+
+Every fallible API returns `Status { code, detail, msg }`. `msg` always points
+to static storage; `detail` carries transport- or implementation-specific
+numeric context and must not be treated as a portable error code. `ok()` means
+only `code == OK`; `IN_PROGRESS` is a nonterminal state exposed separately by
+`inProgress()`. Output parameters remain unchanged on non-OK status unless the
+specific API explicitly documents readiness-output clearing.
 
 ## Other API groups
 
@@ -258,12 +278,19 @@ The Arduino example defaults to GPIO8 SDA, GPIO9 SCL, and address `0x40`, then
 attempts INA228 discovery during startup. Override the pins, bus settings,
 address, and calibration for the actual board before connecting a load.
 
-Build, upload, and monitor the Arduino example with:
+The Arduino and native ESP-IDF CLIs expose the same command/alias contract.
+Inputs are parsed strictly, diagnostic reads are identified as destructive,
+and raw writes require an explicit trailing `confirm`. See the
+<a href="docs/CLI.md">CLI and HIL reference</a> and the example-specific
+READMEs before using service commands or collecting validation evidence.
 
-```sh
-python -m platformio run -e esp32s3dev
-python -m platformio run -e esp32s3dev -t upload --upload-port COMx
-python -m platformio device monitor -e esp32s3dev -p COMx
+On Windows, build, upload, and monitor this repository's Arduino example
+through the checked-in wrapper:
+
+```powershell
+.\scripts\pio.cmd run -e esp32s3dev
+.\scripts\pio.cmd run -e esp32s3dev -t upload --upload-port COMx
+.\scripts\pio.cmd device monitor -e esp32s3dev -p COMx
 ```
 
 Use `esp32s2dev` for the supplied ESP32-S2 environment.
@@ -280,15 +307,17 @@ Arduino-ESP32 `3.3.11` and ESP-IDF `5.5.5`. The Arduino diagnostic CLI `version`
 command prints the running framework versions and detected flash/PSRAM so HIL
 evidence can verify the firmware stack instead of relying only on build logs.
 
-```sh
-python -m platformio test -e native
-python -m platformio run -e esp32s2dev
-python -m platformio run -e esp32s3dev
+```powershell
+.\scripts\pio.cmd test -e native
+.\scripts\pio.cmd run -e esp32s2dev
+.\scripts\pio.cmd run -e esp32s3dev
 python tools/check_core_timing_guard.py
 python tools/check_owner_contract.py
 python tools/check_cli_contract.py
 python tools/check_idf_example_contract.py
+python tools/test_run_i2c_hil_parser.py
 python scripts/generate_version.py check
+doxygen Doxyfile
 ```
 
 The native ESP-IDF example is built by CI for ESP32-S2 and ESP32-S3. Physical
