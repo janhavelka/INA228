@@ -129,6 +129,23 @@ def test_failure_runs_reset_on_every_non_failure() -> None:
     )
 
 
+def test_executed_command_count_excludes_not_run_rows() -> None:
+    regular_step = runner.Step("vbus", ("Vbus",), "sample")
+    soak_step = runner.Step("vbus", ("Vbus",), "sample", "soak")
+    skipped_step = runner.Step("<fault injection>", (), "not available", "not-run")
+    results = (
+        runner.Result(regular_step, "PASS", 0.0, ""),
+        runner.Result(soak_step, "PASS", 0.0, ""),
+        runner.Result(skipped_step, "NOT RUN", 0.0, ""),
+    )
+    assert_equal(runner.actual_command_count(results, None), 2, "stored command count")
+
+    summary = runner.SoakSummary()
+    for _ in range(4):
+        summary.record(runner.Result(soak_step, "PASS", 0.0, ""))
+    assert_equal(runner.actual_command_count(results, summary), 5, "expanded soak count")
+
+
 def test_framework_and_provenance_contract() -> None:
     arduino = (
         "Arduino-ESP32: 3.3.11\n"
@@ -284,6 +301,7 @@ def main() -> int:
     tests = (
         test_expected_rejection_is_fail_closed,
         test_failure_runs_reset_on_every_non_failure,
+        test_executed_command_count_excludes_not_run_rows,
         test_framework_and_provenance_contract,
         test_stale_input_cannot_supply_framed_verdict,
         test_post_frame_trailer_cannot_hide_failure,

@@ -26,7 +26,8 @@ M examples/01_basic_bringup_cli/main.cpp
 ?? docs/validation/hardware/
 ```
 
-- Transcript: `docs/validation/hardware/2026-07-31/4c32312-dirty-pioarduino-55.03.311-esp32s3/transcript.txt`
+- Transcript: not retained; this report preserves the run metadata, summary,
+  and command results.
 - Notes: Physical board serial 24:58:7C:DB:DB:AC re-enumerated from requested COM3 to COM4 after USB boot reset; source tree intentionally dirty with migration changes under test. Low ADC range is correctly rejected by the bound 15 mOhm/10 A calibration profile and is covered by native range-vector tests, not this physical profile.
 
 ## Summary

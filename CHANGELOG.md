@@ -7,12 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.3] - 2026-08-04
+
 ### Changed
 
-- Consolidated duplicated conversion-wait, ADC-configuration, alert-bit, and
-  calibration-planning paths, and removed orphaned private state, helpers,
-  constants, includes, and redundant lifecycle invalidations. Public API,
-  transfer bounds, device wait durations, and retry behavior are unchanged.
+- Consolidated duplicated conversion-wait, ADC-configuration, alert-bit,
+  threshold-encoding, calibration-planning, measurement-read preparation,
+  job-invalidation, owner-step, and CLI stress-summary paths. Removed orphaned
+  private state, helpers, constants, includes, and redundant lifecycle
+  invalidations. Public API, transfer bounds, device wait durations, and retry
+  behavior are unchanged.
 - Clarified triggered-timestamp ownership, idle `tick()` behavior, accumulator
   evidence lifecycle, and the current release installation pin in user and API
   documentation.
@@ -26,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Arduino and native ESP-IDF CLI status output no longer repeats a successful
+  `OK` as a yellow warning-style `Message`; non-OK diagnostic messages remain.
+- HIL reports now exclude explicit `NOT RUN` rows from `Commands executed`
+  while retaining them in the detailed and verdict counts.
 - `tick()` is now bus-silent when no driver-tracked conversion is pending; it
   no longer performs non-advancing, status-clearing `DIAG_ALRT` reads merely
   because the accumulator epoch is invalid.
@@ -67,7 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contracts to cover every published alias, strict parsing, raw-write
   confirmation, exact cross-framework help parity, and embedded provenance.
   The final local software evidence is recorded in
-  `docs/validation/validation-status.md`; no new hardware validation is claimed.
+  `docs/validation/validation-status.md`. A clean-commit targeted ESP32-S3 HIL
+  run and a dirty-worktree smoke confirmation of the CLI-output fix are
+  also recorded there as local, partial evidence; release-grade hardware
+  validation is not claimed.
 
 ## [3.0.2] - 2026-08-03
 
@@ -430,7 +441,8 @@ converted values.
 - `recover()` now re-validates manufacturer ID, device ID, and MEMSTAT before reapplying cached configuration and calibration.
 - Bringup `scan` now includes an INA228-specific address probe, and startup can auto-detect a single healthy INA228 on `0x40..0x4F`.
 
-[Unreleased]: https://github.com/janhavelka/INA228/compare/v3.0.2...HEAD
+[Unreleased]: https://github.com/janhavelka/INA228/compare/v3.0.3...HEAD
+[3.0.3]: https://github.com/janhavelka/INA228/compare/v3.0.2...v3.0.3
 [3.0.2]: https://github.com/janhavelka/INA228/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/janhavelka/INA228/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/janhavelka/INA228/compare/v2.0.0...v3.0.0

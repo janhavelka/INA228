@@ -325,7 +325,7 @@ void printStatus(const INA228::Status& st) {
               COLOR_RESET,
               static_cast<unsigned>(st.code),
               static_cast<long>(st.detail));
-  if (st.msg != nullptr && st.msg[0] != '\0') {
+  if (!st.ok() && st.msg != nullptr && st.msg[0] != '\0') {
     std::printf("  Message: %s%s%s\n", COLOR_YELLOW, st.msg, COLOR_RESET);
   }
 }
@@ -548,6 +548,18 @@ INA228::Status pollOwnerJob(uint8_t maxTransfers, INA228::JobResult& result,
   activeOperationId = 0U;
   completed = true;
   return result.job.status;
+}
+
+void pollAndPrintOwnerJobStep(uint32_t budget) {
+  INA228::JobResult result{};
+  bool completed = false;
+  const INA228::Status st = pollOwnerJob(
+      static_cast<uint8_t>(budget), result, completed);
+  const bool accepted = st.ok() || st.inProgress();
+  std::printf("pollJob(%lu): %s%s\n",
+              static_cast<unsigned long>(budget), errToStr(st.code),
+              completed ? " terminal result consumed" : "");
+  if (!accepted) printStatus(st);
 }
 
 INA228::Status runOwnerJob(INA228::JobKind kind, INA228::JobResult& result) {
@@ -1153,6 +1165,15 @@ void printStressProgress(uint32_t completed, uint32_t total, uint32_t ok, uint32
               static_cast<unsigned long>(fail));
 }
 
+void printStressFailures(const INA228::Status& firstFailure,
+                         const INA228::Status& lastFailure) {
+  if (firstFailure.ok()) return;
+  std::printf("  First failure:\n");
+  printStatus(firstFailure);
+  std::printf("  Last failure:\n");
+  printStatus(lastFailure);
+}
+
 void runStress(uint32_t count) {
   const uint32_t start = nowMs();
   HealthSnapshot before;
@@ -1195,12 +1216,7 @@ void runStress(uint32_t count) {
   }
   std::printf("  Health changes:\n");
   printHealthDiff(before, after);
-  if (!firstFailure.ok()) {
-    std::printf("  First failure:\n");
-    printStatus(firstFailure);
-    std::printf("  Last failure:\n");
-    printStatus(lastFailure);
-  }
+  printStressFailures(firstFailure, lastFailure);
 }
 
 void runStressMix(uint32_t count) {
@@ -1279,12 +1295,7 @@ void runStressMix(uint32_t count) {
   }
   std::printf("  Health changes:\n");
   printHealthDiff(before, after);
-  if (!firstFailure.ok()) {
-    std::printf("  First failure:\n");
-    printStatus(firstFailure);
-    std::printf("  Last failure:\n");
-    printStatus(lastFailure);
-  }
+  printStressFailures(firstFailure, lastFailure);
 }
 
 struct SelftestStats {
@@ -1727,14 +1738,7 @@ void processCommand(char* cmd) {
       rejectInvalidCommand("Usage: reset_step <0..255>");
       return;
     }
-    INA228::JobResult result{};
-    bool completed = false;
-    INA228::Status st = pollOwnerJob(static_cast<uint8_t>(budget), result, completed);
-    const bool accepted = st.ok() || st.inProgress();
-    std::printf("pollJob(%lu): %s%s\n",
-                static_cast<unsigned long>(budget), errToStr(st.code),
-                completed ? " terminal result consumed" : "");
-    if (!accepted) printStatus(st);
+    pollAndPrintOwnerJobStep(budget);
   } else if (std::strcmp(cmd, "rstacc") == 0) {
     INA228::JobResult result{};
     INA228::Status st = runOwnerJob(INA228::JobKind::ACCUMULATOR_RESET, result);
@@ -1752,14 +1756,7 @@ void processCommand(char* cmd) {
       rejectInvalidCommand("Usage: apply_step|replay_step <0..255>");
       return;
     }
-    INA228::JobResult result{};
-    bool completed = false;
-    INA228::Status st = pollOwnerJob(static_cast<uint8_t>(budget), result, completed);
-    const bool accepted = st.ok() || st.inProgress();
-    std::printf("pollJob(%lu): %s%s\n",
-                static_cast<unsigned long>(budget), errToStr(st.code),
-                completed ? " terminal result consumed" : "");
-    if (!accepted) printStatus(st);
+    pollAndPrintOwnerJobStep(budget);
   } else if (std::strcmp(cmd, "diag") == 0) {
     printDiag();
   } else if (std::strcmp(cmd, "diagraw") == 0) {

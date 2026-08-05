@@ -17,7 +17,8 @@ manufacturer ID `0x5449`, device ID `0x2281`, and healthy MEMSTAT.
 | PIOArduino 55.03.311 exhaustive + benchmark | `4c32312` + dirty migration changes | 9.0 s | 851 | 0 | 0 | 5 | Full synchronous and cooperative feature sweep, exact transfer budgets, 100 iterations across six read paths, 1,000 measurement samples, and 1,000 mixed operations. |
 | PIOArduino 55.03.311 shakedown soak | `4c32312` + dirty migration changes | 63.3 s | 5,940 | 0 | 0 | 4 | Eight smoke checks plus 5,932 soak commands over the requested 60-second interval; not the release-gate 8-hour soak. |
 
-Reports and full serial transcripts:
+Detailed retained reports (raw serial transcripts were removed during the
+v3.0.3 repository cleanup):
 `hardware/2026-07-31/4c32312-dirty-pioarduino-55.03.311-esp32s3/`.
 
 This evidence used a low-voltage connected fixture. It did not include
@@ -52,10 +53,11 @@ Fixture: `INA228_0x41_low_voltage_no_fault_injection`.
 - ALERT-pin capture for polarity, latch/transparent behavior, conversion-ready
   routing, and safe threshold crossings.
 - Controlled MCU reset and INA228 power-cycle evidence.
-- Reviewed CI logs for the final revision under test. The v3.0.2 release commit
-  satisfied this software gate in
-  [CI run 30815246708](https://github.com/janhavelka/INA228/actions/runs/30815246708);
-  the current Unreleased cleanup worktree has not yet run in CI.
+- Reviewed CI logs for the final revision under test. The clean base and exact
+  v3.0.2 release commits satisfied this software gate in
+  [CI run 30902376574](https://github.com/janhavelka/INA228/actions/runs/30902376574)
+  and [CI run 30815246708](https://github.com/janhavelka/INA228/actions/runs/30815246708),
+  respectively; the v3.0.3 release-candidate worktree has not yet run in CI.
 
 ## Serial/HIL Runner Finding
 

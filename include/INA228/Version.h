@@ -13,7 +13,7 @@
 
 #ifndef INA228_VERSION_STRING
 /// @brief Semantic version string; may be overridden by the build.
-#define INA228_VERSION_STRING "3.0.2"
+#define INA228_VERSION_STRING "3.0.3"
 #endif
 
 #ifndef INA228_BUILD_DATE
@@ -56,16 +56,16 @@ static constexpr uint16_t VERSION_MAJOR = 3;
 static constexpr uint16_t VERSION_MINOR = 0;
 
 /// @brief Patch version (backward-compatible fixes).
-static constexpr uint16_t VERSION_PATCH = 2;
+static constexpr uint16_t VERSION_PATCH = 3;
 
 /// @brief Full semantic version string.
 static constexpr const char* VERSION = INA228_VERSION_STRING;
 
 /// @brief Encoded version for numeric comparison: MAJOR*10000 + MINOR*100 + PATCH.
-static constexpr uint32_t VERSION_CODE = 30002;
+static constexpr uint32_t VERSION_CODE = 30003;
 
 /// @brief Backward-compatible alias used by older repositories.
-static constexpr int VERSION_INT = 30002;
+static constexpr int VERSION_INT = 30003;
 
 /// @brief Build date string.
 static constexpr const char* BUILD_DATE = INA228_BUILD_DATE;

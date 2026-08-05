@@ -1176,6 +1176,7 @@ private:
   Status _ensureHardwareClean() const;
   Status _ensureCalibrated() const;
   Status _ensureMeasurementReadyForRead();
+  Status _prepareCalibratedMeasurementRead(uint16_t& diagAlert);
   uint32_t _nowMs() const;
   bool _modeSupportsEnergyAccumulation() const;
   bool _modeSupportsChargeAccumulation() const;
@@ -1209,6 +1210,7 @@ private:
   Status _failJob(const Status& status, bool failedSideEffectingTransfer,
                   uint32_t nowMs);
   Status _cancelJob(const Status& status, JobState state);
+  void _invalidateJobHardwareState(const Status& cause);
   void _setJobPhase(JobPhase phase);
   uint32_t _nextOperationIdValue();
   uint16_t _desiredDiagConfigBits() const;

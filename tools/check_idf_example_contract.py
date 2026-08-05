@@ -234,6 +234,11 @@ def main() -> int:
     for text, label in ((cli, "Arduino CLI"), (idf_main, "native ESP-IDF CLI")):
         for token in CLI_WARNING_TOKENS:
             require_token(text, token, label)
+        require_token(
+            text,
+            "if (!st.ok() && st.msg != nullptr && st.msg[0] != '\\0')",
+            f"{label} non-OK message gate",
+        )
     if "st.code == INA228::Err::I2C_NACK_ADDR || st.code == INA228::Err::I2C_ERROR" in idf_main:
         fail("native ESP-IDF scan must not hide generic I2C_ERROR as an empty address")
     for command in MANDATORY_COMMANDS:

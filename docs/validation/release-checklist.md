@@ -17,7 +17,8 @@ generated from it and committed.
 Run and record:
 
 ```powershell
-python -m py_compile tools/run_i2c_hil.py tools/test_run_i2c_hil_parser.py
+Get-ChildItem tools/*.py | ForEach-Object { python -m py_compile $_.FullName }
+python -m py_compile scripts/generate_version.py
 python tools/run_i2c_hil.py --parser-self-test
 python tools/run_i2c_hil.py --dry-run --suite exhaustive --include-not-run --benchmark-count 100
 python tools/test_run_i2c_hil_parser.py
@@ -54,7 +55,8 @@ Before merging or tagging, verify a completed CI run for the final branch or PR:
 - Native tests pass.
 - Guard scripts pass.
 - Effective Arduino compile commands use GNU++17 and do not retain GNU++11.
-- HIL runner `py_compile` and parser self-test pass.
+- All Python tools byte-compile; the HIL parser self-test and exhaustive
+  benchmark dry-run pass.
 - Standalone HIL parser regressions pass, including fail-closed expected-error
   handling, frame identity/completion, stale/trailing-input isolation,
   failure-run accounting, and both firmware provenance profiles.

@@ -234,6 +234,11 @@ unrelated serial output to a command.
 
 The `status` field is an uppercase `INA228::Err` name. Important classes are:
 
+Interactive status output uses the same rule in both firmware profiles: a
+successful operation prints one green `Status: OK` line. The yellow `Message:`
+line is emitted only for non-OK diagnostic context, so success is not repeated
+or shown with a warning color.
+
 | Status | Meaning in a frame |
 | --- | --- |
 | `OK` | Inner command completed successfully. |
@@ -327,3 +332,6 @@ Any `FAIL` makes the runner return nonzero. `UNKNOWN` returns nonzero when
 alert-pin, reset/power-control, or an unrequested eight-hour soak. Use
 `--soak-hours 8` for the documented long soak and `--stop-on-non-pass` when an
 `UNKNOWN` should stop that soak immediately (`FAIL` always stops it).
+In generated reports, `Commands executed` excludes these explicit `NOT RUN`
+rows; `Commands recorded in detail` includes them so fixture gaps remain
+visible.

@@ -26,7 +26,8 @@ M examples/01_basic_bringup_cli/main.cpp
 ?? docs/validation/hardware/
 ```
 
-- Transcript: `docs/validation/hardware/2026-07-31/4c32312-dirty-pioarduino-55.03.311-esp32s3/soak-60s-transcript.txt`
+- Transcript: not retained; this report preserves the run metadata, summary,
+  and command results.
 - Notes: 60-second shakedown soak; this is not the documented 8-hour release soak.
 
 ## Summary

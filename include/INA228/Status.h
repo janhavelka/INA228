@@ -84,9 +84,9 @@ constexpr const char* errName(Err err) {
 
 /// @brief Status structure returned by all fallible operations.
 struct Status {
-  Err code = Err::OK;          ///< Stable library status code
-  int32_t detail = 0;        ///< Implementation-specific detail (e.g., I2C error code)
-  const char* msg = "";      ///< Static string describing the error
+  Err code = Err::OK;        ///< Stable library status code.
+  int32_t detail = 0;        ///< Implementation-specific detail, such as an I2C error code.
+  const char* msg = "";      ///< Static-lifetime diagnostic text; Status::Ok() uses `"OK"`.
 
   /// @brief Construct an OK status with empty detail and message fields.
   constexpr Status() = default;

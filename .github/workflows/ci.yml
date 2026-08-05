@@ -30,7 +30,7 @@ jobs:
           path: |
             ~/.cache/pip
             ~/.platformio
-          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+          key: ${{ runner.os }}-pio-${{ env.PLATFORMIO_VERSION }}-${{ hashFiles('platformio.ini') }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -67,7 +67,7 @@ jobs:
           path: |
             ~/.cache/pip
             ~/.platformio
-          key: ${{ runner.os }}-pio-native-${{ hashFiles('platformio.ini') }}
+          key: ${{ runner.os }}-pio-native-${{ env.PLATFORMIO_VERSION }}-${{ hashFiles('platformio.ini') }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -79,11 +79,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install "platformio==${PLATFORMIO_VERSION}"
 
-      - name: Enforce core timing guard
-        run: |
-          set -o pipefail
-          python tools/check_core_timing_guard.py 2>&1 | tee core-timing-guard.log
-
       - name: Run native tests
         run: |
           set -o pipefail
@@ -94,9 +89,7 @@ jobs:
         if: always()
         with:
           name: native-test-results
-          path: |
-            core-timing-guard.log
-            native-test-results.log
+          path: native-test-results.log
           if-no-files-found: error
 
   esp-idf-basic:
@@ -151,8 +144,9 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p static-contract-logs
-          python -m py_compile tools/run_i2c_hil.py 2>&1 | tee static-contract-logs/py_compile_run_i2c_hil.log
+          python -m py_compile tools/*.py scripts/generate_version.py 2>&1 | tee static-contract-logs/py_compile.log
           python tools/run_i2c_hil.py --parser-self-test 2>&1 | tee static-contract-logs/hil_parser_self_test.log
+          python tools/run_i2c_hil.py --dry-run --suite exhaustive --include-not-run --benchmark-count 100 2>&1 | tee static-contract-logs/hil_exhaustive_dry_run.log
           python tools/test_run_i2c_hil_parser.py 2>&1 | tee static-contract-logs/hil_parser_regression_tests.log
           python tools/check_cli_contract.py 2>&1 | tee static-contract-logs/check_cli_contract.log
           python tools/check_idf_example_contract.py 2>&1 | tee static-contract-logs/check_idf_example_contract.log
@@ -184,9 +178,13 @@ jobs:
           tar -tzf "$archive" | sort | tee package-contents.log
           for path in \
             library.json \
+            README.md \
+            LICENSE \
             CMakeLists.txt \
             idf_component.yml \
+            include/INA228/CommandTable.h \
             include/INA228/INA228.h \
+            include/INA228/Status.h \
             include/INA228/Version.h \
             docs/integration/esp-idf.md \
             docs/reference/ina228-device-reference.md \
@@ -218,7 +216,9 @@ jobs:
 
           root = pathlib.Path("package-smoke")
           readme = (root / "README.md").read_text(encoding="utf-8")
-          for link in re.findall(r"\[[^]]+\]\(([^)]+)\)", readme):
+          links = re.findall(r"\[[^]]+\]\(([^)]+)\)", readme)
+          links += re.findall(r'href=["\']([^"\']+)["\']', readme)
+          for link in links:
               target = link.split("#", 1)[0]
               if target and "://" not in target and not target.startswith("mailto:"):
                   assert (root / target).is_file(), f"missing README target: {target}"

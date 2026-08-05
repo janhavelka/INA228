@@ -1107,6 +1107,17 @@ def actual_counts(results: Sequence[Result], soak_summary: SoakSummary | None) -
     return counts
 
 
+def actual_command_count(results: Sequence[Result], soak_summary: SoakSummary | None) -> int:
+    stored_soak_count = sum(1 for result in results if result.step.suite == "soak")
+    regular_executed_count = sum(
+        1
+        for result in results
+        if result.step.suite != "soak" and result.verdict != "NOT RUN"
+    )
+    actual_soak_count = soak_summary.total if soak_summary is not None else stored_soak_count
+    return regular_executed_count + actual_soak_count
+
+
 def write_report(path: pathlib.Path, args: argparse.Namespace, results: Sequence[Result],
                  started_at: dt.datetime, ended_at: dt.datetime,
                  transcript_path: pathlib.Path | None, soak_seconds: float,
@@ -1117,7 +1128,7 @@ def write_report(path: pathlib.Path, args: argparse.Namespace, results: Sequence
     min_elapsed, mean_elapsed, max_elapsed = elapsed_stats(results)
     stored_soak_count = sum(1 for result in results if result.step.suite == "soak")
     actual_soak_count = soak_summary.total if soak_summary is not None else stored_soak_count
-    actual_command_count = len(results) - stored_soak_count + actual_soak_count
+    executed_command_count = actual_command_count(results, soak_summary)
     with path.open("w", encoding="utf-8", newline="\n") as f:
         f.write("# INA228 HIL Validation Report\n\n")
         f.write(f"- Date/time: {started_at.isoformat()} to {ended_at.isoformat()}\n")
@@ -1159,7 +1170,7 @@ def write_report(path: pathlib.Path, args: argparse.Namespace, results: Sequence
         f.write(f"| {counts.get('PASS', 0)} | {counts.get('FAIL', 0)} | "
                 f"{counts.get('UNKNOWN', 0)} | {counts.get('NOT RUN', 0)} |\n\n")
         f.write("## Timing Summary\n\n")
-        f.write(f"- Commands executed: {actual_command_count}\n")
+        f.write(f"- Commands executed: {executed_command_count}\n")
         f.write(f"- Commands recorded in detail: {len(results)}\n")
         f.write(f"- Soak commands executed: {actual_soak_count}\n")
         f.write(f"- Soak rows recorded in detail: {stored_soak_count}\n")

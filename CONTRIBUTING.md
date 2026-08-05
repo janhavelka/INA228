@@ -7,7 +7,10 @@ Thank you for considering contributing to this project!
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feature/my-feature`
 3. Make your changes
-4. Ensure examples build: `pio run -e esp32s3dev -e esp32s2dev`
+4. On Windows, run the local checks with the repository wrapper:
+   `.\scripts\pio.cmd test -e native` and
+   `.\scripts\pio.cmd run -e esp32s3dev -e esp32s2dev`. On other systems, use
+   the pinned PlatformIO Core with the same arguments.
 5. Commit with a clear message: `git commit -m "feat: add X"`
 6. Push and open a Pull Request
 
@@ -33,6 +36,8 @@ Thank you for considering contributing to this project!
 - Update documentation if needed
 - Add changelog entry under `[Unreleased]`
 - Ensure CI passes
+- Use PlatformIO Core 6.1.19; do not install a second Core beside the
+  VS Code-managed installation on Windows.
 
 ### What We Accept
 - Bug fixes

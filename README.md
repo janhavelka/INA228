@@ -31,7 +31,7 @@ For a PlatformIO application, pin the current release tag in `platformio.ini`:
 
 ```ini
 lib_deps =
-  https://github.com/janhavelka/INA228.git#v3.0.2
+  https://github.com/janhavelka/INA228.git#v3.0.3
 build_unflags =
   -std=gnu++11
 build_flags =
@@ -280,7 +280,9 @@ address, and calibration for the actual board before connecting a load.
 
 The Arduino and native ESP-IDF CLIs expose the same command/alias contract.
 Inputs are parsed strictly, diagnostic reads are identified as destructive,
-and raw writes require an explicit trailing `confirm`. See the
+and raw writes require an explicit trailing `confirm`. Successful status output
+contains one green `Status: OK` line; a separate `Message:` line is reserved for
+non-OK diagnostic context. See the
 <a href="docs/CLI.md">CLI and HIL reference</a> and the example-specific
 READMEs before using service commands or collecting validation evidence.
 

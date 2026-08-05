@@ -560,9 +560,23 @@ void printStatus(const INA228::Status& st) {
                 LOG_COLOR_RESET,
                 static_cast<unsigned>(st.code),
                 static_cast<long>(st.detail));
-  if (st.msg && st.msg[0]) {
+  if (!st.ok() && st.msg != nullptr && st.msg[0] != '\0') {
     Serial.printf("  Message: %s%s%s\n", LOG_COLOR_YELLOW, st.msg, LOG_COLOR_RESET);
   }
+}
+
+void pollAndPrintOwnerJobStep(uint32_t budget) {
+  INA228::JobResult result{};
+  bool completed = false;
+  const auto st = pollOwnerJob(static_cast<uint8_t>(budget), result, completed);
+  const bool accepted = st.ok() || st.inProgress();
+  LOGI("pollJob(%lu): %s%s%s%s",
+       static_cast<unsigned long>(budget),
+       LOG_COLOR_RESULT(accepted),
+       errToStr(st.code),
+       LOG_COLOR_RESET,
+       completed ? " terminal result consumed" : "");
+  if (!accepted) printStatus(st);
 }
 
 void rejectInvalidCommand(const char* message) {
@@ -2147,17 +2161,7 @@ void processCommand(const String& cmdLine) {
       rejectInvalidCommand("Usage: reset_step <0..255>");
       return;
     }
-    INA228::JobResult result{};
-    bool completed = false;
-    auto st = pollOwnerJob(static_cast<uint8_t>(budget), result, completed);
-    const bool accepted = st.ok() || st.inProgress();
-    LOGI("pollJob(%lu): %s%s%s%s",
-         static_cast<unsigned long>(budget),
-         LOG_COLOR_RESULT(accepted),
-         errToStr(st.code),
-         LOG_COLOR_RESET,
-         completed ? " terminal result consumed" : "");
-    if (!accepted) printStatus(st);
+    pollAndPrintOwnerJobStep(budget);
     return;
   }
 
@@ -2185,17 +2189,7 @@ void processCommand(const String& cmdLine) {
       rejectInvalidCommand("Usage: apply_step|replay_step <0..255>");
       return;
     }
-    INA228::JobResult result{};
-    bool completed = false;
-    auto st = pollOwnerJob(static_cast<uint8_t>(budget), result, completed);
-    const bool accepted = st.ok() || st.inProgress();
-    LOGI("pollJob(%lu): %s%s%s%s",
-         static_cast<unsigned long>(budget),
-         LOG_COLOR_RESULT(accepted),
-         errToStr(st.code),
-         LOG_COLOR_RESET,
-         completed ? " terminal result consumed" : "");
-    if (!accepted) printStatus(st);
+    pollAndPrintOwnerJobStep(budget);
     return;
   }
 

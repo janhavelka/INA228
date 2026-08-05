@@ -145,6 +145,32 @@ static double shuntFullScaleV(AdcRange range) {
   return (range == AdcRange::MV_40_96) ? 0.04096 : 0.16384;
 }
 
+static Status encodeShuntThreshold(float voltageV, AdcRange range,
+                                   uint16_t& out) {
+  if (!std::isfinite(voltageV)) {
+    return Status::Error(Err::INVALID_PARAM, "Threshold must be finite");
+  }
+  const double lsb = (range == AdcRange::MV_40_96)
+                         ? cmd::SHUNT_THRESHOLD_LSB_RANGE1
+                         : cmd::SHUNT_THRESHOLD_LSB_RANGE0;
+  const double scaled = std::round(static_cast<double>(voltageV) / lsb);
+  if (scaled < -32768.0 || scaled > 32767.0) {
+    return Status::Error(Err::INVALID_PARAM, "Shunt threshold out of range");
+  }
+  out = static_cast<uint16_t>(static_cast<int16_t>(scaled));
+  return Status::Ok();
+}
+
+static Status encodeBusThreshold(float voltageV, uint16_t& out) {
+  if (!std::isfinite(voltageV) || voltageV < 0.0f || voltageV > 85.0f) {
+    return Status::Error(Err::INVALID_PARAM, "Bus threshold out of range");
+  }
+  out = static_cast<uint16_t>(std::round(
+            static_cast<double>(voltageV) / cmd::BUS_THRESHOLD_LSB)) &
+        0x7FFFU;
+  return Status::Ok();
+}
+
 static Status computeCalibration(float shuntOhm, float maxCurrentA, AdcRange range,
                                  uint16_t& shuntCal, float& currentLsb,
                                  bool& clamped, bool& maxCurrentExceedsRange) {
@@ -705,14 +731,7 @@ Status INA228::_failJob(const Status& status, bool failedSideEffectingTransfer,
   if (failedSideEffectingTransfer || _jobHadSuccessfulWrite || identityJob ||
       _jobSnapshot.kind == JobKind::VERIFY_CONFIGURATION ||
       _jobSnapshot.kind == JobKind::INSTANTANEOUS_SAMPLE) {
-    _hardwareState = HardwareState::RESYNC_REQUIRED;
-    _initialized = false;
-    _driverState = DriverState::UNINIT;
-    _hardwareDirty = true;
-    _dirtyRegisterMask |= _jobTouchedRegisterMask;
-    _hardwareDirtyCause = status;
-    _deviceIdentityValid = false;
-    _invalidateAccumulatorEpoch();
+    _invalidateJobHardwareState(status);
   }
   if (_deferredTimeOrigin == DeferredTimeOrigin::JOB_WAIT) {
     _deferredTimeOrigin = DeferredTimeOrigin::NONE;
@@ -734,14 +753,7 @@ Status INA228::_cancelJob(const Status& status, JobState state) {
       _jobSnapshot.kind == JobKind::RESET && _jobHadSuccessfulWrite;
   if (_jobHadSuccessfulWrite || identityJob) {
     if (_jobHadSuccessfulWrite) effect = JobEffect::PARTIAL;
-    _hardwareState = HardwareState::RESYNC_REQUIRED;
-    _initialized = false;
-    _driverState = DriverState::UNINIT;
-    _hardwareDirty = true;
-    _dirtyRegisterMask |= _jobTouchedRegisterMask;
-    _hardwareDirtyCause = status;
-    _deviceIdentityValid = false;
-    _invalidateAccumulatorEpoch();
+    _invalidateJobHardwareState(status);
   }
   if (_deferredTimeOrigin == DeferredTimeOrigin::JOB_WAIT) {
     _deferredTimeOrigin = DeferredTimeOrigin::NONE;
@@ -751,6 +763,17 @@ Status INA228::_cancelJob(const Status& status, JobState state) {
   }
   _sampleScratch = InstantaneousSample{};
   return _finishJob(status, state, effect, _nowMs());
+}
+
+void INA228::_invalidateJobHardwareState(const Status& cause) {
+  _hardwareState = HardwareState::RESYNC_REQUIRED;
+  _initialized = false;
+  _driverState = DriverState::UNINIT;
+  _hardwareDirty = true;
+  _dirtyRegisterMask |= _jobTouchedRegisterMask;
+  _hardwareDirtyCause = cause;
+  _deviceIdentityValid = false;
+  _invalidateAccumulatorEpoch();
 }
 
 Status INA228::cancelJob() {
@@ -1505,18 +1528,8 @@ Status INA228::getDiagAlertSnapshot(DiagAlertSnapshot& out) const {
 // ===========================================================================
 
 Status INA228::readMeasurement(Measurement& out) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
-  Status readyStatus = _ensureMeasurementReadyForRead();
-  if (!readyStatus.ok()) {
-    return readyStatus;
-  }
-  Status calStatus = _ensureCalibrated();
-  if (!calStatus.ok()) return calStatus;
-
   uint16_t diag = 0;
-  Status st = _readAndValidateMathDiag(diag);
+  Status st = _prepareCalibratedMeasurementRead(diag);
   if (!st.ok()) return st;
 
   Measurement result{};
@@ -1600,9 +1613,6 @@ Status INA228::readMeasurement(Measurement& out) {
 }
 
 Status INA228::readRawSample(RawSample& out) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
   Status readyStatus = _ensureMeasurementReadyForRead();
   if (!readyStatus.ok()) {
     return readyStatus;
@@ -1695,18 +1705,8 @@ Status INA228::readPowerSampleRawStep(RawSample& rawOut, IntegerSample& integerO
 }
 
 Status INA228::readIntegerSample(IntegerSample& out) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
-  Status readyStatus = _ensureMeasurementReadyForRead();
-  if (!readyStatus.ok()) {
-    return readyStatus;
-  }
-  Status calStatus = _ensureCalibrated();
-  if (!calStatus.ok()) return calStatus;
-
   uint16_t diag = 0;
-  Status st = _readAndValidateMathDiag(diag);
+  Status st = _prepareCalibratedMeasurementRead(diag);
   if (!st.ok()) return st;
 
   RawSample raw{};
@@ -1774,9 +1774,6 @@ Status INA228::convertRawSample(const RawSample& raw, IntegerSample& out) const 
 }
 
 Status INA228::readShuntVoltage(float& out) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
   Status readyStatus = _ensureMeasurementReadyForRead();
   if (!readyStatus.ok()) {
     return readyStatus;
@@ -1795,9 +1792,6 @@ Status INA228::readShuntVoltage(float& out) {
 }
 
 Status INA228::readBusVoltage(float& out) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
   Status readyStatus = _ensureMeasurementReadyForRead();
   if (!readyStatus.ok()) {
     return readyStatus;
@@ -1813,9 +1807,6 @@ Status INA228::readBusVoltage(float& out) {
 }
 
 Status INA228::readTemperature(float& out) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
   Status readyStatus = _ensureMeasurementReadyForRead();
   if (!readyStatus.ok()) {
     return readyStatus;
@@ -1830,18 +1821,8 @@ Status INA228::readTemperature(float& out) {
 }
 
 Status INA228::readCurrent(float& out) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
-  Status readyStatus = _ensureMeasurementReadyForRead();
-  if (!readyStatus.ok()) {
-    return readyStatus;
-  }
-  Status calStatus = _ensureCalibrated();
-  if (!calStatus.ok()) return calStatus;
-
   uint16_t diag = 0;
-  Status st = _readAndValidateMathDiag(diag);
+  Status st = _prepareCalibratedMeasurementRead(diag);
   if (!st.ok()) return st;
 
   uint32_t raw24 = 0;
@@ -1856,18 +1837,8 @@ Status INA228::readCurrent(float& out) {
 }
 
 Status INA228::readPower(float& out) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
-  Status readyStatus = _ensureMeasurementReadyForRead();
-  if (!readyStatus.ok()) {
-    return readyStatus;
-  }
-  Status calStatus = _ensureCalibrated();
-  if (!calStatus.ok()) return calStatus;
-
   uint16_t diag = 0;
-  Status st = _readAndValidateMathDiag(diag);
+  Status st = _prepareCalibratedMeasurementRead(diag);
   if (!st.ok()) return st;
 
   uint32_t raw24 = 0;
@@ -1881,9 +1852,6 @@ Status INA228::readPower(float& out) {
 }
 
 Status INA228::readEnergy(double& out) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
   Status readyStatus = _ensureMeasurementReadyForRead();
   if (!readyStatus.ok()) {
     return readyStatus;
@@ -1914,9 +1882,6 @@ Status INA228::readEnergy(double& out) {
 }
 
 Status INA228::readCharge(double& out) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
   Status readyStatus = _ensureMeasurementReadyForRead();
   if (!readyStatus.ok()) {
     return readyStatus;
@@ -2452,19 +2417,9 @@ Status INA228::setShuntOvervoltageThreshold(float voltageV) {
   }
   Status clean = _ensureHardwareClean();
   if (!clean.ok()) return clean;
-  if (!std::isfinite(voltageV)) {
-    return Status::Error(Err::INVALID_PARAM, "Threshold must be finite");
-  }
-
-  const double lsb = (_config.adcRange == AdcRange::MV_40_96)
-                       ? cmd::SHUNT_THRESHOLD_LSB_RANGE1
-                       : cmd::SHUNT_THRESHOLD_LSB_RANGE0;
-  const double scaled = std::round(static_cast<double>(voltageV) / lsb);
-  if (scaled < -32768.0 || scaled > 32767.0) {
-    return Status::Error(Err::INVALID_PARAM, "Shunt threshold out of range");
-  }
-  auto regVal = static_cast<int16_t>(scaled);
-  return writeReg16(cmd::REG_SOVL, static_cast<uint16_t>(regVal));
+  uint16_t regVal = 0;
+  Status encoded = encodeShuntThreshold(voltageV, _config.adcRange, regVal);
+  return encoded.ok() ? writeReg16(cmd::REG_SOVL, regVal) : encoded;
 }
 
 Status INA228::setShuntUndervoltageThreshold(float voltageV) {
@@ -2473,19 +2428,9 @@ Status INA228::setShuntUndervoltageThreshold(float voltageV) {
   }
   Status clean = _ensureHardwareClean();
   if (!clean.ok()) return clean;
-  if (!std::isfinite(voltageV)) {
-    return Status::Error(Err::INVALID_PARAM, "Threshold must be finite");
-  }
-
-  const double lsb = (_config.adcRange == AdcRange::MV_40_96)
-                       ? cmd::SHUNT_THRESHOLD_LSB_RANGE1
-                       : cmd::SHUNT_THRESHOLD_LSB_RANGE0;
-  const double scaled = std::round(static_cast<double>(voltageV) / lsb);
-  if (scaled < -32768.0 || scaled > 32767.0) {
-    return Status::Error(Err::INVALID_PARAM, "Shunt threshold out of range");
-  }
-  auto regVal = static_cast<int16_t>(scaled);
-  return writeReg16(cmd::REG_SUVL, static_cast<uint16_t>(regVal));
+  uint16_t regVal = 0;
+  Status encoded = encodeShuntThreshold(voltageV, _config.adcRange, regVal);
+  return encoded.ok() ? writeReg16(cmd::REG_SUVL, regVal) : encoded;
 }
 
 Status INA228::setBusOvervoltageThreshold(float voltageV) {
@@ -2494,14 +2439,9 @@ Status INA228::setBusOvervoltageThreshold(float voltageV) {
   }
   Status clean = _ensureHardwareClean();
   if (!clean.ok()) return clean;
-  if (!std::isfinite(voltageV) || voltageV < 0.0f || voltageV > 85.0f) {
-    return Status::Error(Err::INVALID_PARAM, "Bus threshold out of range");
-  }
-
-  auto regVal = static_cast<uint16_t>(std::round(
-      static_cast<double>(voltageV) / cmd::BUS_THRESHOLD_LSB));
-  regVal &= 0x7FFF;  // bit 15 reserved
-  return writeReg16(cmd::REG_BOVL, regVal);
+  uint16_t regVal = 0;
+  Status encoded = encodeBusThreshold(voltageV, regVal);
+  return encoded.ok() ? writeReg16(cmd::REG_BOVL, regVal) : encoded;
 }
 
 Status INA228::setBusUndervoltageThreshold(float voltageV) {
@@ -2510,14 +2450,9 @@ Status INA228::setBusUndervoltageThreshold(float voltageV) {
   }
   Status clean = _ensureHardwareClean();
   if (!clean.ok()) return clean;
-  if (!std::isfinite(voltageV) || voltageV < 0.0f || voltageV > 85.0f) {
-    return Status::Error(Err::INVALID_PARAM, "Bus threshold out of range");
-  }
-
-  auto regVal = static_cast<uint16_t>(std::round(
-      static_cast<double>(voltageV) / cmd::BUS_THRESHOLD_LSB));
-  regVal &= 0x7FFF;  // bit 15 reserved
-  return writeReg16(cmd::REG_BUVL, regVal);
+  uint16_t regVal = 0;
+  Status encoded = encodeBusThreshold(voltageV, regVal);
+  return encoded.ok() ? writeReg16(cmd::REG_BUVL, regVal) : encoded;
 }
 
 Status INA228::setTemperatureOverlimitThreshold(float tempC) {
@@ -2962,6 +2897,9 @@ Status INA228::_ensureNormalI2cAllowed() const {
 // ===========================================================================
 
 Status INA228::_ensureMeasurementReadyForRead() {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
   Status clean = _ensureHardwareClean();
   if (!clean.ok()) {
     return clean;
@@ -2989,6 +2927,14 @@ Status INA228::_ensureMeasurementReadyForRead() {
   }
 
   return Status::Ok();
+}
+
+Status INA228::_prepareCalibratedMeasurementRead(uint16_t& diagAlert) {
+  Status ready = _ensureMeasurementReadyForRead();
+  if (!ready.ok()) return ready;
+  Status calibrated = _ensureCalibrated();
+  if (!calibrated.ok()) return calibrated;
+  return _readAndValidateMathDiag(diagAlert);
 }
 
 Status INA228::_ensureHardwareClean() const {

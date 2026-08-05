@@ -29,7 +29,8 @@ guidance, vendor reference material, and dated validation/release evidence.
   - repeatable hardware/HIL procedure and required evidence.
 - [Release checklist](validation/release-checklist.md) - version, CI, package,
   documentation, and tag gates.
-- `validation/hardware/` - generated reports and serial transcripts for the
-  exact dated fixtures described by each run.
+- `validation/hardware/` - retained reports for the exact dated fixtures
+  described by each run. Raw serial transcripts are intentionally not kept in
+  the repository.
 
 Generated Doxygen output belongs in `docs/doxygen/` and should not be committed.
