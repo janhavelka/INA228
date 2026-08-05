@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tightened public API Doxygen coverage with extraction limited to documented
   interfaces and warnings treated as errors; added focused READMEs for both
   diagnostic CLI examples.
+- Migrated GitHub-owned CI actions to their Node.js 24 runtime majors after the
+  v3.0.3 release-candidate run exposed Node.js 20 deprecation warnings.
 
 ### Fixed
 

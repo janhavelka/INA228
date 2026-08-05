@@ -53,11 +53,13 @@ Fixture: `INA228_0x41_low_voltage_no_fault_injection`.
 - ALERT-pin capture for polarity, latch/transparent behavior, conversion-ready
   routing, and safe threshold crossings.
 - Controlled MCU reset and INA228 power-cycle evidence.
-- Reviewed CI logs for the final revision under test. The clean base and exact
-  v3.0.2 release commits satisfied this software gate in
+- Reviewed CI logs for the final revision under test. The v3.0.3
+  release-content, clean-base, and exact v3.0.2 release commits satisfied this
+  software gate in
+  [CI run 31000462035](https://github.com/janhavelka/INA228/actions/runs/31000462035),
   [CI run 30902376574](https://github.com/janhavelka/INA228/actions/runs/30902376574)
   and [CI run 30815246708](https://github.com/janhavelka/INA228/actions/runs/30815246708),
-  respectively; the v3.0.3 release-candidate worktree has not yet run in CI.
+  respectively.
 
 ## Serial/HIL Runner Finding
 

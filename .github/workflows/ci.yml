@@ -22,10 +22,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Cache PlatformIO
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/pip
@@ -33,7 +33,7 @@ jobs:
           key: ${{ runner.os }}-pio-${{ env.PLATFORMIO_VERSION }}-${{ hashFiles('platformio.ini') }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -48,7 +48,7 @@ jobs:
           pio run -e ${{ matrix.environment }} 2>&1 | tee platformio-${{ matrix.environment }}.log
 
       - name: Upload PlatformIO build log
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: platformio-build-${{ matrix.environment }}
@@ -59,10 +59,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Cache PlatformIO
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/pip
@@ -70,7 +70,7 @@ jobs:
           key: ${{ runner.os }}-pio-native-${{ env.PLATFORMIO_VERSION }}-${{ hashFiles('platformio.ini') }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -85,7 +85,7 @@ jobs:
           pio test -e native 2>&1 | tee native-test-results.log
 
       - name: Upload native test artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: native-test-results
@@ -103,7 +103,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Build ESP-IDF basic ${{ matrix.target }} with idf.py
         uses: espressif/esp-idf-ci-action@v1
@@ -114,7 +114,7 @@ jobs:
           command: idf.py set-target ${{ matrix.target }} build
 
       - name: Upload ESP-IDF build logs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: esp-idf-build-logs-${{ matrix.target }}
@@ -127,10 +127,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -160,7 +160,7 @@ jobs:
           doxygen Doxyfile 2>&1 | tee static-contract-logs/doxygen.log
 
       - name: Upload static contract logs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: static-contract-logs
@@ -225,7 +225,7 @@ jobs:
           PY
 
       - name: Upload PlatformIO package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: platformio-package
