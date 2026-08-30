@@ -12,8 +12,8 @@ the examples, the HIL/contract tooling, and the documentation tree.
 Base commit: `6137ee7` (tag `v3.0.3`). Everything below was verified against the
 real code; findings reproduced by a compiled program are marked **[proven]**.
 
-This file is a working document. Delete it once the open items are resolved or
-folded into `CHANGELOG.md`.
+This file is retained as historical review input. Current dispositions and
+follow-up verification belong in `CODE_AUDIT_RESOLUTION.md` and `CHANGELOG.md`.
 
 ---
 

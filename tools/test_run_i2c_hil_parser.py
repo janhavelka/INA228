@@ -35,6 +35,7 @@ class FakeFramedSerial:
         self.trailer = trailer
         self.inline_trailer = inline_trailer
         self.pending_trailer = b""
+        self.writes: list[str] = []
 
     @property
     def in_waiting(self) -> int:
@@ -51,6 +52,7 @@ class FakeFramedSerial:
 
     def write(self, data: bytes) -> int:
         command = data.decode("ascii")
+        self.writes.append(command)
         fields = command.split(" ", 3)
         token, seq = fields[1], fields[2]
         response = (
@@ -293,6 +295,82 @@ def test_frame_identity_and_completion_are_exact() -> None:
         "HIL_BEGIN token=T1 seq=7\n", "T1", "7"
     )
     assert_true(not complete, "truncated frame accepted")
+    _, _, complete = runner.strip_hilrun_frame(
+        "HIL_END token=T1 seq=7 status=OK elapsed_ms=3\n"
+        "HIL_BEGIN token=T1 seq=7\n",
+        "T1",
+        "7",
+    )
+    assert_true(not complete, "stale end before begin accepted")
+
+
+def test_repeated_clock_tokens_still_get_unique_sequences() -> None:
+    args = types.SimpleNamespace(
+        drain_before_command_s=0.0,
+        frame_prefix="TEST",
+        no_command_framing=False,
+        timeout_s=0.05,
+        max_frame_bytes=4096,
+        post_frame_drain_s=0.0,
+        profile="arduino",
+        expected_library_version="any",
+        expected_commit="any",
+        expected_git_status="any",
+        framework_token=None,
+    )
+    serial = FakeFramedSerial(b"", "Vbus: 12.0 V")
+    step = runner.Step("vbus", ("Vbus",), "sample")
+    original_monotonic_ns = runner.time.monotonic_ns
+    runner.time.monotonic_ns = lambda: 123456789
+    try:
+        assert_equal(runner.run_step(serial, step, args).verdict, "PASS", "first frame")
+        assert_equal(runner.run_step(serial, step, args).verdict, "PASS", "second frame")
+    finally:
+        runner.time.monotonic_ns = original_monotonic_ns
+    first = serial.writes[0].split(" ", 3)
+    second = serial.writes[1].split(" ", 3)
+    assert_equal(first[1], second[1], "frozen clock should repeat token")
+    assert_equal(first[2], "0", "first sequence")
+    assert_equal(second[2], "1", "second sequence")
+
+
+def test_interrupted_compressed_soak_preserves_unstored_summary() -> None:
+    args = types.SimpleNamespace(
+        soak_store_every=10,
+        soak_progress_every=100,
+        verbose=False,
+        stop_on_non_pass=False,
+        command_pause_s=0.0,
+    )
+    results = []
+    summary = runner.SoakSummary()
+    calls = 0
+    original_run_step = runner.run_step
+    original_monotonic = runner.time.monotonic
+
+    def fake_run_step(serial_port, step, run_args):
+        nonlocal calls
+        del serial_port, run_args
+        calls += 1
+        if calls == 4:
+            raise OSError("simulated serial loss")
+        return runner.Result(step, "PASS", 0.01, "ok")
+
+    runner.run_step = fake_run_step
+    runner.time.monotonic = lambda: 0.0
+    try:
+        try:
+            runner.run_soak(None, args, results, 10.0, summary)
+            raise AssertionError("interrupted soak did not propagate serial failure")
+        except OSError:
+            pass
+    finally:
+        runner.run_step = original_run_step
+        runner.time.monotonic = original_monotonic
+
+    assert_equal(summary.total, 3, "completed unstored soak commands")
+    assert_equal(summary.pass_count, 3, "unstored soak PASS count")
+    assert_equal(len(results), 0, "compressed result rows")
 
 
 def main() -> int:
@@ -304,6 +382,8 @@ def main() -> int:
         test_stale_input_cannot_supply_framed_verdict,
         test_post_frame_trailer_cannot_hide_failure,
         test_frame_identity_and_completion_are_exact,
+        test_repeated_clock_tokens_still_get_unique_sequences,
+        test_interrupted_compressed_soak_preserves_unstored_summary,
     )
     for test in tests:
         test()

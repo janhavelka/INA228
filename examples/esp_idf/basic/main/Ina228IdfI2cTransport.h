@@ -28,8 +28,8 @@ void ina228IdfResetTransferStats();
 Ina228IdfTransferStats ina228IdfTransferStats();
 bool ina228IdfInitI2c(int sda, int scl, uint32_t freqHz, uint16_t timeoutMs,
                       uint8_t address);
-void ina228IdfDeinitI2c();
-bool ina228IdfSelectDeviceAddress(uint8_t address);
+INA228::Status ina228IdfDeinitI2c();
+INA228::Status ina228IdfSelectDeviceAddress(uint8_t address);
 INA228::Status ina228IdfProbeAddress(uint8_t address, uint16_t timeoutMs);
 esp_err_t ina228IdfLastError();
 

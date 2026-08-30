@@ -326,6 +326,15 @@ uint8_t configuredAddress() {
   return device.isInitialized() ? device.getConfig().i2cAddress : selectedAddress;
 }
 
+INA228::Status diagnosticBusAccessStatus() {
+  if (activeOperationId != 0U) {
+    return INA228::Status::Error(
+        INA228::Err::BUSY,
+        "Finish the cooperative operation before accessing the bus");
+  }
+  return INA228::Status::Ok();
+}
+
 void printStatus(const INA228::Status& st) {
   if (!st.ok() && hilCommandStatus == INA228::Err::OK) {
     hilCommandStatus = st.code;
@@ -347,7 +356,6 @@ void rejectInvalidCommand(const char* message) {
 }
 
 INA228::Config makeExampleConfig(uint8_t address) {
-  (void)ina228IdfSelectDeviceAddress(address);
   INA228::Config cfg;
   cfg.i2cWrite = ina228IdfI2cWrite;
   cfg.i2cWriteRead = ina228IdfI2cWriteRead;
@@ -384,12 +392,11 @@ INA228::Status readRegister16AtAddress(uint8_t address, uint8_t reg, uint16_t& v
 INA228::Status probeAddressRaw(uint8_t address, ProbeSnapshot& out) {
   out = {};
   out.address = address;
-  if (activeOperationId != 0U) {
-    return INA228::Status::Error(
-        INA228::Err::BUSY,
-        "Finish the cooperative operation before probing the bus");
+  INA228::Status st = diagnosticBusAccessStatus();
+  if (!st.ok()) {
+    return st;
   }
-  INA228::Status st = ina228IdfProbeAddress(address, I2C_TIMEOUT_MS);
+  st = ina228IdfProbeAddress(address, I2C_TIMEOUT_MS);
   if (!st.ok()) {
     return st;
   }
@@ -630,7 +637,10 @@ INA228::Status initializeDevice(uint8_t address, bool allowAutoDetectFallback) {
   selectedAddress = address;
   device.end();
   activeOperationId = 0U;
-  INA228::Status st = device.bind(makeExampleConfig(address));
+  INA228::Status st = ina228IdfSelectDeviceAddress(address);
+  if (st.ok()) {
+    st = device.bind(makeExampleConfig(address));
+  }
   INA228::JobResult result{};
   if (st.ok()) {
     st = runOwnerJob(INA228::JobKind::INITIALIZE, result);
@@ -650,7 +660,10 @@ INA228::Status initializeDevice(uint8_t address, bool allowAutoDetectFallback) {
     selectedAddress = matches[0].address;
     device.end();
     activeOperationId = 0U;
-    st = device.bind(makeExampleConfig(matches[0].address));
+    st = ina228IdfSelectDeviceAddress(matches[0].address);
+    if (st.ok()) {
+      st = device.bind(makeExampleConfig(matches[0].address));
+    }
     if (st.ok()) {
       st = runOwnerJob(INA228::JobKind::INITIALIZE, result);
     }
@@ -1390,12 +1403,12 @@ void runSelfTest() {
   std::printf("=== INA228 selftest (diagnostic commands; reads DIAG_ALRT) ===\n");
   std::printf("Note: DIAG_ALRT reads can clear CNVRF and latched evidence.\n");
 
-  const uint32_t succBefore = device.totalSuccess();
-  const uint32_t failBefore = device.totalFailures();
-  const uint8_t consBefore = device.consecutiveFailures();
-
-  INA228::Status st = device.probe();
-  if (st.code == INA228::Err::NOT_INITIALIZED) {
+  INA228::Status st = diagnosticBusAccessStatus();
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+  if (!device.isInitialized()) {
     skipSelftest(stats, "probe responds", "driver not initialized");
     skipSelftest(stats, "remaining checks", "selftest aborted");
     std::printf("Selftest result: pass=%lu fail=%lu skip=%lu\n",
@@ -1404,6 +1417,12 @@ void runSelfTest() {
                 static_cast<unsigned long>(stats.skip));
     return;
   }
+
+  const uint32_t succBefore = device.totalSuccess();
+  const uint32_t failBefore = device.totalFailures();
+  const uint8_t consBefore = device.consecutiveFailures();
+
+  st = device.probe();
   reportSelftest(stats, "probe responds", st.ok(), st.ok() ? "" : errToStr(st.code));
   const bool probeNoTrack = device.totalSuccess() == succBefore &&
                             device.totalFailures() == failBefore &&
@@ -1595,10 +1614,15 @@ void processCommand(char* cmd) {
                   static_cast<unsigned long>(stats.write),
                   static_cast<unsigned long>(total));
     }
-  } else if (std::strcmp(cmd, "scan") == 0) {
-    scanBus();
-    scanIna228Addresses();
-  } else if (std::strcmp(cmd, "scanina") == 0) {
+  } else if (std::strcmp(cmd, "scan") == 0 || std::strcmp(cmd, "scanina") == 0) {
+    const INA228::Status st = diagnosticBusAccessStatus();
+    if (!st.ok()) {
+      printStatus(st);
+      return;
+    }
+    if (std::strcmp(cmd, "scan") == 0) {
+      scanBus();
+    }
     scanIna228Addresses();
   } else if (std::strcmp(cmd, "read") == 0) {
     printMeasurement();
@@ -2034,10 +2058,15 @@ void processCommand(char* cmd) {
     printStatus(st);
     if (st.ok()) printProbeSnapshot(snapshot);
   } else if (std::strcmp(cmd, "recover") == 0) {
+    INA228::Status st = diagnosticBusAccessStatus();
+    if (!st.ok()) {
+      printStatus(st);
+      return;
+    }
     std::printf("Invalidating cached hardware state and reinitializing...\n");
     HealthSnapshot before;
     before.capture();
-    INA228::Status st = device.invalidateHardwareState(
+    st = device.invalidateHardwareState(
         INA228::Status::Error(INA228::Err::I2C_ERROR,
                               "Application requested reinitialization"));
     INA228::JobResult result{};

@@ -1132,6 +1132,28 @@ void test_example_transport_validates_params_and_handles_write_read() {
   TEST_ASSERT_EQUAL_UINT32(1u, Wire._endTransmissionCallCount());
   TEST_ASSERT_EQUAL_UINT32(0u, Wire._lastEndTransmissionLength());
   Wire._clearWriteOverride();
+
+  uint8_t boundary[transport::WIRE_BUFFER_LIMIT + 1U] = {};
+  Wire._clearEndTransmissionResult();
+  Wire._clearRequestFromOverride();
+  TEST_ASSERT_TRUE(transport::wireWrite(
+      0x40, boundary, transport::WIRE_BUFFER_LIMIT, 50, &Wire).ok());
+  TEST_ASSERT_TRUE(transport::wireWrite(
+      0x40, boundary, transport::WIRE_BUFFER_LIMIT + 1U, 50, &Wire)
+      .is(Err::INVALID_PARAM));
+  TEST_ASSERT_TRUE(transport::wireWriteRead(
+      0x40, boundary, transport::WIRE_BUFFER_LIMIT,
+      boundary, 1U, 50, &Wire).ok());
+  TEST_ASSERT_TRUE(transport::wireWriteRead(
+      0x40, boundary, 1U,
+      boundary, transport::WIRE_BUFFER_LIMIT, 50, &Wire).ok());
+  TEST_ASSERT_TRUE(transport::wireWriteRead(
+      0x40, boundary, transport::WIRE_BUFFER_LIMIT + 1U,
+      boundary, 1U, 50, &Wire).is(Err::INVALID_PARAM));
+  TEST_ASSERT_TRUE(transport::wireWriteRead(
+      0x40, boundary, 1U,
+      boundary, transport::WIRE_BUFFER_LIMIT + 1U, 50, &Wire)
+      .is(Err::INVALID_PARAM));
 }
 
 // ===========================================================================
@@ -2201,6 +2223,28 @@ void test_convert_raw_sample_reports_math_overflow_evidence() {
   TEST_ASSERT_EQUAL_INT32(77, sample.currentMilliamps);
 }
 
+void test_repeated_current_math_overflow_clears_after_accumulator_reset() {
+  FakeBus bus;
+  bus.autoClearAccumulatorReset = true;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0162f;
+  cfg.maxExpectedCurrentA = 10.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  bus.reg24[cmd::REG_CURRENT] = 0x100000U;
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_MATHOF;
+
+  float current = 7.0f;
+  TEST_ASSERT_TRUE(dev.readCurrent(current).is(Err::MATH_OVERFLOW));
+  TEST_ASSERT_FLOAT_WITHIN(0.0f, 7.0f, current);
+  TEST_ASSERT_TRUE(dev.readCurrent(current).is(Err::MATH_OVERFLOW));
+  TEST_ASSERT_FLOAT_WITHIN(0.0f, 7.0f, current);
+
+  TEST_ASSERT_TRUE(dev.resetAccumulators().ok());
+  TEST_ASSERT_TRUE(dev.readCurrent(current).ok());
+  TEST_ASSERT_TRUE(current > 0.0f);
+}
+
 void test_20bit_edge_vectors_and_low_nibble_masking() {
   FakeBus bus;
   INA228::INA228 dev;
@@ -2672,6 +2716,9 @@ void test_threshold_write_failures_preserve_registers() {
                             static_cast<uint8_t>(st.code));
     TEST_ASSERT_EQUAL_INT32(-81, st.detail);
     TEST_ASSERT_EQUAL_HEX16(c.resetValue, bus.reg16[c.reg]);
+    SettingsSnapshot settings{};
+    TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+    TEST_ASSERT_TRUE(settings.thresholdsDirty);
   }
 }
 
@@ -2749,6 +2796,53 @@ void test_public_register_access_helpers() {
   TEST_ASSERT_EQUAL_HEX8(cmd::REG_SHUNT_TEMPCO, bus.lastWriteReg);
   TEST_ASSERT_EQUAL_HEX16(0xBEEFu, bus.lastWrite16);
   TEST_ASSERT_EQUAL_HEX16(0xBEEFu, bus.reg16[cmd::REG_SHUNT_TEMPCO]);
+}
+
+void test_raw_software_reset_marks_every_reset_register_dirty() {
+  const uint8_t resetRegisters[] = {
+      cmd::REG_CONFIG,       cmd::REG_ADC_CONFIG, cmd::REG_SHUNT_CAL,
+      cmd::REG_SHUNT_TEMPCO, cmd::REG_DIAG_ALRT,  cmd::REG_SOVL,
+      cmd::REG_SUVL,         cmd::REG_BOVL,       cmd::REG_BUVL,
+      cmd::REG_TEMP_LIMIT,   cmd::REG_PWR_LIMIT};
+
+  for (uint8_t ambiguous = 0; ambiguous < 2; ++ambiguous) {
+    FakeBus bus;
+    INA228::INA228 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    TEST_ASSERT_TRUE(dev.triggerConversion(Mode::TRIG_ALL).inProgress());
+    if (ambiguous != 0U) {
+      bus.applyThenFailWriteReg = cmd::REG_CONFIG;
+      bus.applyThenFailWriteMatch =
+          static_cast<uint8_t>(bus.writeMatchCount[cmd::REG_CONFIG] + 1U);
+    }
+
+    const Status st = dev.writeRegister16(cmd::REG_CONFIG, cmd::CONFIG_RST);
+    if (ambiguous != 0U) {
+      TEST_ASSERT_TRUE(st.is(Err::I2C_ERROR));
+    } else {
+      TEST_ASSERT_TRUE(st.ok());
+    }
+
+    SettingsSnapshot settings{};
+    TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+    TEST_ASSERT_TRUE(settings.hardwareDirty);
+    TEST_ASSERT_TRUE(settings.thresholdsDirty);
+    TEST_ASSERT_FALSE(settings.triggeredConversionPending);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareState::RESYNC_REQUIRED),
+                            static_cast<uint8_t>(dev.hardwareState()));
+    for (size_t index = 0;
+         index < sizeof(resetRegisters) / sizeof(resetRegisters[0]); ++index) {
+      TEST_ASSERT_TRUE((settings.dirtyRegisterMask &
+                        (uint64_t{1} << resetRegisters[index])) != 0U);
+    }
+
+    TEST_ASSERT_TRUE(dev.recover().ok());
+    TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+    TEST_ASSERT_TRUE(settings.thresholdsDirty);
+    TEST_ASSERT_FALSE(settings.hardwareDirty);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareState::SYNCHRONIZED),
+                            static_cast<uint8_t>(dev.hardwareState()));
+  }
 }
 
 void test_raw_accumulator_register_read_does_not_pre_preserve_diag_alert() {
@@ -3589,6 +3683,47 @@ void test_verify_configuration_distinguishes_inconclusive_transport_from_disproo
     TEST_ASSERT_TRUE(dev.takeJobResult(operationId, result).ok());
     TEST_ASSERT_FALSE(dev.isInitialized());
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareState::RESYNC_REQUIRED),
+                            static_cast<uint8_t>(dev.hardwareState()));
+  }
+
+  {
+    FakeBus bus;
+    INA228::INA228 dev;
+    TEST_ASSERT_TRUE(dev.bind(makeCooperativeConfig(bus)).ok());
+    (void)initializeCooperativeDevice(dev, bus);
+    bus.readError = Status::Error(Err::I2C_NACK_ADDR,
+                                  "device disappeared mid-verification", -57);
+    queueNthReadFailure(bus, cmd::REG_DEVICE_ID,
+                        static_cast<uint8_t>(bus.readMatchCount[
+                            cmd::REG_DEVICE_ID] + 1U));
+    uint32_t operationId = 0;
+    TEST_ASSERT_TRUE(dev.startVerifyConfiguration(0x4404U, operationId).ok());
+    TEST_ASSERT_TRUE(pollCooperativeToTerminal(dev, bus).is(Err::I2C_NACK_ADDR));
+    JobResult result{};
+    TEST_ASSERT_TRUE(dev.takeJobResult(operationId, result).ok());
+    TEST_ASSERT_FALSE(dev.isInitialized());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareState::RESYNC_REQUIRED),
+                            static_cast<uint8_t>(dev.hardwareState()));
+  }
+
+  {
+    FakeBus bus;
+    INA228::INA228 dev;
+    TEST_ASSERT_TRUE(dev.bind(makeCooperativeConfig(bus)).ok());
+    (void)initializeCooperativeDevice(dev, bus);
+    bus.readError = Status::Error(Err::I2C_NACK_UNKNOWN_PHASE,
+                                  "phase unavailable mid-verification", -58);
+    queueNthReadFailure(bus, cmd::REG_DEVICE_ID,
+                        static_cast<uint8_t>(bus.readMatchCount[
+                            cmd::REG_DEVICE_ID] + 1U));
+    uint32_t operationId = 0;
+    TEST_ASSERT_TRUE(dev.startVerifyConfiguration(0x4405U, operationId).ok());
+    TEST_ASSERT_TRUE(pollCooperativeToTerminal(dev, bus).is(
+        Err::I2C_NACK_UNKNOWN_PHASE));
+    JobResult result{};
+    TEST_ASSERT_TRUE(dev.takeJobResult(operationId, result).ok());
+    TEST_ASSERT_TRUE(dev.isInitialized());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareState::SYNCHRONIZED),
                             static_cast<uint8_t>(dev.hardwareState()));
   }
 }
@@ -4999,6 +5134,11 @@ void test_invalidate_preserves_dirty_evidence_and_bind_clears_advisories() {
   TEST_ASSERT_TRUE(dev.bind(makeCooperativeConfig(bus)).ok());
   (void)initializeCooperativeDevice(dev, bus);
 
+  bus.writeError = Status::Error(Err::I2C_ERROR,
+                                 "forced threshold write error", -98);
+  queueWriteFailure(bus, cmd::REG_SOVL);
+  TEST_ASSERT_TRUE(dev.setShuntOvervoltageThreshold(0.010f).is(Err::I2C_ERROR));
+
   bus.writeFailureRegs[0] = cmd::REG_SHUNT_TEMPCO;
   bus.writeFailureCount = 1;
   TEST_ASSERT_FALSE(dev.setShuntTempCoeff(1234u).ok());
@@ -5007,6 +5147,7 @@ void test_invalidate_preserves_dirty_evidence_and_bind_clears_advisories() {
   SettingsSnapshot before{};
   TEST_ASSERT_TRUE(dev.getSettings(before).ok());
   TEST_ASSERT_TRUE(before.hardwareDirty);
+  TEST_ASSERT_TRUE(before.thresholdsDirty);
   TEST_ASSERT_TRUE((before.dirtyRegisterMask &
                     (uint64_t{1} << cmd::REG_SHUNT_TEMPCO)) != 0);
   const Err firstCause = before.hardwareDirtyCause.code;
@@ -5139,6 +5280,7 @@ int main() {
   RUN_TEST(test_convert_raw_sample_uses_fixed_units_without_i2c);
   RUN_TEST(test_integer_sample_requires_calibration_and_preserves_output);
   RUN_TEST(test_convert_raw_sample_reports_math_overflow_evidence);
+  RUN_TEST(test_repeated_current_math_overflow_clears_after_accumulator_reset);
   RUN_TEST(test_20bit_edge_vectors_and_low_nibble_masking);
   RUN_TEST(test_temperature_negative_and_positive_vectors);
   RUN_TEST(test_read_raw_sample_failures_leave_output_unchanged);
@@ -5156,6 +5298,7 @@ int main() {
   RUN_TEST(test_read_manufacturer_id);
   RUN_TEST(test_read_device_id);
   RUN_TEST(test_public_register_access_helpers);
+  RUN_TEST(test_raw_software_reset_marks_every_reset_register_dirty);
   RUN_TEST(test_raw_accumulator_register_read_does_not_pre_preserve_diag_alert);
   RUN_TEST(test_public_register_access_preserves_transport_errors);
   RUN_TEST(test_register_access_after_end_does_not_touch_bus);

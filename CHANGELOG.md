@@ -22,21 +22,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   triggered conversion or accumulator reset.
 - A reset marks alert thresholds dirty before the reset write, covering the
   ambiguous case where hardware applies the reset but the transport reports an
-  error. Internal invalidation also preserves the first dirty cause.
+  error. Raw `CONFIG.RST` writes now apply the same full reset-register,
+  threshold, accumulator, and trigger-timing bookkeeping. Internal invalidation
+  also preserves the first dirty cause.
 - Hardware APIs now distinguish an active cooperative owner from an unconsumed
   terminal result in their `BUSY` diagnostic.
 - Arduino and native ESP-IDF `probe`, `stress_mix`, self-test, and transfer
   accounting behavior are aligned. Bound-device probes preserve destructive
   DIAG evidence, alert-limit decoding checks synchronized range/calibration,
-  and both CLIs expose cooperative read-only verification.
+  and both CLIs expose cooperative read-only verification. Scan, probe,
+  self-test, and recovery commands now reject an active cooperative owner before
+  raw bus access or invalidation.
 - Arduino short-read fallback no longer invents a NACK phase when a follow-up
   address probe succeeds, and partial TX buffers are discarded without sending
   truncated payloads. ESP-IDF unknown error fallbacks map to generic I2C error;
-  ESP-IDF's documented invalid-response NACK remains phase-unknown.
+  ESP-IDF's documented invalid-response NACK remains phase-unknown. Native IDF
+  device selection, teardown, and temporary-handle cleanup failures are now
+  returned with their original SDK detail instead of being discarded.
 - Static guards now parse multiline IDF include directories, enforce exact
   command/profile/stress/self-test parity, and lex comments and literals in
-  source order. HIL classification ignores historical health only for `drv`,
-  and an interrupted serial run records an explicit failing abort row.
+  source order, including C++ raw strings. They scan every native-IDF source and
+  require exact ESP32-S2/S3 CI targets. HIL classification ignores historical
+  health only for `drv`; frame sequences stay unique even on a coarse monotonic
+  clock; and interrupted compressed soaks preserve all completed summary data
+  alongside an explicit failing abort row.
 - Conversion and reset waits are no longer skipped when the monotonic clock
   advances during the blocking register write that arms them. The wait origin is
   sampled after the write returns, so it can be newer than the timestamp the

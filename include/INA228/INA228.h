@@ -315,6 +315,11 @@ public:
   Status startReinitialize(uint32_t requestToken, uint32_t& operationId);
 
   /// Start a read-only verification of cached identity and writable registers.
+  ///
+  /// Inconclusive transport failures preserve the last synchronized state and
+  /// accumulator epoch. A semantic mismatch, definite address absence,
+  /// identity/revision failure, or MEMSTAT failure disproves that state and
+  /// requires verified reinitialization.
   /// @param requestToken Caller-defined correlation token
   /// @param operationId Receives the new driver-assigned operation identity
   /// @return Status::Ok() when started, or a precondition error
@@ -1055,7 +1060,9 @@ public:
   /// Diagnostic/service access only. Raw writes bypass typed cache/calibration
   /// helpers and can make cached driver state differ from hardware; use
   /// invalidateHardwareState() and a verified reinitialization to resynchronize
-  /// after manual writes.
+  /// after manual writes. A CONFIG.RST request immediately marks every
+  /// reset-touched writable register and all alert thresholds suspect, even if
+  /// the transport reports failure, because the reset may already have applied.
   /// @param reg Register address
   /// @param value Big-endian 16-bit value to write
   /// @return Status::Ok(), or a transport/precondition error

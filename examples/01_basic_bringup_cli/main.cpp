@@ -91,6 +91,15 @@ uint8_t configuredAddress() {
   return selectedAddress;
 }
 
+INA228::Status diagnosticBusAccessStatus() {
+  if (activeOperationId != 0U) {
+    return INA228::Status::Error(
+        INA228::Err::BUSY,
+        "Finish the cooperative operation before accessing the bus");
+  }
+  return INA228::Status::Ok();
+}
+
 INA228::Status checkAddressAck(uint8_t address) {
   if (!isValidIna228Address(address)) {
     return INA228::Status::Error(INA228::Err::INVALID_PARAM,
@@ -141,13 +150,12 @@ INA228::Status readRegister16AtAddress(uint8_t address, uint8_t reg, uint16_t& v
 INA228::Status probeAddressRaw(uint8_t address, ProbeSnapshot& out) {
   out = {};
   out.address = address;
-  if (activeOperationId != 0U) {
-    return INA228::Status::Error(
-        INA228::Err::BUSY,
-        "Finish the cooperative operation before probing the bus");
+  INA228::Status st = diagnosticBusAccessStatus();
+  if (!st.ok()) {
+    return st;
   }
 
-  INA228::Status st = checkAddressAck(address);
+  st = checkAddressAck(address);
   if (!st.ok()) {
     return st;
   }
@@ -1475,13 +1483,12 @@ void runSelfTest() {
   Serial.println("=== INA228 selftest (diagnostic commands; reads DIAG_ALRT) ===");
   Serial.println("Note: DIAG_ALRT reads can clear CNVRF and latched evidence.");
 
-  const uint32_t succBefore = device.totalSuccess();
-  const uint32_t failBefore = device.totalFailures();
-  const uint8_t consBefore = device.consecutiveFailures();
-
-  // Probe (no health tracking)
-  INA228::Status st = device.probe();
-  if (st.code == INA228::Err::NOT_INITIALIZED) {
+  INA228::Status st = diagnosticBusAccessStatus();
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+  if (!device.isInitialized()) {
     reportSkip("probe responds", "driver not initialized");
     reportSkip("remaining checks", "selftest aborted");
     Serial.printf("Selftest result: pass=%s%lu%s fail=%s%lu%s skip=%s%lu%s\n",
@@ -1490,6 +1497,13 @@ void runSelfTest() {
                   skipCountColor(result.skip), static_cast<unsigned long>(result.skip), LOG_COLOR_RESET);
     return;
   }
+
+  const uint32_t succBefore = device.totalSuccess();
+  const uint32_t failBefore = device.totalFailures();
+  const uint8_t consBefore = device.consecutiveFailures();
+
+  // Probe (no health tracking)
+  st = device.probe();
   reportCheck("probe responds", st.ok(), st.ok() ? "" : errToStr(st.code));
   const bool probeNoTrack = device.totalSuccess() == succBefore &&
                             device.totalFailures() == failBefore &&
@@ -1771,13 +1785,15 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
-  if (cmd == "scan") {
-    i2c_scanner::scanDefault();
-    scanIna228Addresses();
-    return;
-  }
-
-  if (cmd == "scanina") {
+  if (cmd == "scan" || cmd == "scanina") {
+    const auto st = diagnosticBusAccessStatus();
+    if (!st.ok()) {
+      printStatus(st);
+      return;
+    }
+    if (cmd == "scan") {
+      i2c_scanner::scanDefault();
+    }
     scanIna228Addresses();
     return;
   }
@@ -2604,8 +2620,13 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "recover") {
+    auto st = diagnosticBusAccessStatus();
+    if (!st.ok()) {
+      printStatus(st);
+      return;
+    }
     LOGI("Invalidating cached hardware state and reinitializing...");
-    auto st = device.invalidateHardwareState(
+    st = device.invalidateHardwareState(
         INA228::Status::Error(INA228::Err::I2C_ERROR,
                               "Application requested reinitialization"));
     INA228::JobResult result{};

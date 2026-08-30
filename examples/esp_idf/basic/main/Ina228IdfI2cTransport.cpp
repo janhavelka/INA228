@@ -94,7 +94,9 @@ Ina228IdfTransferStats ina228IdfTransferStats() {
 bool ina228IdfInitI2c(int sda, int scl, uint32_t freqHz, uint16_t timeoutMs,
                       uint8_t address) {
   (void)timeoutMs;
-  ina228IdfDeinitI2c();
+  if (!ina228IdfDeinitI2c().ok()) {
+    return false;
+  }
 
   i2c_master_bus_config_t busConfig{};
   busConfig.clk_source = I2C_CLK_SRC_DEFAULT;
@@ -114,9 +116,15 @@ bool ina228IdfInitI2c(int sda, int scl, uint32_t freqHz, uint16_t timeoutMs,
   gTransport.address = address;
   err = addDevice(gTransport, address, gTransport.dev);
   if (err != ESP_OK) {
-    (void)i2c_del_master_bus(gTransport.bus);
-    gTransport.bus = nullptr;
-    gTransport.lastError = err;
+    const esp_err_t cleanupError = i2c_del_master_bus(gTransport.bus);
+    if (cleanupError == ESP_OK) {
+      gTransport.bus = nullptr;
+      gTransport.lastError = err;
+    } else {
+      // Keep the handle so a later initialization can retry cleanup instead of
+      // losing ownership of a bus the SDK says it did not delete.
+      gTransport.lastError = cleanupError;
+    }
     return false;
   }
 
@@ -124,32 +132,52 @@ bool ina228IdfInitI2c(int sda, int scl, uint32_t freqHz, uint16_t timeoutMs,
   return true;
 }
 
-void ina228IdfDeinitI2c() {
+INA228::Status ina228IdfDeinitI2c() {
   if (gTransport.dev != nullptr) {
-    (void)i2c_master_bus_rm_device(gTransport.dev);
+    gTransport.lastError = i2c_master_bus_rm_device(gTransport.dev);
+    if (gTransport.lastError != ESP_OK) {
+      return mapEspTransferErr(gTransport.lastError,
+                               "I2C device removal failed");
+    }
     gTransport.dev = nullptr;
   }
   if (gTransport.bus != nullptr) {
-    (void)i2c_del_master_bus(gTransport.bus);
+    gTransport.lastError = i2c_del_master_bus(gTransport.bus);
+    if (gTransport.lastError != ESP_OK) {
+      return mapEspTransferErr(gTransport.lastError,
+                               "I2C bus deletion failed");
+    }
     gTransport.bus = nullptr;
   }
+  gTransport.lastError = ESP_OK;
+  return INA228::Status::Ok();
 }
 
-bool ina228IdfSelectDeviceAddress(uint8_t address) {
+INA228::Status ina228IdfSelectDeviceAddress(uint8_t address) {
   if (gTransport.bus == nullptr) {
     gTransport.lastError = ESP_ERR_INVALID_STATE;
-    return false;
+    return INA228::Status::Error(INA228::Err::I2C_BUS,
+                                 "IDF I2C bus not configured",
+                                 static_cast<int32_t>(gTransport.lastError));
   }
   if (gTransport.dev != nullptr && gTransport.address == address) {
-    return true;
+    return INA228::Status::Ok();
   }
   if (gTransport.dev != nullptr) {
-    (void)i2c_master_bus_rm_device(gTransport.dev);
+    gTransport.lastError = i2c_master_bus_rm_device(gTransport.dev);
+    if (gTransport.lastError != ESP_OK) {
+      return mapEspTransferErr(gTransport.lastError,
+                               "I2C device removal failed");
+    }
     gTransport.dev = nullptr;
   }
-  gTransport.address = address;
   gTransport.lastError = addDevice(gTransport, address, gTransport.dev);
-  return gTransport.lastError == ESP_OK;
+  if (gTransport.lastError != ESP_OK) {
+    return mapEspTransferErr(gTransport.lastError,
+                             "I2C device selection failed");
+  }
+  gTransport.address = address;
+  return INA228::Status::Ok();
 }
 
 INA228::Status ina228IdfProbeAddress(uint8_t address, uint16_t timeoutMs) {
@@ -210,8 +238,10 @@ INA228::Status ina228IdfI2cWriteReadAt(uint8_t addr, const uint8_t* txData,
   }
 
   i2c_master_dev_handle_t tempDev = nullptr;
-  i2c_master_dev_handle_t dev = ctx->dev;
-  if (addr != ctx->address) {
+  i2c_master_dev_handle_t dev = nullptr;
+  if (addr == ctx->address && ctx->dev != nullptr) {
+    dev = ctx->dev;
+  } else {
     ctx->lastError = addDevice(*ctx, addr, tempDev);
     if (ctx->lastError != ESP_OK) {
       return mapEspTransferErr(ctx->lastError, "I2C temporary device failed");
@@ -223,12 +253,18 @@ INA228::Status ina228IdfI2cWriteReadAt(uint8_t addr, const uint8_t* txData,
   }
 
   gTransferStats.read++;
-  ctx->lastError = i2c_master_transmit_receive(
+  const esp_err_t transferError = i2c_master_transmit_receive(
       dev, txData, txLen, rxData, rxLen, clampTimeoutMs(timeoutMs));
   if (tempDev != nullptr) {
-    (void)i2c_master_bus_rm_device(tempDev);
+    const esp_err_t cleanupError = i2c_master_bus_rm_device(tempDev);
+    if (transferError == ESP_OK && cleanupError != ESP_OK) {
+      ctx->lastError = cleanupError;
+      return mapEspTransferErr(cleanupError,
+                               "I2C temporary device removal failed");
+    }
   }
-  return mapEspTransferErr(ctx->lastError, "I2C write-read failed");
+  ctx->lastError = transferError;
+  return mapEspTransferErr(transferError, "I2C write-read failed");
 }
 
 uint32_t ina228IdfNowMs(void*) {

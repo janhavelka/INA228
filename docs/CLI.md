@@ -112,6 +112,10 @@ advance it by no more than the supplied instruction/I2C-transfer budget.
 terminal error is returned. A zero budget is meaningful for the job poll APIs,
 but `ready_step` requires a positive budget.
 
+While a cooperative job is active, `scan`, `scanina`, `probe`, `selftest`, and
+`recover` return `BUSY` before performing out-of-band I2C or invalidating the
+job. Finish the matching `*_step` sequence before using those commands.
+
 ### Alerts and register diagnostics
 
 | Command | Purpose |
@@ -142,7 +146,7 @@ but `ready_step` requires a positive budget.
 | --- | --- |
 | `drv` | Print driver state and health counters. |
 | `probe` | Probe the selected device. Identity reads are raw; for the initialized bound address, the destructive `DIAG_ALRT` read goes through the driver so CNVRF and alert evidence are preserved. Probing is rejected during an active cooperative operation. |
-| `recover` | Invalidate cached hardware state and run bounded reinitialization. |
+| `recover` | Invalidate cached hardware state and run bounded reinitialization. Rejected during an active cooperative operation. |
 | `verbose [0\|1]` | Show or set verbose example output. |
 | `stress [1..100000]` | Run `N` measurement cycles; default is 10. |
 | `stress_mix [1..100000]` | Run `N` mixed-operation cycles; default is 50. |
@@ -150,7 +154,7 @@ but `ready_step` requires a positive budget.
 | `xfer_reset` | Reset example-transport read/write counters. |
 | `xfer_stats` | Print example-transport counters. |
 | `xfer_assert <r> <w> <t>` | Assert exact read, write, and total transport counts. |
-| `selftest` | Run the diagnostic self-test. It reads `DIAG_ALRT`. |
+| `selftest` | Run the diagnostic self-test. It reads `DIAG_ALRT` and is rejected during an active cooperative operation. |
 
 Stress counts must be positive and are capped at 100000 by the example. Stress
 commands are diagnostics, not qualification or lifetime tests.

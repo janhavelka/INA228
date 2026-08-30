@@ -12,7 +12,9 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 NON_CODE_RE = re.compile(
-    r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|/\*.*?\*/|//[^\n]*',
+    r'(?:u8|u|U|L)?R"(?P<raw_delim>[^ ()\\\t\r\n]{0,16})\(.*?\)'
+    r'(?P=raw_delim)"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|'
+    r'/\*.*?\*/|//[^\n]*',
     re.DOTALL,
 )
 
@@ -23,6 +25,15 @@ def strip_non_code(text: str) -> str:
     # Sequential comment substitutions can mistake // or /* inside a string
     # for a real comment and hide executable code that follows it.
     return NON_CODE_RE.sub("", text)
+
+
+def validate_lexer() -> None:
+    executable = 'auto text = R"tag(text" // not a comment)tag"; vTaskDelay(1);'
+    hidden = 'auto text = R"tag(vTaskDelay(1);)tag";'
+    if "vTaskDelay(1)" not in strip_non_code(executable):
+        fail("internal lexer hid executable code following a raw string")
+    if "vTaskDelay(1)" in strip_non_code(hidden):
+        fail("internal lexer retained code-like text inside a raw string")
 
 
 def fail(message: str) -> None:
@@ -45,6 +56,7 @@ def read(relative: str) -> str:
 
 
 def main() -> int:
+    validate_lexer()
     public = read("include/INA228/INA228.h")
     config = read("include/INA228/Config.h")
     implementation = read("src/INA228.cpp")

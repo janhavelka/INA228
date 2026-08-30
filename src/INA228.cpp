@@ -2783,6 +2783,15 @@ Status INA228::writeRegister16(uint8_t reg, uint16_t value) {
   if (!_hardwareAccessAllowed()) {
     return _hardwareAccessBusyStatus();
   }
+  const bool softwareReset =
+      reg == cmd::REG_CONFIG && (value & cmd::CONFIG_RST) != 0;
+  if (softwareReset) {
+    // CONFIG.RST may take effect even when the transport reports failure. From
+    // this point every reset-owned register and every alert limit is suspect.
+    _dirtyRegisterMask |= RESET_TOUCHED_REGISTER_MASK;
+    _markThresholdsDirty();
+    _invalidateTriggeredConversionTiming();
+  }
   Status st = writeReg16(reg, value);
   if (!st.ok() && _isThresholdRegister(reg)) {
     // A failed threshold write may still have landed; the sticky advisory is
@@ -2794,17 +2803,13 @@ Status INA228::writeRegister16(uint8_t reg, uint16_t value) {
        reg == cmd::REG_SHUNT_CAL || reg == cmd::REG_ADC_CONFIG ||
        reg == cmd::REG_SHUNT_TEMPCO)) {
     _markHardwareDirty(reg, st);
-    if (reg == cmd::REG_CONFIG && (value & cmd::CONFIG_RST) != 0) {
-      _invalidateTriggeredConversionTiming();
-    }
   } else if (st.ok() && reg == cmd::REG_DIAG_ALRT) {
     _diagAlertConfigBits = value & cmd::DIAG_CONFIG_MASK;
     _config.alerts.latched = (value & cmd::DIAG_ALATCH) != 0;
     _config.alerts.conversionReady = (value & cmd::DIAG_CNVR) != 0;
     _config.alerts.slowAlert = (value & cmd::DIAG_SLOWALERT) != 0;
     _config.alerts.activeHigh = (value & cmd::DIAG_APOL) != 0;
-  } else if (st.ok() && reg == cmd::REG_CONFIG &&
-             ((value & cmd::CONFIG_RST) != 0)) {
+  } else if (st.ok() && softwareReset) {
     _invalidateAccumulatorEpoch();
     _markConfigReplayDirty(
         Status::Error(Err::HARDWARE_DIRTY, "Raw software reset write"));

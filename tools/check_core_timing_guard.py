@@ -37,12 +37,23 @@ FORBIDDEN_INCLUDE_RE = re.compile(
     re.MULTILINE,
 )
 NON_CODE_RE = re.compile(
-    r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|/\*.*?\*/|//[^\n]*',
+    r'(?:u8|u|U|L)?R"(?P<raw_delim>[^ ()\\\t\r\n]{0,16})\(.*?\)'
+    r'(?P=raw_delim)"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|'
+    r'/\*.*?\*/|//[^\n]*',
     re.DOTALL,
 )
 
 def strip_non_code(text: str) -> str:
     return NON_CODE_RE.sub("", text)
+
+
+def validate_lexer(errors: list[str]) -> None:
+    executable = 'auto text = R"tag(text" // not a comment)tag"; vTaskDelay(1);'
+    hidden = 'auto text = R"tag(vTaskDelay(1);)tag";'
+    if "vTaskDelay(1)" not in strip_non_code(executable):
+        errors.append("internal lexer hid executable code following a raw string")
+    if "vTaskDelay(1)" in strip_non_code(hidden):
+        errors.append("internal lexer retained code-like text inside a raw string")
 
 
 def collect_sources() -> list[pathlib.Path]:
@@ -59,6 +70,7 @@ def collect_sources() -> list[pathlib.Path]:
 
 def main() -> int:
     errors: list[str] = []
+    validate_lexer(errors)
 
     for path in collect_sources():
         rel = path.relative_to(ROOT).as_posix()

@@ -107,9 +107,8 @@ CI_REQUIRED_TOKENS = [
     "command: idf.py set-target ${{ matrix.target }} build",
     "workflow_dispatch:",
     "Build ESP-IDF basic ${{ matrix.target }} with idf.py",
-    "- esp32s3",
-    "- esp32s2",
 ]
+REQUIRED_IDF_TARGETS = {"esp32s2", "esp32s3"}
 BUILD_DOC_REQUIRED_TOKENS = [
     "ESP-IDF v6.0.1",
     "idf.py --version",
@@ -229,10 +228,16 @@ def main() -> int:
     cmake = (
         ROOT / "examples" / "esp_idf" / "basic" / "main" / "CMakeLists.txt"
     ).read_text(encoding="utf-8", errors="replace")
+    cmake_code = re.sub(r"(?m)#.*$", "", cmake)
+    component = re.search(
+        r"\bidf_component_register\s*\((.*?)\)", cmake_code, re.DOTALL
+    )
+    if component is None:
+        fail("ESP-IDF main CMake missing idf_component_register()")
     include_dirs = re.search(
         r"\bINCLUDE_DIRS\b(.*?)(?=\b(?:REQUIRES|PRIV_REQUIRES|EMBED_FILES|"
-        r"EMBED_TXTFILES|WHOLE_ARCHIVE)\b|\))",
-        cmake,
+        r"EMBED_TXTFILES|WHOLE_ARCHIVE)\b|$)",
+        component.group(1),
         re.DOTALL,
     )
     if include_dirs is None:
@@ -246,11 +251,10 @@ def main() -> int:
     if (ROOT / "examples" / "common" / "IdfArduinoCompat.h").exists():
         fail("examples/common/IdfArduinoCompat.h must not exist")
 
-    transport = (
-        (ROOT / "examples" / "esp_idf" / "basic" / "main" / "Ina228IdfI2cTransport.cpp")
+    transport = "\n".join(
+        (ROOT / "examples" / "esp_idf" / "basic" / "main" / filename)
         .read_text(encoding="utf-8", errors="replace")
-        + (ROOT / "examples" / "esp_idf" / "basic" / "main" / "Ina228IdfI2cTransport.h")
-        .read_text(encoding="utf-8", errors="replace")
+        for filename in ("Ina228IdfI2cTransport.cpp", "Ina228IdfI2cTransport.h")
     )
     for token in (
         "driver/i2c_master.h",
@@ -263,13 +267,28 @@ def main() -> int:
         "I2C_NACK_ADDR",
         "I2C_NACK_UNKNOWN_PHASE",
         "I2C NACK, ESP-IDF phase unavailable",
+        "INA228::Status ina228IdfSelectDeviceAddress",
+        "INA228::Status ina228IdfDeinitI2c",
+        "I2C temporary device removal failed",
         "single-owner",
     ):
         require_token(transport, token, "ESP-IDF transport")
+    for discarded_cleanup in (
+        "(void)i2c_master_bus_rm_device",
+        "(void)i2c_del_master_bus",
+    ):
+        if discarded_cleanup in transport:
+            fail(f"ESP-IDF transport discards cleanup result '{discarded_cleanup}'")
     for token in FORBIDDEN_IDF_TOKENS:
         if token in transport:
             fail(f"ESP-IDF transport contains forbidden Arduino/facade token '{token}'")
-    idf_sources = idf_main + transport
+    idf_source_root = ROOT / "examples" / "esp_idf" / "basic" / "main"
+    idf_sources = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in sorted(idf_source_root.rglob("*"))
+        if path.is_file()
+        and path.suffix.lower() in {".c", ".cc", ".cpp", ".h", ".hpp"}
+    )
     if re.search(r'#\s*include\s*[<"][^">]*\.cpp[>"]', idf_sources):
         fail("native ESP-IDF sources must not include implementation .cpp files")
     if "examples/01_basic_bringup_cli" in idf_sources or "examples/common/" in idf_sources:
@@ -286,6 +305,15 @@ def main() -> int:
             "if (!st.ok() && st.msg != nullptr && st.msg[0] != '\\0')",
             f"{label} non-OK message gate",
         )
+        require_token(
+            text,
+            "Finish the cooperative operation before accessing the bus",
+            f"{label} cooperative bus-owner guard",
+        )
+        if text.count("diagnosticBusAccessStatus()") < 5:
+            fail(
+                f"{label} must guard probe, scan, selftest, and recover while a job is active"
+            )
     if "st.code == INA228::Err::I2C_NACK_ADDR || st.code == INA228::Err::I2C_ERROR" in idf_main:
         fail("native ESP-IDF scan must not hide generic I2C_ERROR as an empty address")
     arduino_help = help_items(cli)
@@ -424,6 +452,12 @@ def main() -> int:
     )
     for token in CI_REQUIRED_TOKENS:
         require_token(ci, token, "CI ESP-IDF build matrix")
+    exact_list_items = set(
+        re.findall(r"(?m)^\s*-\s*(esp32s[23])\s*(?:#.*)?$", ci)
+    )
+    missing_targets = REQUIRED_IDF_TARGETS - exact_list_items
+    if missing_targets:
+        fail(f"CI ESP-IDF build matrix missing exact targets {sorted(missing_targets)}")
 
     print("IDF example contract PASSED")
     return 0

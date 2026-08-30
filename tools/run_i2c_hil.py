@@ -468,6 +468,23 @@ V3_TRANSFER_STEPS: tuple[Step, ...] = (
          "sample completion", "transfer"),
     Step("xfer_assert 7 1 8", ("XFER_ASSERT PASS",),
          "sample completion count", "transfer"),
+    Step("verify_start", ("startVerifyConfiguration()", "OK"),
+         "owner-exclusion verification start", "transfer"),
+    Step("xfer_reset", ("XFER_RESET",), "reset counters", "transfer"),
+    Step("scan", ("Status: BUSY",),
+         "scan is bus-silent during owner job", "transfer", expect_failure=True),
+    Step("xfer_assert 0 0 0", ("XFER_ASSERT PASS",),
+         "rejected scan transfer count", "transfer"),
+    Step("selftest", ("Status: BUSY",),
+         "selftest cannot cancel owner job", "transfer", expect_failure=True),
+    Step("xfer_assert 0 0 0", ("XFER_ASSERT PASS",),
+         "rejected selftest transfer count", "transfer"),
+    Step("recover", ("Status: BUSY",),
+         "recover cannot cancel owner job", "transfer", expect_failure=True),
+    Step("xfer_assert 0 0 0", ("XFER_ASSERT PASS",),
+         "rejected recovery transfer count", "transfer"),
+    Step("verify_step 8", ("pollJob(8): OK", "terminal result consumed"),
+         "owner job remains intact after rejections", "transfer"),
     Step("apply_start", ("startReinitialize", "OK"),
          "reinitialization start", "transfer"),
     Step("xfer_reset", ("XFER_RESET",), "reset counters", "transfer"),
@@ -929,13 +946,15 @@ def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
     marker_missing = False
     trailer_verdict: str | None = None
     stale = drain_input(serial_port, args.drain_before_command_s)
-    token = f"{args.frame_prefix}{time.monotonic_ns()}"
-    seq = "0"
     if args.no_command_framing:
         serial_port.write((step.command + "\n").encode("ascii"))
         serial_port.flush()
         output = read_response(serial_port, args.timeout_s, args.idle_s, args.prompt_token)
     else:
+        token = f"{args.frame_prefix}{time.monotonic_ns()}"
+        sequence = getattr(args, "frame_sequence", 0)
+        args.frame_sequence = sequence + 1
+        seq = str(sequence)
         serial_port.write((f"hilrun {token} {seq} {step.command}\n").encode("ascii"))
         serial_port.flush()
         frame_output = read_until_hilrun_end(serial_port, args.timeout_s, token, seq,
@@ -1210,8 +1229,7 @@ def write_report(path: pathlib.Path, args: argparse.Namespace, results: Sequence
 
 
 def run_soak(serial_port, args: argparse.Namespace, results: list[Result],
-             soak_seconds: float) -> SoakSummary:
-    summary = SoakSummary()
+             soak_seconds: float, summary: SoakSummary) -> SoakSummary:
     deadline = time.monotonic() + soak_seconds
     index = 0
     while time.monotonic() < deadline:
@@ -1324,7 +1342,8 @@ def run_serial(args: argparse.Namespace) -> int:
                     time.sleep(pause_s)
             run_benchmarks(serial_port, args, results)
             if soak_seconds > 0.0:
-                soak_summary = run_soak(serial_port, args, results, soak_seconds)
+                soak_summary = SoakSummary()
+                run_soak(serial_port, args, results, soak_seconds, soak_summary)
     except (serial.SerialException, OSError, KeyboardInterrupt) as exc:
         # Never discard the evidence collected so far; a long soak that dies
         # mid-run is exactly when the partial report matters most.
