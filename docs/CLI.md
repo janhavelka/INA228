@@ -101,6 +101,7 @@ it is required.
 | `end` | End the driver session. |
 | `reset` | Perform the example's bounded software-reset flow. |
 | `reset_start` / `reset_step <0..255>` | Start or advance the cooperative reset job. |
+| `verify_start` / `verify_step <0..255>` | Start or advance read-only verification of the cached configuration. |
 | `rstacc` | Reset energy and charge accumulators and establish a new accumulation epoch. |
 | `apply_start` / `apply_step <0..255>` | Start or advance verified cooperative reinitialization. |
 | `replay_start` / `replay_step <0..255>` | Alias for the verified reinitialization job. |
@@ -117,7 +118,7 @@ but `ready_step` requires a positive budget.
 | --- | --- |
 | `diag` | Decode `DIAG_ALRT`; the hardware read is destructive/status-clearing. |
 | `diagraw` | Print raw `DIAG_ALRT`; the hardware read is destructive/status-clearing. |
-| `limits` | Read and decode all alert-limit registers. |
+| `limits` | Read all alert-limit registers. Shunt units require a synchronized ADC range; power units require valid calibration. A sticky threshold warning is printed when limits may need reapplication. |
 | `alatch [0\|1]` | Show or set alert latch mode. The query reads `DIAG_ALRT`. |
 | `cnvralert [0\|1]` | Show or set conversion-ready alert output. The query reads `DIAG_ALRT`. |
 | `alslow [0\|1]` | Show or set slow-alert mode. The query reads `DIAG_ALRT`. |
@@ -127,7 +128,7 @@ but `ready_step` requires a positive budget.
 | `bovl [volts]` | Show or set bus-overvoltage threshold. |
 | `buvl [volts]` | Show or set bus-undervoltage threshold. |
 | `tmplim [degC]` | Show or set temperature-over-limit threshold. |
-| `pwrlim [watts]` | Show or set power-over-limit threshold. |
+| `pwrlim [watts]` | Show or set power-over-limit threshold. The query prints watts only while calibration is valid. |
 | `mfgid` | Read manufacturer ID; expected value is `0x5449`. |
 | `devid` | Read `DEVICE_ID`; expected die ID is `0x228` plus a revision nibble. |
 | `reg16 <addr>` | Read an arbitrary 16-bit register. This can clear flags for a status-sensitive address. |
@@ -140,13 +141,12 @@ but `ready_step` requires a positive budget.
 | Command | Purpose |
 | --- | --- |
 | `drv` | Print driver state and health counters. |
-| `probe` | Probe the selected device without health tracking. It reads `DIAG_ALRT`. |
+| `probe` | Probe the selected device. Identity reads are raw; for the initialized bound address, the destructive `DIAG_ALRT` read goes through the driver so CNVRF and alert evidence are preserved. Probing is rejected during an active cooperative operation. |
 | `recover` | Invalidate cached hardware state and run bounded reinitialization. |
 | `verbose [0\|1]` | Show or set verbose example output. |
 | `stress [1..100000]` | Run `N` measurement cycles; default is 10. |
 | `stress_mix [1..100000]` | Run `N` mixed-operation cycles; default is 50. |
 | `hilrun <token> <seq> <cmd>` | Execute one inner command inside a machine-readable HIL frame. |
-| `hilmark <token>` | Emit a bare `HILMARK` token. New automation should use `hilrun`. |
 | `xfer_reset` | Reset example-transport read/write counters. |
 | `xfer_stats` | Print example-transport counters. |
 | `xfer_assert <r> <w> <t>` | Assert exact read, write, and total transport counts. |
@@ -248,7 +248,7 @@ The `status` field is an uppercase `INA228::Err` name. Important classes are:
 | `MEASUREMENT_NOT_READY`, `RESULT_NOT_AVAILABLE`, `STALE_RESULT` | Measurement/job result is not currently consumable. |
 | `I2C_NACK_ADDR`, `I2C_NACK_DATA`, `I2C_NACK_UNKNOWN_PHASE`, `I2C_TIMEOUT`, `I2C_BUS`, `I2C_ERROR` | Transport failure, with as much phase detail as the platform provides. |
 | `DEVICE_NOT_FOUND`, `DEVICE_ID_MISMATCH`, `UNSUPPORTED_REVISION`, `MEMORY_ERROR` | Device identity, revision, or trim-memory validation failed. |
-| `MATH_OVERFLOW`, `ACCUMULATION_INVALID`, `ACCUMULATION_OVERFLOW` | Measurement or accumulator validity failed. |
+| `MATH_OVERFLOW`, `ACCUMULATION_INVALID`, `ACCUMULATION_OVERFLOW` | Measurement or accumulator validity failed. `MATHOF` remains latched across `DIAG_ALRT` reads; start another triggered conversion or reset accumulators before retrying current-derived conversions. |
 | `HARDWARE_DIRTY`, `HARDWARE_STATE_UNKNOWN`, `CONFIG_MISMATCH` | Cached/desired configuration is not verified against hardware. |
 | `TIMEOUT`, `OPERATION_TIMEOUT`, `CANCELLED` | A bounded operation did not complete or was cancelled. |
 
@@ -256,9 +256,7 @@ The exhaustive list and numeric values are defined by `INA228::Err` in
 `include/INA228/Status.h`. Automation should compare the symbolic name, not its
 numeric value.
 
-`hilmark <token>` supports the runner's older command-plus-marker mode. It does
-not carry a command status and is less robust than `hilrun`. Raw unframed serial
-commands are intended for interactive diagnosis only.
+Raw unframed serial commands are intended for interactive diagnosis only.
 
 ## HIL runner
 
@@ -326,10 +324,10 @@ The frame `status` and runner verdict are different layers:
 | `UNKNOWN` | Output was incomplete or ambiguous, required tokens were missing, or framing was missing/mismatched/truncated. |
 | `NOT RUN` | A known fixture-dependent check or unrequested soak was recorded as not executed. It is not a pass. |
 
-Framed `hilrun` mode is the default; `--no-command-framing` and the legacy
-`--legacy-marker` mode opt out of it. `--require-framed` rejects those opt-outs
-and promotes a missing or mismatched frame from `UNKNOWN` to `FAIL`, so release
-evidence cannot silently degrade to unframed output.
+Framed `hilrun` mode is the default. `--no-command-framing` opts out of it;
+`--require-framed` rejects that opt-out and promotes a missing or mismatched
+frame from `UNKNOWN` to `FAIL`, so release evidence cannot silently degrade to
+unframed output.
 
 Any `FAIL` makes the runner return nonzero. `UNKNOWN` returns nonzero when
 `--fail-on-unknown` is supplied; use that option for validation gates.

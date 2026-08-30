@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Triggered conversion completion no longer rewrites the cached MODE to
+  shutdown; the cache now continues to mirror `ADC_CONFIG.MODE`, while the
+  pending flag records whether the one-shot conversion is still active.
+- Instantaneous samples include a bounded whole-device timing margin before
+  the single CNVRF check, without adding transfers or retries.
+- Read-only configuration verification preserves synchronized hardware and the
+  accumulator epoch after an inconclusive transport error, but still
+  invalidates them when identity, presence, MEMSTAT, or register readback
+  disproves the cached state.
+- MATHOF diagnostics now consistently state that the latch is cleared by a new
+  triggered conversion or accumulator reset.
+- A reset marks alert thresholds dirty before the reset write, covering the
+  ambiguous case where hardware applies the reset but the transport reports an
+  error. Internal invalidation also preserves the first dirty cause.
+- Hardware APIs now distinguish an active cooperative owner from an unconsumed
+  terminal result in their `BUSY` diagnostic.
+- Arduino and native ESP-IDF `probe`, `stress_mix`, self-test, and transfer
+  accounting behavior are aligned. Bound-device probes preserve destructive
+  DIAG evidence, alert-limit decoding checks synchronized range/calibration,
+  and both CLIs expose cooperative read-only verification.
+- Arduino short-read fallback no longer invents a NACK phase when a follow-up
+  address probe succeeds, and partial TX buffers are discarded without sending
+  truncated payloads. ESP-IDF unknown error fallbacks map to generic I2C error;
+  ESP-IDF's documented invalid-response NACK remains phase-unknown.
+- Static guards now parse multiline IDF include directories, enforce exact
+  command/profile/stress/self-test parity, and lex comments and literals in
+  source order. HIL classification ignores historical health only for `drv`,
+  and an interrupted serial run records an explicit failing abort row.
 - Conversion and reset waits are no longer skipped when the monotonic clock
   advances during the blocking register write that arms them. The wait origin is
   sampled after the write returns, so it can be newer than the timestamp the
@@ -44,9 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- Retired `hilmark` CLI commands and the runner's unused legacy-marker mode.
 - Generated per-run hardware reports under `docs/validation/hardware/`, which
-  described an unreachable dirty commit. `docs/validation/hardware-evidence.md`
-  retains the durable summary of each run.
+  described an unreconstructable dirty worktree based on a reachable commit.
+  `docs/validation/hardware-evidence.md` retains the durable summary of each run.
 - `tools/INA228_HIL_COMMAND_SEQUENCE.md`; its unique transfer-budget command
   sequences moved into `docs/validation/hardware-validation-procedure.md`.
 

@@ -1,5 +1,10 @@
 # INA228 audit — 2026-08-27
 
+> Review disposition: every finding in this audit was rechecked against the
+> current tree on 2026-08-30. Implemented changes, rejected proposals, factual
+> corrections, and validation results are recorded in
+> [CODE_AUDIT_RESOLUTION.md](CODE_AUDIT_RESOLUTION.md).
+
 Scope: the driver (`include/INA228/`, `src/INA228.cpp`) checked against the TI
 INA228 datasheet (SLYS021A, rev. A May 2022) in `docs/reference/vendor/`, plus
 the examples, the HIL/contract tooling, and the documentation tree.

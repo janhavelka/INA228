@@ -33,7 +33,8 @@ INA228::Status mapEspTransferErr(esp_err_t err, const char* context) {
     return INA228::Status::Error(INA228::Err::INVALID_PARAM, context,
                                  static_cast<int32_t>(err));
   }
-  return INA228::Status::Error(INA228::Err::I2C_BUS, context, static_cast<int32_t>(err));
+  return INA228::Status::Error(INA228::Err::I2C_ERROR, context,
+                               static_cast<int32_t>(err));
 }
 
 INA228::Status mapEspProbeErr(esp_err_t err) {
@@ -52,7 +53,7 @@ INA228::Status mapEspProbeErr(esp_err_t err) {
     return INA228::Status::Error(INA228::Err::INVALID_PARAM, "Invalid I2C probe address",
                                  static_cast<int32_t>(err));
   }
-  return INA228::Status::Error(INA228::Err::I2C_BUS, "I2C address probe failed",
+  return INA228::Status::Error(INA228::Err::I2C_ERROR, "I2C address probe failed",
                                static_cast<int32_t>(err));
 }
 
@@ -221,6 +222,7 @@ INA228::Status ina228IdfI2cWriteReadAt(uint8_t addr, const uint8_t* txData,
     return INA228::Status::Error(INA228::Err::I2C_BUS, "IDF I2C device not configured");
   }
 
+  gTransferStats.read++;
   ctx->lastError = i2c_master_transmit_receive(
       dev, txData, txLen, rxData, rxLen, clampTimeoutMs(timeoutMs));
   if (tempDev != nullptr) {

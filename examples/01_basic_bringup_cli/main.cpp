@@ -54,6 +54,10 @@ static constexpr uint16_t SUPPORTED_REVISION_MASK = 0x0002;
 static constexpr size_t CLI_MAX_LINE_LEN = 128;
 static constexpr uint8_t CLI_MAX_BYTES_PER_LOOP = 96;
 static constexpr int MAX_STRESS_COUNT = 100000;
+static constexpr const char* STRESS_MIX_OPERATIONS[] = {
+    "measure", "vbus", "current", "temp", "diag", "mfgid", "devid"};
+static constexpr size_t STRESS_MIX_OPERATION_COUNT =
+    sizeof(STRESS_MIX_OPERATIONS) / sizeof(STRESS_MIX_OPERATIONS[0]);
 uint8_t selectedAddress = DEFAULT_I2C_ADDRESS;
 uint32_t activeOperationId = 0;
 uint32_t nextRequestToken = 1;
@@ -67,6 +71,10 @@ struct ProbeSnapshot {
 };
 
 const char* errToStr(INA228::Err err);
+
+bool stressMixStatusAccepted(const INA228::Status& st) {
+  return st.ok();
+}
 
 // ============================================================================
 // Helper Functions
@@ -133,6 +141,11 @@ INA228::Status readRegister16AtAddress(uint8_t address, uint8_t reg, uint16_t& v
 INA228::Status probeAddressRaw(uint8_t address, ProbeSnapshot& out) {
   out = {};
   out.address = address;
+  if (activeOperationId != 0U) {
+    return INA228::Status::Error(
+        INA228::Err::BUSY,
+        "Finish the cooperative operation before probing the bus");
+  }
 
   INA228::Status st = checkAddressAck(address);
   if (!st.ok()) {
@@ -167,7 +180,12 @@ INA228::Status probeAddressRaw(uint8_t address, ProbeSnapshot& out) {
                                  identity.revision);
   }
 
-  st = readRegister16AtAddress(address, INA228::cmd::REG_DIAG_ALRT, out.diagAlert);
+  const bool boundAddress = device.isInitialized() &&
+      address == device.getConfig().i2cAddress;
+  st = boundAddress
+      ? device.readDiagAlertRaw(out.diagAlert)
+      : readRegister16AtAddress(address, INA228::cmd::REG_DIAG_ALRT,
+                                out.diagAlert);
   if (!st.ok()) {
     return st;
   }
@@ -325,9 +343,18 @@ INA228::Status pollOwnerJob(uint8_t maxTransfers, INA228::JobResult& result,
     return pollStatus;
   }
 
-  st = device.takeJobResult(activeOperationId, result);
-  // The job already left ACTIVE, so release the slot either way; keeping it
-  // would make every later start return BUSY with no way back.
+  const uint32_t expectedOperationId = activeOperationId;
+  if (snapshot.operationId != expectedOperationId) {
+    INA228::JobResult discarded{};
+    (void)device.takeJobResult(snapshot.operationId, discarded);
+    activeOperationId = 0U;
+    return INA228::Status::Error(
+        INA228::Err::STALE_RESULT,
+        "Terminal operation ID differs from the CLI owner ID",
+        static_cast<int32_t>(snapshot.operationId));
+  }
+  st = device.takeJobResult(expectedOperationId, result);
+  // The job already left ACTIVE, so release the CLI slot either way.
   activeOperationId = 0U;
   if (!st.ok()) {
     return st;
@@ -749,8 +776,8 @@ bool parseFloat(const String& token, float& out) {
   return true;
 }
 
-float shuntLimitToMv(uint16_t raw) {
-  const double lsb = (device.getConfig().adcRange == INA228::AdcRange::MV_40_96)
+float shuntLimitToMv(uint16_t raw, INA228::AdcRange range) {
+  const double lsb = (range == INA228::AdcRange::MV_40_96)
                          ? INA228::cmd::SHUNT_THRESHOLD_LSB_RANGE1
                          : INA228::cmd::SHUNT_THRESHOLD_LSB_RANGE0;
   return static_cast<float>(static_cast<int16_t>(raw) * lsb * 1000.0);
@@ -764,8 +791,7 @@ float tempLimitToC(uint16_t raw) {
   return static_cast<float>(static_cast<int16_t>(raw) * INA228::cmd::TEMP_LSB);
 }
 
-double powerLimitToW(uint16_t raw) {
-  const float currentLsb = device.currentLsb();
+double powerLimitToW(uint16_t raw, float currentLsb) {
   if (currentLsb <= 0.0f) {
     return 0.0;
   }
@@ -992,14 +1018,30 @@ void printAlertLimits() {
     return;
   }
 
+  INA228::SettingsSnapshot settings{};
+  (void)device.getSettings(settings);
+  const bool shuntDecodeValid =
+      device.hardwareState() == INA228::HardwareState::SYNCHRONIZED;
+
   Serial.println("=== Alert Limits ===");
-  Serial.printf("  SOVL:      0x%04X  %.3f mV\n", sovl, static_cast<double>(shuntLimitToMv(sovl)));
-  Serial.printf("  SUVL:      0x%04X  %.3f mV\n", suvl, static_cast<double>(shuntLimitToMv(suvl)));
+  if (settings.thresholdsDirty) {
+    Serial.println("  Warning: engineering-unit thresholds may need reapplication.");
+  }
+  if (shuntDecodeValid) {
+    Serial.printf("  SOVL:      0x%04X  %.3f mV\n", sovl,
+                  static_cast<double>(shuntLimitToMv(sovl, settings.adcRange)));
+    Serial.printf("  SUVL:      0x%04X  %.3f mV\n", suvl,
+                  static_cast<double>(shuntLimitToMv(suvl, settings.adcRange)));
+  } else {
+    Serial.printf("  SOVL:      0x%04X  requires synchronized ADC range for mV\n", sovl);
+    Serial.printf("  SUVL:      0x%04X  requires synchronized ADC range for mV\n", suvl);
+  }
   Serial.printf("  BOVL:      0x%04X  %.4f V\n", bovl, static_cast<double>(busLimitToV(bovl)));
   Serial.printf("  BUVL:      0x%04X  %.4f V\n", buvl, static_cast<double>(busLimitToV(buvl)));
   Serial.printf("  TEMP_LIMIT:0x%04X  %.2f C\n", temp, static_cast<double>(tempLimitToC(temp)));
-  if (device.currentLsb() > 0.0f) {
-    Serial.printf("  PWR_LIMIT: 0x%04X  %.6f W\n", power, powerLimitToW(power));
+  if (settings.calibrated) {
+    Serial.printf("  PWR_LIMIT: 0x%04X  %.6f W\n", power,
+                  powerLimitToW(power, settings.currentLsb));
   } else {
     Serial.printf("  PWR_LIMIT: 0x%04X  requires calibration for W\n", power);
   }
@@ -1013,10 +1055,17 @@ void printShuntAlertLimit(const char* label, uint8_t reg) {
     return;
   }
 
-  Serial.printf("%s: 0x%04X  %.3f mV\n",
-                label,
-                raw,
-                static_cast<double>(shuntLimitToMv(raw)));
+  INA228::SettingsSnapshot settings{};
+  (void)device.getSettings(settings);
+  if (settings.thresholdsDirty) {
+    Serial.println("Warning: engineering-unit thresholds may need reapplication.");
+  }
+  if (device.hardwareState() == INA228::HardwareState::SYNCHRONIZED) {
+    Serial.printf("%s: 0x%04X  %.3f mV\n", label, raw,
+                  static_cast<double>(shuntLimitToMv(raw, settings.adcRange)));
+  } else {
+    Serial.printf("%s: 0x%04X  requires synchronized ADC range for mV\n", label, raw);
+  }
 }
 
 void printBusAlertLimit(const char* label, uint8_t reg) {
@@ -1054,8 +1103,14 @@ void printPowerAlertLimit() {
     return;
   }
 
-  if (device.currentLsb() > 0.0f) {
-    Serial.printf("PWR_LIMIT: 0x%04X  %.6f W\n", raw, powerLimitToW(raw));
+  INA228::SettingsSnapshot settings{};
+  (void)device.getSettings(settings);
+  if (settings.thresholdsDirty) {
+    Serial.println("Warning: engineering-unit thresholds may need reapplication.");
+  }
+  if (settings.calibrated) {
+    Serial.printf("PWR_LIMIT: 0x%04X  %.6f W\n", raw,
+                  powerLimitToW(raw, settings.currentLsb));
   } else {
     Serial.printf("PWR_LIMIT: 0x%04X  requires calibration for W\n", raw);
   }
@@ -1265,16 +1320,11 @@ void runStressMix(int count) {
     uint32_t ok;
     uint32_t fail;
   };
-  OpStats stats[] = {
-      {"measure",  0, 0},
-      {"vbus",     0, 0},
-      {"current",  0, 0},
-      {"temp",     0, 0},
-      {"diag",     0, 0},
-      {"mfgid",    0, 0},
-      {"devid",    0, 0},
-  };
-  const int opCount = static_cast<int>(sizeof(stats) / sizeof(stats[0]));
+  OpStats stats[STRESS_MIX_OPERATION_COUNT] = {};
+  for (size_t i = 0; i < STRESS_MIX_OPERATION_COUNT; ++i) {
+    stats[i].name = STRESS_MIX_OPERATIONS[i];
+  }
+  const int opCount = static_cast<int>(STRESS_MIX_OPERATION_COUNT);
 
   const uint32_t succBefore = device.totalSuccess();
   const uint32_t failBefore = device.totalFailures();
@@ -1325,7 +1375,7 @@ void runStressMix(int count) {
         break;
     }
 
-    if (st.ok()) {
+    if (stressMixStatusAccepted(st)) {
       stats[op].ok++;
     } else {
       stats[op].fail++;
@@ -1574,6 +1624,7 @@ void printHelp() {
   cli::printHelpItem("end", "Shutdown driver");
   cli::printHelpItem("reset", "Software reset device");
   cli::printHelpItem("reset_start / reset_step <budget>", "Start/advance cooperative reset job");
+  cli::printHelpItem("verify_start / verify_step <budget>", "Start/advance read-only configuration verification");
   cli::printHelpItem("rstacc", "Reset energy/charge accumulators");
   cli::printHelpItem("apply_start / apply_step <budget>", "Start/advance verified reinitialization");
   cli::printHelpItem("replay_start / replay_step <budget>", "Alias for verified reinitialization");
@@ -1601,13 +1652,12 @@ void printHelp() {
 
   cli::printHelpSection("Diagnostics");
   cli::printHelpItem("drv", "Show driver state and health");
-  cli::printHelpItem("probe", "Probe device; reads DIAG_ALRT; no health tracking");
+  cli::printHelpItem("probe", "Probe device; preserves bound-device DIAG evidence");
   cli::printHelpItem("recover", "Invalidate cached hardware state and reinitialize cooperatively");
   cli::printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   cli::printHelpItem("stress [N]", "Run N measurement cycles (default 10)");
   cli::printHelpItem("stress_mix [N]", "Run N mixed-operation cycles (default 50)");
   cli::printHelpItem("hilrun <token> <seq> <cmd>", "Run one framed HIL command");
-  cli::printHelpItem("hilmark <token>", "Print token for automated HIL command framing");
   cli::printHelpItem("xfer_reset", "Reset example transport counters");
   cli::printHelpItem("xfer_stats", "Show example transport counters");
   cli::printHelpItem("xfer_assert <r> <w> <t>", "Assert example transport counter totals");
@@ -1674,11 +1724,6 @@ void processCommand(const String& cmdLine) {
                   errToStr(frameStatus),
                   static_cast<unsigned long>(millis() - startMs));
     Serial.flush();
-    return;
-  }
-
-  if (cmd.startsWith("hilmark ")) {
-    LOGI("HILMARK %s", cmd.substring(8).c_str());
     return;
   }
 
@@ -2172,6 +2217,25 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd == "verify_start") {
+    auto st = startOwnerJob(INA228::JobKind::VERIFY_CONFIGURATION);
+    LOGI("startVerifyConfiguration(): %s%s%s operation=%lu",
+         LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET,
+         static_cast<unsigned long>(activeOperationId));
+    if (!st.ok()) printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("verify_step ")) {
+    uint32_t budget = 0;
+    if (!parseU32(cmd.substring(12), budget) || budget > 255u) {
+      rejectInvalidCommand("Usage: verify_step <0..255>");
+      return;
+    }
+    pollAndPrintOwnerJobStep(budget);
+    return;
+  }
+
   if (cmd == "rstacc") {
     INA228::JobResult result{};
     auto st = runOwnerJob(INA228::JobKind::ACCUMULATOR_RESET, result);
@@ -2527,7 +2591,7 @@ void processCommand(const String& cmdLine) {
 
   if (cmd == "probe") {
     const uint8_t address = configuredAddress();
-    LOGI("Probing address 0x%02X (raw, no health tracking; reads DIAG_ALRT)...",
+    LOGI("Probing address 0x%02X (raw IDs; tracked DIAG_ALRT when bound)...",
          address);
     LOGW("DIAG_ALRT reads can clear CNVRF and latched evidence.");
     ProbeSnapshot snapshot{};

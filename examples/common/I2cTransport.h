@@ -98,8 +98,9 @@ inline INA228::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
   wire->beginTransmission(addr);
   size_t written = wire->write(data, len);
   if (written != len) {
-    // Close the transaction we opened; leaving it dangling corrupts the next
-    // beginTransmission() on cores that keep buffer state.
+    // Start a fresh empty transaction to discard the partial TX buffer before
+    // closing it; do not deliberately put a truncated register write on-bus.
+    wire->beginTransmission(addr);
     (void)wire->endTransmission(true);
     return INA228::Status::Error(INA228::Err::I2C_ERROR, "I2C write incomplete",
                                   static_cast<int32_t>(written));
@@ -147,6 +148,7 @@ inline INA228::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLe
   wire->beginTransmission(addr);
   size_t written = wire->write(tx, txLen);
   if (written != txLen) {
+    wire->beginTransmission(addr);
     (void)wire->endTransmission(true);
     return INA228::Status::Error(INA228::Err::I2C_ERROR, "I2C write incomplete",
                                  static_cast<int32_t>(written));
@@ -168,8 +170,8 @@ inline INA228::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLe
     if (probe != 0) {
       return mapWireResult(probe, "I2C read failed");
     }
-    return INA228::Status::Error(INA228::Err::I2C_NACK_UNKNOWN_PHASE,
-                                 "I2C read length mismatch",
+    return INA228::Status::Error(INA228::Err::I2C_ERROR,
+                                 "I2C requestFrom failed; cause unavailable",
                                  static_cast<int32_t>(read));
   }
 

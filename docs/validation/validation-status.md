@@ -19,16 +19,16 @@ on 2026-08-05, including all of the same software gates. It adds no new
 hardware-validation claim.
 
 Tag `v3.0.3` points at `6137ee7984f191ceedd8cdb65886112b9da1ea15`, one commit
-after `dc05bd7`. That commit changes only `.github/workflows/ci.yml` (GitHub
-action major versions) and validation documentation; no library source, example,
-or packaging file differs. No separate CI run is recorded for the tagged commit
-itself.
+after `dc05bd7`. That commit changes `.github/workflows/ci.yml` (GitHub action
+major versions), `CHANGELOG.md`, and validation documentation; no library source,
+example, or packaging file differs. No separate CI run is recorded for the
+tagged commit itself.
 
 | Evidence level | Current status |
 |---|---|
 | Implemented | Cooperative owner API, post-write sample/reset/configured-trigger timing, fixed calibration, hardware synchronization, job identity/effects, diagnostics, accumulator epochs, Arduino/native ESP-IDF examples, docs, metadata, and CI guards are present. |
 | Native-tested | PlatformIO Core 6.1.19 `pio test -e native` passed 117/117 registered test cases locally on the v3.0.3 release-candidate worktree on 2026-08-04. The exact v3.0.2 release CI native job also passed its 109/109 tests. |
-| Static guards | Core timing, owner contract, exact Arduino/native CLI parity, native ESP-IDF contract, all Python-tool byte-compilation, HIL parser-and-report self-test, standalone parser regressions, and the exhaustive dry-run with benchmark rows passed locally on the v3.0.3 release-candidate worktree on 2026-08-04. Version-generation consistency, CI YAML parsing, strict host compiler warnings, exhaustive cppcheck with zero warning/performance/portability findings, and `git diff --check` also passed. |
+| Static guards | Core timing, owner contract, exact Arduino/native CLI parity, native ESP-IDF contract, all Python-tool byte-compilation, HIL parser-and-report self-test, standalone parser regressions, and the exhaustive dry-run with benchmark rows passed locally on the v3.0.3 release-candidate worktree on 2026-08-04. In that same dated local run, version-generation consistency, CI YAML parsing, strict host compiler warnings, exhaustive cppcheck with zero warning/performance/portability findings, and `git diff --check` also passed; cppcheck is not described here as a recurring CI gate. |
 | Arduino stack | PlatformIO Core 6.1.19 with PIOArduino 55.03.311: Arduino-ESP32 3.3.11, ESP-IDF 5.5.5, GCC 14.2.0, and esptool 5.3.0. Runtime `version` output confirmed Arduino-ESP32 3.3.11 and ESP-IDF v5.5.5 on the tested S3. |
 | Arduino ESP32-S3 built | PlatformIO `esp32s3dev` passed locally on the v3.0.3 release-candidate worktree on 2026-08-04. Firmware used 24,872 bytes RAM and 396,440 bytes application flash. |
 | Arduino ESP32-S2 built | PlatformIO `esp32s2dev` passed locally on the v3.0.3 release-candidate worktree on 2026-08-04. Firmware used 51,844 bytes RAM and 406,329 bytes application flash. |

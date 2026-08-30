@@ -55,6 +55,8 @@ MANDATORY_COMMANDS = [
     "init",
     "end",
     "reset",
+    "verify_start",
+    "verify_step",
     "rstacc",
     "diag",
     "diagraw",
@@ -161,6 +163,43 @@ def aliases_from_help(items: list[tuple[str, str]]) -> set[str]:
     return aliases
 
 
+def string_array(text: str, name: str) -> tuple[str, ...]:
+    match = re.search(
+        rf"\b{re.escape(name)}\s*\[\]\s*=\s*\{{(.*?)\}};", text, re.DOTALL
+    )
+    if match is None:
+        fail(f"missing string array {name}")
+    return tuple(re.findall(r'"([^"]+)"', match.group(1)))
+
+
+def selftest_labels(text: str, function: str) -> tuple[str, ...]:
+    labels: list[str] = []
+    pattern = re.compile(
+        rf'\b{re.escape(function)}\(\s*(?:"([^"]+)"|[^,]+,\s*"([^"]+)")'
+    )
+    for match in pattern.finditer(text):
+        labels.append(match.group(1) or match.group(2))
+    return tuple(labels)
+
+
+def constexpr_value(text: str, name: str) -> int:
+    match = re.search(
+        rf"\b{re.escape(name)}\s*=\s*(0x[0-9A-Fa-f]+|[0-9]+)U?\s*;", text
+    )
+    if match is None:
+        fail(f"missing constexpr value {name}")
+    return int(match.group(1), 0)
+
+
+def config_value(text: str, field: str) -> int:
+    match = re.search(
+        rf"\bcfg\.{re.escape(field)}\s*=\s*(0x[0-9A-Fa-f]+|[0-9]+)U?\s*;", text
+    )
+    if match is None:
+        fail(f"missing example config field cfg.{field}")
+    return int(match.group(1), 0)
+
+
 def main() -> int:
     for rel in REQUIRED_FILES:
         if not (ROOT / rel).exists():
@@ -190,7 +229,15 @@ def main() -> int:
     cmake = (
         ROOT / "examples" / "esp_idf" / "basic" / "main" / "CMakeLists.txt"
     ).read_text(encoding="utf-8", errors="replace")
-    if re.search(r"INCLUDE_DIRS[^\r\n]*\.\./", cmake) or "examples/common" in cmake:
+    include_dirs = re.search(
+        r"\bINCLUDE_DIRS\b(.*?)(?=\b(?:REQUIRES|PRIV_REQUIRES|EMBED_FILES|"
+        r"EMBED_TXTFILES|WHOLE_ARCHIVE)\b|\))",
+        cmake,
+        re.DOTALL,
+    )
+    if include_dirs is None:
+        fail("ESP-IDF main CMake missing INCLUDE_DIRS")
+    if (include_dirs is not None and "../" in include_dirs.group(1)) or "examples/common" in cmake:
         fail("ESP-IDF main CMake must not expose repo root or examples/common include paths")
     for component in REQUIRED_COMPONENTS:
         if re.search(rf"\b{re.escape(component)}\b", cmake) is None:
@@ -222,6 +269,11 @@ def main() -> int:
     for token in FORBIDDEN_IDF_TOKENS:
         if token in transport:
             fail(f"ESP-IDF transport contains forbidden Arduino/facade token '{token}'")
+    idf_sources = idf_main + transport
+    if re.search(r'#\s*include\s*[<"][^">]*\.cpp[>"]', idf_sources):
+        fail("native ESP-IDF sources must not include implementation .cpp files")
+    if "examples/01_basic_bringup_cli" in idf_sources or "examples/common/" in idf_sources:
+        fail("native ESP-IDF sources must not include Arduino example paths")
 
     cli = (ROOT / "examples" / "01_basic_bringup_cli" / "main.cpp").read_text(
         encoding="utf-8", errors="replace"
@@ -262,6 +314,22 @@ def main() -> int:
             f"Arduino/native help rows are ordered differently at row {index}: "
             f"arduino={arduino_help[index]!r} idf={idf_help[index]!r}"
         )
+    arduino_stress = string_array(cli, "STRESS_MIX_OPERATIONS")
+    idf_stress = string_array(idf_main, "STRESS_MIX_OPERATIONS")
+    if arduino_stress != idf_stress:
+        fail(f"stress_mix operations differ: arduino={arduino_stress} idf={idf_stress}")
+    for text, label in ((cli, "Arduino CLI"), (idf_main, "native ESP-IDF CLI")):
+        match = re.search(
+            r"bool\s+stressMixStatusAccepted\([^)]*\)\s*\{(.*?)\}", text, re.DOTALL
+        )
+        if match is None or "return st.ok();" not in match.group(1):
+            fail(f"{label} stress_mix must accept only Status::ok()")
+    arduino_selftest = selftest_labels(cli, "reportCheck")
+    idf_selftest = selftest_labels(idf_main, "reportSelftest")
+    if arduino_selftest != idf_selftest:
+        fail(
+            f"selftest labels differ: arduino={arduino_selftest} idf={idf_selftest}"
+        )
     for command in sorted(arduino_aliases):
         if not command_has_dispatch(cli, command):
             fail(f"Arduino help alias '{command}' has no dispatch")
@@ -277,6 +345,27 @@ def main() -> int:
             "Confirmation required: wreg16",
         ):
             require_token(text, token, label)
+    board = (ROOT / "examples" / "common" / "BoardConfig.h").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    for board_name, idf_name in (
+        ("I2C_SDA", "I2C_SDA"),
+        ("I2C_SCL", "I2C_SCL"),
+        ("I2C_FREQ_HZ", "I2C_FREQ_HZ"),
+        ("I2C_TIMEOUT_MS", "I2C_TIMEOUT_MS"),
+        ("INA228_I2C_ADDR", "DEFAULT_I2C_ADDRESS"),
+    ):
+        if constexpr_value(board, board_name) != constexpr_value(idf_main, idf_name):
+            fail(f"board default {board_name} differs from native IDF {idf_name}")
+    for field in ("calibration.shuntMicroOhms", "calibration.maxCurrentMilliAmps"):
+        if config_value(cli, field) != config_value(idf_main, field):
+            fail(f"demo calibration field {field} differs between examples")
+    for token in (
+        "cfg.mode = INA228::Mode::CONT_ALL",
+        "cfg.calibration.mode = INA228::CalibrationMode::FROM_MAXIMUM_CURRENT",
+    ):
+        require_token(cli, token, "Arduino demo profile")
+        require_token(idf_main, token, "native ESP-IDF demo profile")
     for token in (
         "firstSourceLen >= firstLen",
         "secondSourceLen >= secondLen",

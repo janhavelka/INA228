@@ -11,16 +11,18 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
-LINE_COMMENT_RE = re.compile(r"//[^\n]*")
-STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"')
+NON_CODE_RE = re.compile(
+    r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|/\*.*?\*/|//[^\n]*',
+    re.DOTALL,
+)
 
 
 def strip_non_code(text: str) -> str:
     """Drop comments and string literals so prose cannot trip a token guard."""
-    text = BLOCK_COMMENT_RE.sub("", text)
-    text = LINE_COMMENT_RE.sub("", text)
-    return STRING_RE.sub('""', text)
+    # One combined lexer expression honors whichever construct begins first.
+    # Sequential comment substitutions can mistake // or /* inside a string
+    # for a real comment and hide executable code that follows it.
+    return NON_CODE_RE.sub("", text)
 
 
 def fail(message: str) -> None:

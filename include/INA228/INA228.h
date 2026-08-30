@@ -83,7 +83,7 @@ struct SettingsSnapshot {
   uint32_t i2cTimeoutMs = 0;            ///< Bound per-transaction timeout
   uint8_t offlineThreshold = 0;         ///< Consecutive-failure OFFLINE threshold
   bool hasNowMsHook = false;            ///< True when Config::nowMs is configured
-  Mode mode = Mode::CONT_ALL;           ///< Cached operating mode
+  Mode mode = Mode::CONT_ALL;           ///< Cached ADC_CONFIG.MODE field
   ConvTime vbusConvTime = ConvTime::US_1052; ///< Cached bus-voltage conversion time
   ConvTime vshuntConvTime = ConvTime::US_1052; ///< Cached shunt conversion time
   ConvTime vtempConvTime = ConvTime::US_1052; ///< Cached temperature conversion time
@@ -103,7 +103,7 @@ struct SettingsSnapshot {
   uint64_t dirtyRegisterMask = 0;      ///< Bit mask of possibly dirty registers, indexed by register address
   Status hardwareDirtyCause{};         ///< First failure/status that made hardwareDirty true
   bool thresholdsDirty = false;        ///< Sticky advisory that thresholds may not match active scale
-  bool triggeredConversionPending = false; ///< A triggered conversion is awaiting readiness
+  bool triggeredConversionPending = false; ///< Triggered MODE conversion still awaits CNVRF
   uint32_t triggeredConversionStartMs = 0; ///< Stored origin; zero is also a valid timestamp
 };
 
@@ -563,6 +563,9 @@ public:
   /// fields require valid calibration. This call preserves DIAG_ALRT evidence
   /// before accumulator reads, but those status-sensitive reads may still clear
   /// hardware flags according to the datasheet.
+  /// @note DIAG_ALRT.MATHOF is not cleared by reading DIAG_ALRT. A
+  /// MATH_OVERFLOW result remains latched until another triggered conversion or
+  /// resetAccumulators() clears it.
   /// @param out Measurement result
   /// @return Status::Ok() on success
   Status readMeasurement(Measurement& out);
@@ -589,6 +592,9 @@ public:
   /// transfers and a destructive DIAG_ALRT read before current-derived fields;
   /// bounded poll owners that need one register transfer per poll should stage
   /// raw register reads and use convertRawSample().
+  /// @note DIAG_ALRT.MATHOF is not cleared by that read. A MATH_OVERFLOW result
+  /// remains latched until another triggered conversion or resetAccumulators()
+  /// clears it.
   /// @param out IntegerSample result
   /// @return Status::Ok() on success
   Status readIntegerSample(IntegerSample& out);
@@ -692,7 +698,8 @@ public:
   /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
   /// @note Returns MATH_OVERFLOW when DIAG_ALRT.MATHOF indicates current or
   /// power data may be invalid; this check performs a destructive DIAG_ALRT
-  /// read and preserves the evidence in getDiagAlertSnapshot().
+  /// read and preserves the evidence in getDiagAlertSnapshot(). MATHOF itself
+  /// remains latched until another triggered conversion or resetAccumulators().
   /// @param out Current (A)
   /// @return Status::Ok() on success
   Status readCurrent(float& out);
@@ -701,7 +708,8 @@ public:
   /// @note Returns MEASUREMENT_NOT_READY while a triggered conversion is pending.
   /// @note Returns MATH_OVERFLOW when DIAG_ALRT.MATHOF indicates current or
   /// power data may be invalid; this check performs a destructive DIAG_ALRT
-  /// read and preserves the evidence in getDiagAlertSnapshot().
+  /// read and preserves the evidence in getDiagAlertSnapshot(). MATHOF itself
+  /// remains latched until another triggered conversion or resetAccumulators().
   /// @param out Power (W)
   /// @return Status::Ok() on success
   Status readPower(float& out);
@@ -764,8 +772,12 @@ public:
   /// @return Err::IN_PROGRESS when a triggered mode starts; Status::Ok() otherwise
   Status setMode(Mode mode);
 
-  /// Get current operating mode
-  /// @param out Receives the cached operating mode
+  /// Get the cached ADC_CONFIG.MODE field.
+  ///
+  /// After a triggered conversion completes, the device powers down but keeps
+  /// the triggered MODE field. SettingsSnapshot::triggeredConversionPending
+  /// distinguishes the active conversion from the completed idle state.
+  /// @param out Receives the cached ADC_CONFIG.MODE field
   /// @return Status::Ok(), or Err::NOT_INITIALIZED
   Status getMode(Mode& out) const;
 
@@ -835,8 +847,8 @@ public:
   ///
   /// A successful calibration change invalidates accumulation readiness and
   /// marks SettingsSnapshot::thresholdsDirty so engineering-unit thresholds can
-  /// be reapplied for the new scale. The flag is sticky until begin()/end()
-  /// state reset or a full reinitialization path clears it.
+  /// be reapplied for the new scale. The flag is sticky until a fresh bind()
+  /// or end() lifecycle reset; reinitializing hardware does not clear it.
   /// @param shuntOhm Shunt resistance in ohms
   /// @param maxCurrentA Maximum expected current in amps
   /// @return Status::Ok() on success
@@ -1222,6 +1234,7 @@ private:
                          uint16_t mask) const;
   bool _cooperativeJobActive() const;
   bool _hardwareAccessAllowed() const;
+  Status _hardwareAccessBusyStatus() const;
   void _clearCooperativeState();
   void _invalidateAccumulatorEpoch();
   void _armPostWriteTimeOrigin(DeferredTimeOrigin origin);

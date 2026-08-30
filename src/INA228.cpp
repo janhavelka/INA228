@@ -13,6 +13,8 @@ namespace {
 
 static constexpr uint32_t RESET_STARTUP_MS =
     (cmd::POR_STARTUP_US + 999U) / 1000U;
+/// Margin above the nominal device-timed interval for the +/-1% oscillator.
+static constexpr uint32_t DEVICE_TIMING_MARGIN_DIVISOR = 64U;
 /// Registers a CONFIG.RST software reset restores to their defaults.
 static constexpr uint64_t RESET_TOUCHED_REGISTER_MASK =
     (1ULL << cmd::REG_CONFIG) | (1ULL << cmd::REG_ADC_CONFIG) |
@@ -564,11 +566,17 @@ uint16_t INA228::_desiredDiagConfigBits() const {
 }
 
 uint32_t INA228::_instantaneousSampleWaitUs() const {
-  return (static_cast<uint32_t>(convTimeUs(_config.vbusConvTime)) +
-          convTimeUs(_config.vshuntConvTime) +
-          convTimeUs(_config.vtempConvTime)) * avgCount(_config.averaging) +
-         static_cast<uint32_t>(_config.convDelayMs2) * 2000U +
-         cmd::SHUTDOWN_WAKEUP_US;
+  const uint32_t conversionUs =
+      (static_cast<uint32_t>(convTimeUs(_config.vbusConvTime)) +
+       convTimeUs(_config.vshuntConvTime) +
+       convTimeUs(_config.vtempConvTime)) * avgCount(_config.averaging);
+  const uint32_t nominalWaitUs = conversionUs +
+      static_cast<uint32_t>(_config.convDelayMs2) * 2000U +
+      cmd::SHUTDOWN_WAKEUP_US;
+  const uint32_t oscillatorMarginUs =
+      (nominalWaitUs + DEVICE_TIMING_MARGIN_DIVISOR - 1U) /
+      DEVICE_TIMING_MARGIN_DIVISOR;
+  return nominalWaitUs + oscillatorMarginUs;
 }
 
 uint32_t INA228::_instantaneousSampleWaitMs() const {
@@ -602,6 +610,14 @@ bool INA228::_cooperativeJobActive() const {
 bool INA228::_hardwareAccessAllowed() const {
   return _jobPollActive ||
          (!_cooperativeJobActive() && !_terminalResultAvailable);
+}
+
+Status INA228::_hardwareAccessBusyStatus() const {
+  return Status::Error(
+      Err::BUSY,
+      _terminalResultAvailable
+          ? "Unconsumed terminal result; call takeJobResult()"
+          : "Cooperative job owns hardware access");
 }
 
 void INA228::_clearCooperativeState() {
@@ -750,9 +766,20 @@ Status INA228::_failJob(const Status& status, bool failedSideEffectingTransfer,
   } else if (_jobHadSuccessfulWrite) {
     effect = JobEffect::PARTIAL;
   }
-  if (failedSideEffectingTransfer || _jobHadSuccessfulWrite || identityJob ||
-      _jobSnapshot.kind == JobKind::VERIFY_CONFIGURATION ||
-      _jobSnapshot.kind == JobKind::INSTANTANEOUS_SAMPLE) {
+  const bool verificationJob =
+      _jobSnapshot.kind == JobKind::VERIFY_CONFIGURATION;
+  const bool verificationDisproved = verificationJob &&
+      (status.code == Err::CONFIG_MISMATCH ||
+       status.code == Err::DEVICE_NOT_FOUND ||
+       status.code == Err::DEVICE_ID_MISMATCH ||
+       status.code == Err::I2C_NACK_ADDR ||
+       status.code == Err::MEMORY_ERROR ||
+       status.code == Err::UNSUPPORTED_REVISION);
+  const bool invalidatesHardwareState = verificationJob
+      ? verificationDisproved
+      : (failedSideEffectingTransfer || _jobHadSuccessfulWrite || identityJob ||
+         _jobSnapshot.kind == JobKind::INSTANTANEOUS_SAMPLE);
+  if (invalidatesHardwareState) {
     _invalidateJobHardwareState(status);
   }
   if (_deferredTimeOrigin == DeferredTimeOrigin::JOB_WAIT) {
@@ -788,12 +815,14 @@ Status INA228::_cancelJob(const Status& status, JobState state) {
 }
 
 void INA228::_invalidateJobHardwareState(const Status& cause) {
+  if (!_hardwareDirty) {
+    _hardwareDirtyCause = cause;
+  }
   _hardwareState = HardwareState::RESYNC_REQUIRED;
   _initialized = false;
   _driverState = DriverState::UNINIT;
   _hardwareDirty = true;
   _dirtyRegisterMask |= _jobTouchedRegisterMask;
-  _hardwareDirtyCause = cause;
   _deviceIdentityValid = false;
   _invalidateTriggeredConversionTiming();
   _invalidateAccumulatorEpoch();
@@ -1175,7 +1204,8 @@ Status INA228::_pollJobTransfer(uint32_t nowMs) {
         _setJobPhase(JobPhase::SAMPLE_RESTORE_ADC);
       } else if ((raw16 & cmd::DIAG_MATHOF) != 0) {
         _jobDeferredStatus = Status::Error(
-            Err::MATH_OVERFLOW, "INA228 MATHOF invalidates current and power",
+            Err::MATH_OVERFLOW,
+            "MATHOF latched; trigger conversion or reset accumulators",
             raw16);
         _setJobPhase(JobPhase::SAMPLE_RESTORE_ADC);
       } else {
@@ -1261,14 +1291,13 @@ Status INA228::_pollJobTransfer(uint32_t nowMs) {
       // CONFIG.RST restores every register, not just CONFIG, so the whole
       // writable set is potentially dirty from this point on.
       _jobTouchedRegisterMask |= RESET_TOUCHED_REGISTER_MASK;
+      // A failed transfer can still have delivered CONFIG.RST. Raise the
+      // advisory before the write so alert-limit loss is never silent.
+      _markThresholdsDirty();
       st = writeReg16(cmd::REG_CONFIG, cmd::CONFIG_RST);
       if (!st.ok()) return _failJob(st, true, nowMs);
       _jobHadSuccessfulWrite = true;
       _hardwareState = HardwareState::RESYNC_REQUIRED;
-      // Alert thresholds are not part of the replayed configuration, so a
-      // successful reset silently reverts them to datasheet defaults. Raise the
-      // sticky advisory so the owner reapplies engineering-unit limits.
-      _markThresholdsDirty();
       // Reset invalidates any earlier conversion. Discard its timing before
       // arming the reset wait so the single deferred origin stays unambiguous.
       _trigPending = false;
@@ -1474,7 +1503,7 @@ Status INA228::probe() {
     return Status::Error(Err::NOT_BOUND, "bind() has not completed");
   }
   if (!_hardwareAccessAllowed()) {
-    return Status::Error(Err::BUSY, "Cooperative job owns hardware access");
+    return _hardwareAccessBusyStatus();
   }
 
   uint16_t mfgId = 0;
@@ -1780,7 +1809,8 @@ Status INA228::convertRawSample(const RawSample& raw, IntegerSample& out) const 
   if (!calStatus.ok()) return calStatus;
   if (raw.diagAlertValid &&
       (raw.mathOverflow || ((raw.diagAlertRaw & cmd::DIAG_MATHOF) != 0))) {
-    return Status::Error(Err::MATH_OVERFLOW, "INA228 math overflow",
+    return Status::Error(Err::MATH_OVERFLOW,
+                         "MATHOF latched; trigger conversion or reset accumulators",
                          static_cast<int32_t>(raw.diagAlertRaw));
   }
 
@@ -2617,7 +2647,7 @@ uint32_t INA228::estimateConversionTimeMs() const {
 Status INA228::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
                                 uint8_t* rxBuf, size_t rxLen) {
   if (!_hardwareAccessAllowed()) {
-    return Status::Error(Err::BUSY, "Cooperative job owns hardware access");
+    return _hardwareAccessBusyStatus();
   }
   if (txBuf == nullptr || txLen == 0 || (rxLen > 0 && rxBuf == nullptr)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
@@ -2631,7 +2661,7 @@ Status INA228::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
 
 Status INA228::_i2cWriteRaw(const uint8_t* buf, size_t len) {
   if (!_hardwareAccessAllowed()) {
-    return Status::Error(Err::BUSY, "Cooperative job owns hardware access");
+    return _hardwareAccessBusyStatus();
   }
   if (buf == nullptr || len == 0) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
@@ -2681,8 +2711,8 @@ Status INA228::_i2cWriteTracked(const uint8_t* buf, size_t len) {
 // ===========================================================================
 
 Status INA228::readReg16(uint8_t reg, uint16_t& value) {
-  uint8_t buf[2] = {};
-  Status st = _i2cWriteReadTracked(&reg, 1, buf, 2);
+  uint8_t buf[cmd::REG_WIDTH_16] = {};
+  Status st = _i2cWriteReadTracked(&reg, 1, buf, sizeof(buf));
   if (!st.ok()) return st;
 
   value = (static_cast<uint16_t>(buf[0]) << 8) | buf[1];
@@ -2690,8 +2720,8 @@ Status INA228::readReg16(uint8_t reg, uint16_t& value) {
 }
 
 Status INA228::readReg24(uint8_t reg, uint32_t& value) {
-  uint8_t buf[3] = {};
-  Status st = _i2cWriteReadTracked(&reg, 1, buf, 3);
+  uint8_t buf[cmd::REG_WIDTH_24] = {};
+  Status st = _i2cWriteReadTracked(&reg, 1, buf, sizeof(buf));
   if (!st.ok()) return st;
 
   value = (static_cast<uint32_t>(buf[0]) << 16) |
@@ -2701,8 +2731,8 @@ Status INA228::readReg24(uint8_t reg, uint32_t& value) {
 }
 
 Status INA228::readReg40(uint8_t reg, uint64_t& value) {
-  uint8_t buf[5] = {};
-  Status st = _i2cWriteReadTracked(&reg, 1, buf, 5);
+  uint8_t buf[cmd::REG_WIDTH_40] = {};
+  Status st = _i2cWriteReadTracked(&reg, 1, buf, sizeof(buf));
   if (!st.ok()) return st;
 
   value = (static_cast<uint64_t>(buf[0]) << 32) |
@@ -2751,7 +2781,7 @@ Status INA228::writeRegister16(uint8_t reg, uint16_t value) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
   if (!_hardwareAccessAllowed()) {
-    return Status::Error(Err::BUSY, "Cooperative job owns hardware access");
+    return _hardwareAccessBusyStatus();
   }
   Status st = writeReg16(reg, value);
   if (!st.ok() && _isThresholdRegister(reg)) {
@@ -2795,8 +2825,8 @@ Status INA228::writeRegister16(uint8_t reg, uint16_t value) {
 }
 
 Status INA228::_readReg16Raw(uint8_t reg, uint16_t& value) {
-  uint8_t buf[2] = {};
-  Status st = _i2cWriteReadRaw(&reg, 1, buf, 2);
+  uint8_t buf[cmd::REG_WIDTH_16] = {};
+  Status st = _i2cWriteReadRaw(&reg, 1, buf, sizeof(buf));
   if (!st.ok()) return st;
 
   value = (static_cast<uint16_t>(buf[0]) << 8) | buf[1];
@@ -2881,9 +2911,9 @@ Status INA228::_setAlertConfigBit(uint16_t bit, bool enabled) {
 // ===========================================================================
 
 Status INA228::_updateHealth(const Status& st) {
-  // Health describes steady-state transport. Initialization and recovery
-  // traffic is deliberately excluded so a recovery attempt cannot inflate the
-  // counters that gate recovery.
+  // Track transfers only while a previous initialization remains valid.
+  // Initial bring-up and reinitialization after explicit invalidation are
+  // excluded; recovery attempted from an initialized session is tracked.
   if (!_initialized) {
     return st;
   }
@@ -2927,7 +2957,7 @@ Status INA228::_updateHealth(const Status& st) {
 
 Status INA228::_ensureNormalI2cAllowed() const {
   if (!_hardwareAccessAllowed()) {
-    return Status::Error(Err::BUSY, "Cooperative job owns hardware access");
+    return _hardwareAccessBusyStatus();
   }
   if (_config.healthPolicy == HealthPolicy::LATCH_OFFLINE && _initialized &&
       _driverState == DriverState::OFFLINE && !_jobPollActive) {
@@ -2983,7 +3013,7 @@ Status INA228::_prepareCalibratedMeasurementRead(uint16_t& diagAlert) {
 
 Status INA228::_ensureHardwareClean() const {
   if (!_hardwareAccessAllowed()) {
-    return Status::Error(Err::BUSY, "Cooperative job owns hardware access");
+    return _hardwareAccessBusyStatus();
   }
   if (_hardwareState != HardwareState::SYNCHRONIZED) {
     return Status::Error(Err::HARDWARE_STATE_UNKNOWN,
@@ -3057,7 +3087,8 @@ Status INA228::_readAndValidateMathDiag(uint16_t& raw) {
     return st;
   }
   if ((raw & cmd::DIAG_MATHOF) != 0) {
-    return Status::Error(Err::MATH_OVERFLOW, "INA228 math overflow",
+    return Status::Error(Err::MATH_OVERFLOW,
+                         "MATHOF latched; trigger conversion or reset accumulators",
                          static_cast<int32_t>(raw & DIAG_EVIDENCE_MASK));
   }
   return Status::Ok();
@@ -3068,7 +3099,8 @@ Status INA228::_validateAccumulatorDiag(uint16_t raw, uint16_t overflowBit,
   const uint16_t accumulatorFlags =
       raw & (cmd::DIAG_ENERGYOF | cmd::DIAG_CHARGEOF | cmd::DIAG_MATHOF);
   if ((raw & cmd::DIAG_MATHOF) != 0) {
-    return Status::Error(Err::MATH_OVERFLOW, "INA228 math overflow",
+    return Status::Error(Err::MATH_OVERFLOW,
+                         "MATHOF latched; trigger conversion or reset accumulators",
                          static_cast<int32_t>(accumulatorFlags));
   }
   if ((raw & overflowBit) != 0) {
@@ -3095,12 +3127,8 @@ void INA228::_invalidateTriggeredConversionTiming() {
 }
 
 void INA228::_completeTriggeredConversion() {
-  const bool wasTriggeredMode = isTriggeredMode(_config.mode);
   _invalidateTriggeredConversionTiming();
   _invalidateAccumulatorEpoch();
-  if (wasTriggeredMode) {
-    _config.mode = Mode::SHUTDOWN;
-  }
 }
 
 void INA228::_clearCapturedConversionReadyFlag() {

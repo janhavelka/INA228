@@ -105,7 +105,7 @@ def main() -> int:
         if not command_has_dispatch(text, cmd):
             fail(f"help command or alias '{cmd}' has no visible dispatch")
 
-    if re.search(r"\bcfg\b", text) is None and re.search(r"\bsettings\b", text) is None:
+    if not ({"cfg", "settings"} & aliases):
         fail("either 'cfg' or 'settings' command must be present")
     if re.search(r"\bstatic\s+String\b", text):
         fail("bringup CLI must not use a static String input buffer")

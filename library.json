@@ -60,7 +60,7 @@
       ".gitattributes",
       ".gitignore",
       "AGENTS.md",
-      "AUDIT-2026-08-27.md",
+      "docs/CODE_AUDIT.md",
       "CODEOWNERS",
       "CONTRIBUTING.md",
       "Doxyfile",

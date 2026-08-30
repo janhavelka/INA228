@@ -167,6 +167,10 @@ def feature_sweep_steps() -> tuple[Step, ...]:
              "initial health before mutation", "targeted"),
         Step("settings", ("Active Settings", "Mode:", "ADC range:"),
              "initial settings snapshot", "targeted"),
+        Step("verify_start", ("startVerifyConfiguration()", "OK"),
+             "start read-only verification", "targeted"),
+        Step("verify_step 8", ("pollJob(8): OK", "terminal result consumed"),
+             "complete read-only verification", "targeted"),
     ]
 
     steps.extend(
@@ -550,31 +554,22 @@ def clean_output(text: str) -> str:
 
 
 def has_failure(text: str) -> bool:
-    scanned = HISTORICAL_HEALTH_RE.sub("", text)
-    upper = scanned.upper()
+    upper = text.upper()
     return any(token in upper for token in FAILURE_TOKENS) or any(
-        pattern.search(scanned) for pattern in FAILURE_PATTERNS
+        pattern.search(text) for pattern in FAILURE_PATTERNS
     )
-
-
-def classify_output(output: str, expected: Sequence[str]) -> str:
-    text = clean_output(output)
-    if has_failure(text):
-        return "FAIL"
-    if all(token in text for token in expected):
-        return "PASS"
-    return "UNKNOWN"
 
 
 def classify_step(output: str, step: Step) -> str:
     text = clean_output(output)
+    scanned = HISTORICAL_HEALTH_RE.sub("", text) if step.command == "drv" else text
     expected_seen = all(token in text for token in step.expected)
     if step.expect_failure and expected_seen:
-        unexpected_text = text
+        unexpected_text = scanned
         for token in step.expected:
             unexpected_text = unexpected_text.replace(token, "")
         return "FAIL" if has_failure(unexpected_text) else "PASS"
-    if has_failure(text):
+    if has_failure(scanned):
         return "FAIL"
     if expected_seen:
         return "PASS"
@@ -680,22 +675,30 @@ def selected_steps(suite: str) -> tuple[Step, ...]:
 def parser_self_test() -> int:
     cases = (
         ("  Status: OK\n=== Driver Health ===\n  State: READY\n  Online: true\n",
-         ("Driver Health", "State:", "Online:"), "PASS"),
-        ("=== Driver Health ===\n  State: READY\n  Online: true\n  Last error: never\n",
-         ("Driver Health", "State:", "Online:"), "PASS"),
-        ("  Status: I2C_TIMEOUT (code=14, detail=-1)\n", ("Status: OK",), "FAIL"),
-        ("  Status: IN_PROGRESS (code=12, detail=0)\n", ("IN_PROGRESS",), "PASS"),
-        ("[FAIL] probe responds\n", ("Status: OK",), "FAIL"),
-        ("=== selftest ===\n  pass=4 fail=1 skip=0\n", ("selftest",), "FAIL"),
-        ("=== Stress Summary ===\n  Success: 10\n  Errors: 3\n", ("Stress Summary",), "FAIL"),
+         Step("drv", ("Driver Health", "State:", "Online:"), "case"), "PASS"),
+        ("=== Driver Health ===\n  State: READY\n  Online: true\n  Last error: I2C_TIMEOUT\n",
+         Step("drv", ("Driver Health", "State:", "Online:"), "case"), "PASS"),
+        ("=== Driver Health ===\n  Consecutive failures: 1\n",
+         Step("drv", ("Driver Health",), "case"), "FAIL"),
+        ("Last error: I2C_TIMEOUT\n",
+         Step("settings", ("Last error",), "case"), "FAIL"),
+        ("  Status: I2C_TIMEOUT (code=14, detail=-1)\n",
+         Step("probe", ("Status: OK",), "case"), "FAIL"),
+        ("  Status: IN_PROGRESS (code=12, detail=0)\n",
+         Step("trigger", ("IN_PROGRESS",), "case"), "PASS"),
+        ("[FAIL] probe responds\n", Step("probe", ("Status: OK",), "case"), "FAIL"),
+        ("=== selftest ===\n  pass=4 fail=1 skip=0\n",
+         Step("selftest", ("selftest",), "case"), "FAIL"),
+        ("=== Stress Summary ===\n  Success: 10\n  Errors: 3\n",
+         Step("stress", ("Stress Summary",), "case"), "FAIL"),
         ("=== Stress Summary ===\n  Success: 10\n  Errors: 0\n",
-         ("Stress Summary", "Errors:"), "PASS"),
+         Step("stress", ("Stress Summary", "Errors:"), "case"), "PASS"),
         ("=== INA228 Address Probe (0x40-0x4F) ===\n  Healthy INA228 devices: 0\n",
-         ("INA228 Address Probe", "Healthy INA228 devices"), "PASS"),
-        ("boot banner only\n", ("Active Settings",), "UNKNOWN"),
+         Step("scan", ("INA228 Address Probe", "Healthy INA228 devices"), "case"), "PASS"),
+        ("boot banner only\n", Step("settings", ("Active Settings",), "case"), "UNKNOWN"),
     )
-    for output, expected, want in cases:
-        got = classify_output(output, expected)
+    for output, step, want in cases:
+        got = classify_step(output, step)
         if got != want:
             print(f"parser self-test FAILED: expected {want}, got {got}")
             return 1
@@ -742,6 +745,9 @@ def parser_self_test() -> int:
         "Status: INVALID_PARAM\nStatus: I2C_TIMEOUT\n", invalid_step
     ) != "FAIL":
         print("parser self-test FAILED: expected rejection hid unrelated failure")
+        return 1
+    if missing_frame_verdict(False) != "UNKNOWN" or missing_frame_verdict(True) != "FAIL":
+        print("parser self-test FAILED: require-framed verdict")
         return 1
 
     failure_gap = (
@@ -848,24 +854,6 @@ def read_response(serial_port, timeout_s: float, idle_s: float,
     return b"".join(chunks).decode("utf-8", errors="replace")
 
 
-def read_until_text(serial_port, timeout_s: float, token: str, max_bytes: int | None = None) -> str:
-    deadline = time.monotonic() + timeout_s
-    chunks: list[bytes] = []
-    token_bytes = token.encode("utf-8")
-    while time.monotonic() < deadline:
-        waiting = getattr(serial_port, "in_waiting", 0)
-        data = serial_port.read(waiting or 1)
-        if not data:
-            continue
-        chunks.append(data)
-        joined = b"".join(chunks)
-        if token_bytes in joined:
-            break
-        if max_bytes is not None and len(joined) >= max_bytes:
-            break
-    return b"".join(chunks).decode("utf-8", errors="replace")
-
-
 def hilrun_end_re(token: str, seq: str) -> re.Pattern[str]:
     return re.compile(
         rf"(?m)^HIL_END token={re.escape(token)} seq={re.escape(seq)} "
@@ -891,14 +879,6 @@ def read_until_hilrun_end(serial_port, timeout_s: float, token: str, seq: str,
         if max_bytes is not None and len(joined) >= max_bytes:
             break
     return b"".join(chunks).decode("utf-8", errors="replace")
-
-
-def strip_hil_marker(text: str, token: str) -> str:
-    marker = f"HILMARK {token}"
-    index = text.find(marker)
-    if index < 0:
-        return text
-    return text[:index]
 
 
 def strip_hilrun_frame(text: str, token: str, seq: str) -> tuple[str, str, bool]:
@@ -940,6 +920,10 @@ def drain_input(serial_port, drain_s: float) -> str:
     return b"".join(chunks).decode("utf-8", errors="replace")
 
 
+def missing_frame_verdict(require_framed: bool) -> str:
+    return "FAIL" if require_framed else "UNKNOWN"
+
+
 def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
     start = time.monotonic()
     marker_missing = False
@@ -951,34 +935,6 @@ def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
         serial_port.write((step.command + "\n").encode("ascii"))
         serial_port.flush()
         output = read_response(serial_port, args.timeout_s, args.idle_s, args.prompt_token)
-    elif args.legacy_marker:
-        marker = f"HILMARK {token}"
-        serial_port.write((f"{step.command}\nhilmark {token}\n").encode("ascii"))
-        serial_port.flush()
-        marker_output = read_until_text(serial_port, args.timeout_s, marker,
-                                        args.max_frame_bytes)
-        marker_missing = marker not in marker_output
-        output = strip_hil_marker(marker_output, token)
-        if marker_missing:
-            recovered = False
-            for retry in range(args.marker_retries):
-                retry_token = f"{args.frame_prefix}{time.monotonic_ns()}R{retry}"
-                retry_marker = f"HILMARK {retry_token}"
-                serial_port.write((f"hilmark {retry_token}\n").encode("ascii"))
-                serial_port.flush()
-                retry_output = read_until_text(serial_port, args.timeout_s, retry_marker,
-                                              args.max_frame_bytes)
-                if retry_marker in retry_output:
-                    output += (
-                        f"\n[runner] recovered missing HILMARK {token} "
-                        f"with retry {retry + 1}"
-                    )
-                    marker_missing = False
-                    recovered = True
-                    break
-                output += f"\n[runner] marker retry {retry + 1} failed:\n{retry_output}"
-            if not recovered:
-                output += f"\n[runner] missing HILMARK {token}"
     else:
         serial_port.write((f"hilrun {token} {seq} {step.command}\n").encode("ascii"))
         serial_port.flush()
@@ -997,7 +953,7 @@ def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
                 trailer_verdict = "FAIL" if has_failure(cleaned_trailer) else "UNKNOWN"
                 output += "\n[runner] drained trailing serial input after frame:\n"
                 output += trailer
-    if args.no_command_framing or args.legacy_marker:
+    if args.no_command_framing:
         classification_output = output
     if stale.strip():
         output = "[runner] drained stale serial input before command:\n" + stale + "\n" + output
@@ -1005,7 +961,7 @@ def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
     if marker_missing:
         # --require-framed asserts that framed evidence exists. Without it a lost
         # frame is only inconclusive; with it, it is a failed release gate.
-        verdict = "FAIL" if args.require_framed else "UNKNOWN"
+        verdict = missing_frame_verdict(args.require_framed)
     else:
         verdict = classify_step(classification_output, step)
     if trailer_verdict == "FAIL":
@@ -1376,6 +1332,13 @@ def run_serial(args: argparse.Namespace) -> int:
         print(f"Run aborted after {len(results)} steps: {exc!r}")
     finally:
         ended_at = dt.datetime.now().astimezone()
+        if aborted is not None:
+            results.append(Result(
+                Step("runner_abort", (), "serial run aborted", "tooling"),
+                "FAIL",
+                0.0,
+                f"Run aborted: {aborted!r}",
+            ))
         if args.include_not_run or report_path is not None:
             results.extend(not_run_results(soak_seconds))
         if transcript_path is not None:
@@ -1435,17 +1398,13 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--post-frame-drain-s", type=float, default=0.0,
                         help="Bounded drain after a complete hilrun frame, usually to consume prompt")
     parser.add_argument("--no-command-framing", action="store_true",
-                        help="Send raw commands without hilrun or legacy hilmark framing")
-    parser.add_argument("--legacy-marker", action="store_true",
-                        help="Use the older command + hilmark framing instead of hilrun")
+                        help="Send raw commands without hilrun framing")
     parser.add_argument("--require-framed", action="store_true",
                         help="Treat a missing or mismatched hilrun frame as FAIL instead of UNKNOWN")
     parser.add_argument("--max-frame-bytes", type=int, default=8192,
                         help="Maximum bytes to read for one framed command response")
     parser.add_argument("--frame-prefix", default="HIL",
                         help="Prefix for generated HIL framing tokens")
-    parser.add_argument("--marker-retries", type=int, default=1,
-                        help="Bounded hilmark retry count when a command marker is not observed")
     parser.add_argument("--prompt-token",
                         help="Optional prompt token that ends response reads early")
     parser.add_argument("--soak-hours", type=float, default=0.0,
@@ -1485,8 +1444,8 @@ def main(argv: Sequence[str]) -> int:
     if (args.boot_capture_s < 0.0 or args.command_pause_s < 0.0
             or args.drain_before_command_s < 0.0 or args.post_frame_drain_s < 0.0):
         parser.error("boot capture, command pause, and drain times must be nonnegative")
-    if args.marker_retries < 0 or args.benchmark_count < 0:
-        parser.error("retry and benchmark counts must be nonnegative")
+    if args.benchmark_count < 0:
+        parser.error("benchmark count must be nonnegative")
     if args.soak_store_every <= 0 or args.soak_progress_every <= 0:
         parser.error("soak store/progress strides must be positive")
     if args.soak_hours < 0.0 or args.soak_seconds < 0.0:
@@ -1495,8 +1454,8 @@ def main(argv: Sequence[str]) -> int:
         parser.error("frame prefix must be nonempty and contain no whitespace")
     if args.max_frame_bytes <= 0:
         parser.error("max frame bytes must be positive")
-    if args.require_framed and (args.no_command_framing or args.legacy_marker):
-        parser.error("--require-framed cannot be combined with raw or legacy framing")
+    if args.require_framed and args.no_command_framing:
+        parser.error("--require-framed cannot be combined with raw framing")
     if (args.expected_commit != "any" and
             re.fullmatch(r"[0-9a-fA-F]{12}", args.expected_commit) is None):
         parser.error("--expected-commit must be a 12-digit Git SHA or 'any'")

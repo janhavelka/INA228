@@ -151,10 +151,18 @@ addresses.
 - The reset `ADC_CONFIG` value configures continuous bus, shunt, and die
   temperature conversion.
 - Shutdown disables ADC conversion while preserving I2C register access.
-- Triggered modes perform one conversion sequence and return to shutdown.
+- Triggered modes perform one conversion sequence and then power down. The
+  `ADC_CONFIG.MODE` field retains the triggered value; the driver reports that
+  register value as its cached mode and uses `triggeredConversionPending` to
+  distinguish an active conversion from the completed idle state.
 - Continuous modes update measurement registers repeatedly.
 - In triggered mode, wait for the computed deadline and confirm `CNVRF` before
   treating a sample as fresh.
+- The instantaneous-sample job adds `ceil(nominal device interval / 64)` to the
+  conversion, conversion-delay, and wake-up interval, rounds to the millisecond
+  owner clock, and performs one `DIAG_ALRT` readiness check. This bounded margin
+  does not add a retry or change the declared 11-transfer limit; an unexpectedly
+  late `CNVRF` is returned as `MEASUREMENT_NOT_READY`.
 - Timed trigger/reset origins are established after the successful blocking
   register write returns. `Config::nowMs` is sampled then; without that hook,
   the next explicit wrap-safe timestamp anchors the full wait in a bus-silent
@@ -171,12 +179,17 @@ addresses.
   default.
 - `DIAG_ALRT` configuration bits control latch mode, conversion-ready routing,
   averaged-value alerting, and polarity.
+- In the datasheet register table, live alert/status bits 7:0 are marked R/W,
+  while overflow/math bits 11:9 are read-only. The driver writes only its cached
+  configuration mask and never read-modify-writes live evidence.
 - `DIAG_ALRT.CNVRF` clears when `DIAG_ALRT` is read or when a new triggered
   conversion starts.
 - Latched alert flags clear when `DIAG_ALRT` is read.
 - `ENERGYOF` clears when `ENERGY` is read; `CHARGEOF` clears when `CHARGE` is
-  read. Accumulators roll over on overflow. `MATHOF` is a separate diagnostic
-  flag for current-derived calculation overflow.
+  read. Accumulators roll over on overflow. `MATHOF` is a separate latched
+  diagnostic flag for current-derived calculation overflow: reading
+  `DIAG_ALRT` does not clear it. Start another triggered conversion or call
+  `resetAccumulators()` (`CONFIG.RSTACC`) before retrying converted reads.
 - Alert sources include shunt OV/UV, bus OV/UV, temperature over-limit, power
   over-limit, energy overflow, charge overflow, math overflow, conversion ready,
   and MEMSTAT.

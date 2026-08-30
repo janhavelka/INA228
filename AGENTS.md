@@ -40,6 +40,7 @@ examples/
 docs/                   - Integration, device reference, validation evidence
 tools/                  - HIL runner and static contract checks (not packaged)
 scripts/                - Version generation and the PlatformIO wrapper
+.github/                - CI workflows and repository automation
 platformio.ini, library.json, idf_component.yml, CMakeLists.txt, Doxyfile
 README.md, CHANGELOG.md, CONTRIBUTING.md, SECURITY.md, AGENTS.md
 ```
@@ -84,7 +85,8 @@ Rules:
 - Cooperative lifecycle: `bind()`, `start*()`, `pollJob(nowMs, maxTransfers)`,
   `takeJobResult()`, `end()`. `begin()`/`tick()` remain as bounded synchronous
   conveniences layered on the same engine.
-- Any I/O that can exceed ~1-2 ms must be split into state machine steps driven by `tick()`.
+- Any I/O that can exceed ~1-2 ms must be split into state-machine steps driven
+  by `pollJob()`; `tick()` is only the bounded triggered-readiness convenience.
 - No heap allocation in steady state (no `String`, `std::vector`, `new` in normal ops).
 - Avoid dynamic allocation in steady embedded paths unless it is already an
   accepted local pattern and the bound is clear.

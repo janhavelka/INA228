@@ -44,6 +44,10 @@ static constexpr uint16_t SUPPORTED_REVISION_MASK = 0x0002U;
 static constexpr size_t MAX_LINE_LEN = 128U;
 static constexpr uint32_t STRESS_PROGRESS_UPDATES = 10U;
 static constexpr uint32_t MAX_STRESS_COUNT = 100000U;
+static constexpr const char* STRESS_MIX_OPERATIONS[] = {
+    "measure", "vbus", "current", "temp", "diag", "mfgid", "devid"};
+static constexpr size_t STRESS_MIX_OPERATION_COUNT =
+    sizeof(STRESS_MIX_OPERATIONS) / sizeof(STRESS_MIX_OPERATIONS[0]);
 static constexpr uint32_t CLI_POLL_TIMEOUT_MS = 10U;
 
 static constexpr const char* COLOR_RESET = "\033[0m";
@@ -59,6 +63,10 @@ INA228::Err hilCommandStatus = INA228::Err::OK;
 uint32_t activeOperationId = 0;
 uint32_t nextRequestToken = 1;
 static constexpr uint32_t EXAMPLE_OPERATION_DEADLINE_MS = 2000U;
+
+bool stressMixStatusAccepted(const INA228::Status& st) {
+  return st.ok();
+}
 
 struct ProbeSnapshot {
   uint8_t address = DEFAULT_I2C_ADDRESS;
@@ -376,6 +384,11 @@ INA228::Status readRegister16AtAddress(uint8_t address, uint8_t reg, uint16_t& v
 INA228::Status probeAddressRaw(uint8_t address, ProbeSnapshot& out) {
   out = {};
   out.address = address;
+  if (activeOperationId != 0U) {
+    return INA228::Status::Error(
+        INA228::Err::BUSY,
+        "Finish the cooperative operation before probing the bus");
+  }
   INA228::Status st = ina228IdfProbeAddress(address, I2C_TIMEOUT_MS);
   if (!st.ok()) {
     return st;
@@ -405,7 +418,12 @@ INA228::Status probeAddressRaw(uint8_t address, ProbeSnapshot& out) {
                                  "Unsupported INA228 revision",
                                  identity.revision);
   }
-  st = readRegister16AtAddress(address, INA228::cmd::REG_DIAG_ALRT, out.diagAlert);
+  const bool boundAddress = device.isInitialized() &&
+      address == device.getConfig().i2cAddress;
+  st = boundAddress
+      ? device.readDiagAlertRaw(out.diagAlert)
+      : readRegister16AtAddress(address, INA228::cmd::REG_DIAG_ALRT,
+                                out.diagAlert);
   if (!st.ok()) {
     return st;
   }
@@ -544,9 +562,18 @@ INA228::Status pollOwnerJob(uint8_t maxTransfers, INA228::JobResult& result,
   if (snapshot.state == INA228::JobState::ACTIVE) {
     return pollStatus;
   }
-  st = device.takeJobResult(activeOperationId, result);
-  // The job already left ACTIVE, so release the slot either way; keeping it
-  // would make every later start return BUSY with no way back.
+  const uint32_t expectedOperationId = activeOperationId;
+  if (snapshot.operationId != expectedOperationId) {
+    INA228::JobResult discarded{};
+    (void)device.takeJobResult(snapshot.operationId, discarded);
+    activeOperationId = 0U;
+    return INA228::Status::Error(
+        INA228::Err::STALE_RESULT,
+        "Terminal operation ID differs from the CLI owner ID",
+        static_cast<int32_t>(snapshot.operationId));
+  }
+  st = device.takeJobResult(expectedOperationId, result);
+  // The job already left ACTIVE, so release the CLI slot either way.
   activeOperationId = 0U;
   if (!st.ok()) {
     return st;
@@ -713,8 +740,8 @@ void printDriverHealth() {
   }
 }
 
-float shuntLimitToMv(uint16_t raw) {
-  const double lsb = (device.getConfig().adcRange == INA228::AdcRange::MV_40_96)
+float shuntLimitToMv(uint16_t raw, INA228::AdcRange range) {
+  const double lsb = (range == INA228::AdcRange::MV_40_96)
                          ? INA228::cmd::SHUNT_THRESHOLD_LSB_RANGE1
                          : INA228::cmd::SHUNT_THRESHOLD_LSB_RANGE0;
   return static_cast<float>(static_cast<int16_t>(raw) * lsb * 1000.0);
@@ -728,8 +755,7 @@ float tempLimitToC(uint16_t raw) {
   return static_cast<float>(static_cast<int16_t>(raw) * INA228::cmd::TEMP_LSB);
 }
 
-double powerLimitToW(uint16_t raw) {
-  const float currentLsb = device.currentLsb();
+double powerLimitToW(uint16_t raw, float currentLsb) {
   if (currentLsb <= 0.0f) {
     return 0.0;
   }
@@ -930,14 +956,29 @@ void printAlertLimits() {
     printStatus(st);
     return;
   }
+  INA228::SettingsSnapshot settings{};
+  (void)device.getSettings(settings);
+  const bool shuntDecodeValid =
+      device.hardwareState() == INA228::HardwareState::SYNCHRONIZED;
   std::printf("=== Alert Limits ===\n");
-  std::printf("  SOVL:       0x%04X  %.3f mV\n", sovl, static_cast<double>(shuntLimitToMv(sovl)));
-  std::printf("  SUVL:       0x%04X  %.3f mV\n", suvl, static_cast<double>(shuntLimitToMv(suvl)));
+  if (settings.thresholdsDirty) {
+    std::printf("  Warning: engineering-unit thresholds may need reapplication.\n");
+  }
+  if (shuntDecodeValid) {
+    std::printf("  SOVL:       0x%04X  %.3f mV\n", sovl,
+                static_cast<double>(shuntLimitToMv(sovl, settings.adcRange)));
+    std::printf("  SUVL:       0x%04X  %.3f mV\n", suvl,
+                static_cast<double>(shuntLimitToMv(suvl, settings.adcRange)));
+  } else {
+    std::printf("  SOVL:       0x%04X  requires synchronized ADC range for mV\n", sovl);
+    std::printf("  SUVL:       0x%04X  requires synchronized ADC range for mV\n", suvl);
+  }
   std::printf("  BOVL:       0x%04X  %.4f V\n", bovl, static_cast<double>(busLimitToV(bovl)));
   std::printf("  BUVL:       0x%04X  %.4f V\n", buvl, static_cast<double>(busLimitToV(buvl)));
   std::printf("  TEMP_LIMIT: 0x%04X  %.2f C\n", temp, static_cast<double>(tempLimitToC(temp)));
-  if (device.currentLsb() > 0.0f) {
-    std::printf("  PWR_LIMIT:  0x%04X  %.6f W\n", power, powerLimitToW(power));
+  if (settings.calibrated) {
+    std::printf("  PWR_LIMIT:  0x%04X  %.6f W\n", power,
+                powerLimitToW(power, settings.currentLsb));
   } else {
     std::printf("  PWR_LIMIT:  0x%04X  requires calibration for W\n", power);
   }
@@ -946,10 +987,20 @@ void printAlertLimits() {
 void printShuntAlertLimit(const char* label, uint8_t reg) {
   uint16_t raw = 0;
   INA228::Status st = device.readRegister16(reg, raw);
-  if (st.ok()) {
-    std::printf("%s: 0x%04X  %.3f mV\n", label, raw, static_cast<double>(shuntLimitToMv(raw)));
-  } else {
+  if (!st.ok()) {
     printStatus(st);
+    return;
+  }
+  INA228::SettingsSnapshot settings{};
+  (void)device.getSettings(settings);
+  if (settings.thresholdsDirty) {
+    std::printf("Warning: engineering-unit thresholds may need reapplication.\n");
+  }
+  if (device.hardwareState() == INA228::HardwareState::SYNCHRONIZED) {
+    std::printf("%s: 0x%04X  %.3f mV\n", label, raw,
+                static_cast<double>(shuntLimitToMv(raw, settings.adcRange)));
+  } else {
+    std::printf("%s: 0x%04X  requires synchronized ADC range for mV\n", label, raw);
   }
 }
 
@@ -980,8 +1031,14 @@ void printPowerAlertLimit() {
     printStatus(st);
     return;
   }
-  if (device.currentLsb() > 0.0f) {
-    std::printf("PWR_LIMIT: 0x%04X  %.6f W\n", raw, powerLimitToW(raw));
+  INA228::SettingsSnapshot settings{};
+  (void)device.getSettings(settings);
+  if (settings.thresholdsDirty) {
+    std::printf("Warning: engineering-unit thresholds may need reapplication.\n");
+  }
+  if (settings.calibrated) {
+    std::printf("PWR_LIMIT: 0x%04X  %.6f W\n", raw,
+                powerLimitToW(raw, settings.currentLsb));
   } else {
     std::printf("PWR_LIMIT: 0x%04X  requires calibration for W\n", raw);
   }
@@ -1101,6 +1158,7 @@ void printHelp() {
   printHelpItem("end", "Shutdown driver");
   printHelpItem("reset", "Software reset device");
   printHelpItem("reset_start / reset_step <budget>", "Start/advance cooperative reset job");
+  printHelpItem("verify_start / verify_step <budget>", "Start/advance read-only configuration verification");
   printHelpItem("rstacc", "Reset energy/charge accumulators");
   printHelpItem("apply_start / apply_step <budget>", "Start/advance verified reinitialization");
   printHelpItem("replay_start / replay_step <budget>", "Alias for verified reinitialization");
@@ -1128,13 +1186,12 @@ void printHelp() {
 
   std::printf("\n%s[Diagnostics]%s\n", COLOR_GREEN, COLOR_RESET);
   printHelpItem("drv", "Show driver state and health");
-  printHelpItem("probe", "Probe device; reads DIAG_ALRT; no health tracking");
+  printHelpItem("probe", "Probe device; preserves bound-device DIAG evidence");
   printHelpItem("recover", "Invalidate cached hardware state and reinitialize cooperatively");
   printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   printHelpItem("stress [N]", "Run N measurement cycles (default 10)");
   printHelpItem("stress_mix [N]", "Run N mixed-operation cycles (default 50)");
   printHelpItem("hilrun <token> <seq> <cmd>", "Run one framed HIL command");
-  printHelpItem("hilmark <token>", "Print token for automated HIL command framing");
   printHelpItem("xfer_reset", "Reset example transport counters");
   printHelpItem("xfer_stats", "Show example transport counters");
   printHelpItem("xfer_assert <r> <w> <t>", "Assert example transport counter totals");
@@ -1237,45 +1294,44 @@ void runStressMix(uint32_t count) {
   for (uint32_t i = 0; i < count; ++i) {
     device.tick(nowMs());
     INA228::Status st = INA228::Status::Ok();
-    switch (i % 8U) {
+    switch (i % STRESS_MIX_OPERATION_COUNT) {
       case 0: {
         INA228::Measurement m;
         st = device.readMeasurement(m);
         break;
       }
       case 1: {
-        INA228::RawSample raw;
-        st = device.readRawSample(raw);
+        float value = 0.0f;
+        st = device.readBusVoltage(value);
         break;
       }
       case 2: {
-        bool ready = false;
-        st = device.isConversionReady(ready);
+        float value = 0.0f;
+        st = device.readCurrent(value);
         break;
       }
       case 3: {
-        uint16_t raw = 0;
-        st = device.readDiagAlertRaw(raw);
+        float value = 0.0f;
+        st = device.readTemperature(value);
         break;
       }
       case 4: {
+        INA228::DiagAlert diag;
+        st = device.readDiagAlert(diag);
+        break;
+      }
+      case 5: {
         uint16_t id = 0;
         st = device.readManufacturerId(id);
         break;
       }
-      case 5: {
-        uint32_t value = 0;
-        st = device.readRegister24(INA228::cmd::REG_VBUS, value);
+      default: {
+        uint16_t id = 0;
+        st = device.readDeviceId(id);
         break;
       }
-      case 6:
-        st = device.setAveraging(device.getConfig().averaging);
-        break;
-      default:
-        st = device.setMode(device.getConfig().mode);
-        break;
     }
-    if (st.ok() || st.inProgress() || st.code == INA228::Err::MEASUREMENT_NOT_READY) {
+    if (stressMixStatusAccepted(st)) {
       ++ok;
     } else {
       ++fail;
@@ -1333,44 +1389,69 @@ void runSelfTest() {
   SelftestStats stats;
   std::printf("=== INA228 selftest (diagnostic commands; reads DIAG_ALRT) ===\n");
   std::printf("Note: DIAG_ALRT reads can clear CNVRF and latched evidence.\n");
-  ProbeSnapshot snapshot;
-  INA228::Status st = probeAddressRaw(configuredAddress(), snapshot);
-  if (!st.ok()) {
-    reportSelftest(stats, "probe responds", false, errToStr(st.code));
-    skipSelftest(stats, "remaining checks", "probe failed");
+
+  const uint32_t succBefore = device.totalSuccess();
+  const uint32_t failBefore = device.totalFailures();
+  const uint8_t consBefore = device.consecutiveFailures();
+
+  INA228::Status st = device.probe();
+  if (st.code == INA228::Err::NOT_INITIALIZED) {
+    skipSelftest(stats, "probe responds", "driver not initialized");
+    skipSelftest(stats, "remaining checks", "selftest aborted");
     std::printf("Selftest result: pass=%lu fail=%lu skip=%lu\n",
                 static_cast<unsigned long>(stats.pass),
                 static_cast<unsigned long>(stats.fail),
                 static_cast<unsigned long>(stats.skip));
     return;
   }
-  reportSelftest(stats, "probe responds", true);
-  reportSelftest(stats, "manufacturer ID", snapshot.manufacturerId == INA228::cmd::MANUFACTURER_ID);
+  reportSelftest(stats, "probe responds", st.ok(), st.ok() ? "" : errToStr(st.code));
+  const bool probeNoTrack = device.totalSuccess() == succBefore &&
+                            device.totalFailures() == failBefore &&
+                            device.consecutiveFailures() == consBefore;
+  reportSelftest(stats, "probe no-health-side-effects", probeNoTrack);
+
+  uint16_t manufacturerId = 0;
+  st = device.readManufacturerId(manufacturerId);
+  reportSelftest(stats, "readManufacturerId", st.ok(), st.ok() ? "" : errToStr(st.code));
+  reportSelftest(stats, "manufacturer id = 0x5449",
+                 st.ok() && manufacturerId == INA228::cmd::MANUFACTURER_ID);
+
+  uint16_t deviceId = 0;
+  st = device.readDeviceId(deviceId);
+  reportSelftest(stats, "readDeviceId", st.ok(), st.ok() ? "" : errToStr(st.code));
   INA228::DeviceIdentity identity{};
   const INA228::Status identityStatus = INA228::INA228::parseDeviceIdentity(
-      snapshot.manufacturerId, snapshot.deviceId, identity);
-  reportSelftest(stats, "DEVICE_ID DIEID", identityStatus.ok() && identity.dieId == 0x228U);
-  reportSelftest(stats, "MEMSTAT", (snapshot.diagAlert & INA228::cmd::DIAG_MEMSTAT) != 0U);
+      manufacturerId, deviceId, identity);
+  reportSelftest(stats, "DEVICE_ID DIEID = 0x228",
+                 st.ok() && identityStatus.ok() && identity.dieId == 0x228U);
 
   INA228::Mode mode = INA228::Mode::SHUTDOWN;
   st = device.getMode(mode);
   const bool modeOk = st.ok();
   reportSelftest(stats, "getMode", modeOk, modeOk ? "" : errToStr(st.code));
 
-  uint16_t raw16 = 0;
-  st = device.readDiagAlertRaw(raw16);
-  reportSelftest(stats, "diagraw", st.ok(), st.ok() ? "" : errToStr(st.code));
   bool ready = false;
   st = device.isConversionReady(ready);
-  reportSelftest(stats, "ready", st.ok(), st.ok() ? "" : errToStr(st.code));
-  INA228::Measurement m;
+  reportSelftest(stats, "isConversionReady", st.ok(), st.ok() ? "" : errToStr(st.code));
+
+  INA228::DiagAlert diag{};
+  st = device.readDiagAlert(diag);
+  reportSelftest(stats, "readDiagAlert", st.ok(), st.ok() ? "" : errToStr(st.code));
+  reportSelftest(stats, "MEMSTAT ok", st.ok() && diag.memstat, "NV memory integrity");
+
+  INA228::Measurement m{};
   st = device.readMeasurement(m);
   reportSelftest(stats, "readMeasurement", st.ok(), st.ok() ? "" : errToStr(st.code));
-  st = device.setAveraging(device.getConfig().averaging);
-  reportSelftest(stats, "setAveraging(current)", st.ok(), st.ok() ? "" : errToStr(st.code));
-  st = device.setMode(device.getConfig().mode);
-  const bool modeAccepted = st.ok() || st.inProgress();
-  reportSelftest(stats, "setMode(current)", modeAccepted, modeAccepted ? "" : errToStr(st.code));
+  const bool measurementInRange =
+      (m.busVoltageV >= -0.5f && m.busVoltageV <= 86.0f) &&
+      (m.temperatureC > -60.0f && m.temperatureC < 200.0f);
+  reportSelftest(stats, "measurement in plausible range",
+                 st.ok() && measurementInRange);
+
+  INA228::RawSample raw{};
+  st = device.readRawSample(raw);
+  reportSelftest(stats, "readRawSample", st.ok(), st.ok() ? "" : errToStr(st.code));
+
   INA228::Mode timingMode = INA228::Mode::SHUTDOWN;
   st = device.getMode(timingMode);
   const uint32_t convUs = device.estimateConversionTimeUs();
@@ -1382,6 +1463,10 @@ void runSelfTest() {
   } else {
     skipSelftest(stats, "estimateConversionTimeUs", "mode unavailable");
   }
+
+  const float currentLsb = device.currentLsb();
+  reportSelftest(stats, "currentLsb>0 (calibrated)", currentLsb > 0.0f);
+
   st = device.invalidateHardwareState(
       INA228::Status::Error(INA228::Err::I2C_ERROR,
                             "Example self-test requested revalidation"));
@@ -1390,7 +1475,7 @@ void runSelfTest() {
     st = runOwnerJob(INA228::JobKind::REINITIALIZE, recoveryResult);
   }
   reportSelftest(stats, "cooperative reinitialize", st.ok(),
-                 st.ok() ? "" : errToStr(st.code));
+                  st.ok() ? "" : errToStr(st.code));
   reportSelftest(stats, "isOnline", device.isOnline());
   std::printf("Selftest result: pass=%lu fail=%lu skip=%lu\n",
               static_cast<unsigned long>(stats.pass),
@@ -1475,8 +1560,6 @@ void processCommand(char* cmd) {
                 errToStr(frameStatus),
                 static_cast<unsigned long>(nowMs() - startMs));
     std::fflush(stdout);
-  } else if ((arg = argAfter(cmd, "hilmark ")) != nullptr) {
-    std::printf("HILMARK %s\n", arg);
   } else if (std::strcmp(cmd, "xfer_reset") == 0) {
     ina228IdfResetTransferStats();
     std::printf("XFER_RESET read=0 write=0 total=0\n");
@@ -1748,6 +1831,18 @@ void processCommand(char* cmd) {
       return;
     }
     pollAndPrintOwnerJobStep(budget);
+  } else if (std::strcmp(cmd, "verify_start") == 0) {
+    INA228::Status st = startOwnerJob(INA228::JobKind::VERIFY_CONFIGURATION);
+    std::printf("startVerifyConfiguration(): %s operation=%lu\n", errToStr(st.code),
+                static_cast<unsigned long>(activeOperationId));
+    if (!st.ok()) printStatus(st);
+  } else if ((arg = argAfter(cmd, "verify_step ")) != nullptr) {
+    uint32_t budget = 0;
+    if (!parseU32(arg, budget) || budget > 255U) {
+      rejectInvalidCommand("Usage: verify_step <0..255>");
+      return;
+    }
+    pollAndPrintOwnerJobStep(budget);
   } else if (std::strcmp(cmd, "rstacc") == 0) {
     INA228::JobResult result{};
     INA228::Status st = runOwnerJob(INA228::JobKind::ACCUMULATOR_RESET, result);
@@ -1931,7 +2026,7 @@ void processCommand(char* cmd) {
     }
   } else if (std::strcmp(cmd, "probe") == 0) {
     const uint8_t address = configuredAddress();
-    std::printf("Probing address 0x%02X (raw, no health tracking; reads DIAG_ALRT)...\n",
+    std::printf("Probing address 0x%02X (raw IDs; tracked DIAG_ALRT when bound)...\n",
                 address);
     std::printf("Note: DIAG_ALRT reads can clear CNVRF and latched evidence.\n");
     ProbeSnapshot snapshot;

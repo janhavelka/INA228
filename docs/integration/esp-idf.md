@@ -139,6 +139,14 @@ phase information. Initialization maps only definite address NACK during
 identity access to device-not-found semantics; timeout and bus faults remain
 distinguishable.
 
+With the ESP-IDF 6.x master-bus API used by the example,
+`ESP_ERR_INVALID_RESPONSE` is the documented transfer NACK result. A combined
+transmit/receive call does not expose whether that NACK came from the address or
+data phase, so normal transfers map it to `I2C_NACK_UNKNOWN_PHASE`; the explicit
+`i2c_master_probe()` path can map the same response to `I2C_NACK_ADDR`. Other
+unclassified `esp_err_t` values map to `I2C_ERROR`, not an invented bus or NACK
+category.
+
 ## Removal, recovery, and retries
 
 The INA228 core does not call an IDF bus-recovery API. On removal, a bus fault,
