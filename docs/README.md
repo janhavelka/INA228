@@ -23,14 +23,16 @@ guidance, vendor reference material, and dated validation/release evidence.
 
 - [Validation status](validation/validation-status.md) - current evidence level
   and claim policy.
-- [Hardware evidence summary](validation/hardware-evidence.md) - compact HIL
-  evidence retained from cleanup and why it is partial evidence only.
+- [Hardware evidence summary](validation/hardware-evidence.md) - dated HIL runs
+  and why each one is partial evidence only.
 - [Hardware validation procedure](validation/hardware-validation-procedure.md)
   - repeatable hardware/HIL procedure and required evidence.
 - [Release checklist](validation/release-checklist.md) - version, CI, package,
   documentation, and tag gates.
-- `validation/hardware/` - retained reports for the exact dated fixtures
-  described by each run. Raw serial transcripts are intentionally not kept in
-  the repository.
+
+`validation/hardware/` is the location the validation procedure writes new
+per-run reports to. Generated reports and raw serial transcripts are not
+committed; [hardware-evidence.md](validation/hardware-evidence.md) keeps the
+durable summary of each run instead.
 
 Generated Doxygen output belongs in `docs/doxygen/` and should not be committed.

@@ -1197,6 +1197,7 @@ private:
   void _markCalibrationDirty(const Status& cause);
   void _clearHardwareDirty();
   void _markThresholdsDirty();
+  Status _writeThresholdRegister(uint8_t reg, uint16_t value);
   bool _isThresholdRegister(uint8_t reg) const;
   Status _validateBinding(const Config& config, CalibrationPlan& plan,
                           bool& usesFixedCalibration) const;

@@ -375,6 +375,6 @@ def main(args: List[str]) -> int:
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
 
-result = main([])
-if result != 0:
-    raise SystemExit(result)
+# PlatformIO imports this module as a pre-build `extra_scripts` hook, so the
+# argument-less sync runs on import. main([]) can only return 0.
+main([])

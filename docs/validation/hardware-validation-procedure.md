@@ -100,3 +100,188 @@ Run each item for Arduino and ESP-IDF targets where hardware is available:
 
 Mark unsupported fixture tests as `NOT RUN` only when the limitation is
 documented. Do not count them as passes.
+
+## Command Sequences
+
+The examples below use the 15 mOhm / 10 A demonstration profile unless the
+operator changes it. Confirm it is safe for the connected hardware first. Send
+every command through framed `hilrun` mode when collecting release evidence; see
+the <a href="../CLI.md">CLI and HIL reference</a> for framing, suites, verdicts,
+and the canonical runner invocation.
+
+### Identity and configuration
+
+```text
+version
+scan
+init 0xNN
+probe
+mfgid
+devid
+cfg
+timing
+drv
+```
+
+Replace `0xNN` with the healthy address reported by `scan`. `scan` already
+includes the INA228 identity/MEMSTAT probe; use `scanina` only for an
+INA228-only repeat scan, and note that it reads status-sensitive `DIAG_ALRT`
+and can consume CNVRF or latched evidence.
+
+Expected identity is manufacturer `0x5449`, DIEID `0x228`, and an explicitly
+reported/accepted revision. Do not validate identity by masking arbitrary high
+bits or by assuming the whole DEVICE_ID equals `0x2281`.
+
+### Cooperative sample budget (max 11 callbacks)
+
+```text
+xfer_reset
+sample_step 0
+xfer_assert 0 0 0
+
+xfer_reset
+sample_step 1
+xfer_assert 1 0 1
+
+xfer_reset
+sample_step 2
+xfer_assert 1 1 2
+```
+
+Wait longer than the configured conversion time, then finish the active sample:
+
+```text
+xfer_reset
+sample_step 8
+xfer_assert 7 1 8
+```
+
+The terminal output must be exactly one `Cooperative Sample Result` carrying
+operation ID, request token, configuration generation, fixed-unit values, raw
+values, channel validity, and diagnostic evidence. No intermediate command may
+expose a partial sample as successful.
+
+Repeat with a fresh job and a large budget:
+
+```text
+sample_step 255
+sample_step 255
+```
+
+The first command may stop at the zero-I2C conversion wait even with remaining
+budget; the second completes once the wait has elapsed. Total callbacks for the
+job must not exceed 11.
+
+### Cooperative reinitialization budget (max 14 callbacks)
+
+```text
+apply_start
+xfer_reset
+apply_step 0
+xfer_assert 0 0 0
+
+xfer_reset
+apply_step 1
+xfer_assert 1 0 1
+
+xfer_reset
+apply_step 13
+xfer_assert 7 6 13
+```
+
+The job performs no driver retry and must end only after identity, MEMSTAT,
+desired configuration, calibration, alert defaults, temperature coefficient, and
+ADC profile have all been read back successfully.
+
+### Cooperative reset budget and wait (max 16 callbacks)
+
+```text
+reset_start
+xfer_reset
+reset_step 0
+xfer_assert 0 0 0
+
+xfer_reset
+reset_step 1
+xfer_assert 0 1 1
+```
+
+The first callback writes reset. Before the datasheet startup delay expires,
+repeat a zero-budget step and verify it remains bus-silent:
+
+```text
+xfer_reset
+reset_step 0
+xfer_assert 0 0 0
+```
+
+After the wait, finish with:
+
+```text
+reset_step 15
+xfer_assert 9 6 15
+```
+
+The whole maintenance job includes full verified initialization. No blind retry
+is permitted after an ambiguous reset write.
+
+### Accumulator and diagnostics
+
+```text
+rstacc
+diagsnap
+diag
+diagsnap
+integer
+```
+
+Record that `diag` is destructive/status-sensitive while `diagsnap` is
+cache-only. Verify accumulation is never reported valid across calibration,
+ADCRANGE, mode/timing, triggered-operation, temperature-compensation, or reset
+generation changes until a verified accumulator reset establishes a coherent
+epoch.
+
+### Fault injection
+
+At each meaningful cooperative stage inject, where the fixture safely permits:
+definite address NACK; data NACK or NACK with unknown phase; transfer timeout;
+arbitration/bus error; removal and reappearance; failed read after a successful
+write; ambiguous failed write callback; and owner cancellation or deadline
+timeout before a write, after a confirmed write, and after an ambiguous write.
+
+For every case record the request token and operation ID, the callback count and
+outer deadline, the terminal state/status/effect, whether a result was delivered
+exactly once, the resulting hardware state (`UNKNOWN`, `SYNCHRONIZED`, or
+`RESYNC_REQUIRED`), the application bus recovery/retry action, and the
+successful verified reconciliation before any subsequent publication.
+
+A write callback is one physical attempt. Do not let the fixture or adapter
+blindly retry an ambiguous mutation.
+
+### Alert capture
+
+```text
+alatch 0
+apol 0
+cnvralert 0
+alslow 0
+limits
+```
+
+Then exercise each threshold with safe controlled crossings while capturing
+ALERT with an independent instrument. Record polarity, latch/transparent
+clearing, conversion-ready routing, and diagnostic evidence. ALERT is monitoring
+only and is not a safety interlock.
+
+### Stress and soak
+
+After the exhaustive suite passes with no FAIL/UNKNOWN rows:
+
+```text
+stress_mix 1000
+stress 1000
+```
+
+Then run the framed 8-hour soak from a clean commit. Serial framing loss is
+`UNKNOWN`, never `PASS`. Record device removal/reappearance and owner recovery
+separately from steady-state measurement reliability.

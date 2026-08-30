@@ -80,30 +80,30 @@ it is required.
 | `charge` | Read accumulated charge; valid only under continuous-accumulation conditions. |
 | `ready` | Check whether a conversion is ready. |
 | `trigger [mode]` | Trigger a single conversion; optional mode is `1`-`7`. |
-| `ready_step <budget>` | Poll readiness with a bounded instruction budget. |
-| `sample_step <budget>` | Start or advance an instantaneous sample by at most the specified I2C-transfer budget. |
+| `ready_step <1..255>` | Poll readiness with a bounded instruction budget. |
+| `sample_step <0..255>` | Start or advance an instantaneous sample by at most the specified I2C-transfer budget. |
 
 ### Configuration and cooperative jobs
 
 | Command | Purpose |
 | --- | --- |
 | `mode [0..15]` | Show or set the INA228 operating mode. |
-| `convtime [vbus|vsh|temp <0..7>]` | Show conversion times or set one channel's conversion-time index. |
+| `convtime [vbus\|vsh\|vshunt\|temp <0..7>]` | Show conversion times or set one channel's conversion-time index. |
 | `averaging [0..7]` | Show or set the averaging index. |
-| `adcrange [0|1]` | Show or set the shunt ADC range. The active calibration contract can reject an incompatible range. |
-| `cal [shunt_ohm max_current_a]` | Show calibration. This example's fixed-unit profile rejects runtime changes; see [fixed calibration](#fixed-demo-calibration-contract). |
-| `tempco [ppm]` | Show or set the shunt temperature coefficient. |
-| `tempcomp [0|1]` | Show or enable/disable temperature compensation. |
+| `adcrange [0\|1]` | Show or set the shunt ADC range. The active calibration contract can reject an incompatible range. |
+| `cal [shunt_ohm max_current_a]` | Show calibration. With the fixed-unit profile the library rejects runtime changes with `INVALID_CONFIG`; see [fixed calibration](#fixed-demo-calibration-contract). |
+| `tempco [0..16383]` | Show or set the shunt temperature coefficient. |
+| `tempcomp [0\|1]` | Show or enable/disable temperature compensation. |
 | `delay [0..255]` | Show or set conversion delay in 2 ms steps. |
 | `cfg` / `settings` | Print active settings. |
 | `addr [0x40..0x4F]` | Show or select the target address. Selecting an address does not itself initialize the device. |
 | `init [0x40..0x4F]` | Reinitialize at the selected or supplied INA228 address. |
 | `end` | End the driver session. |
 | `reset` | Perform the example's bounded software-reset flow. |
-| `reset_start` / `reset_step <budget>` | Start or advance the cooperative reset job. |
+| `reset_start` / `reset_step <0..255>` | Start or advance the cooperative reset job. |
 | `rstacc` | Reset energy and charge accumulators and establish a new accumulation epoch. |
-| `apply_start` / `apply_step <budget>` | Start or advance verified cooperative reinitialization. |
-| `replay_start` / `replay_step <budget>` | Alias for the verified reinitialization job. |
+| `apply_start` / `apply_step <0..255>` | Start or advance verified cooperative reinitialization. |
+| `replay_start` / `replay_step <0..255>` | Alias for the verified reinitialization job. |
 
 A cooperative `*_start` command creates a job. Repeated `*_step <budget>` calls
 advance it by no more than the supplied instruction/I2C-transfer budget.
@@ -118,10 +118,10 @@ but `ready_step` requires a positive budget.
 | `diag` | Decode `DIAG_ALRT`; the hardware read is destructive/status-clearing. |
 | `diagraw` | Print raw `DIAG_ALRT`; the hardware read is destructive/status-clearing. |
 | `limits` | Read and decode all alert-limit registers. |
-| `alatch [0|1]` | Show or set alert latch mode. The query reads `DIAG_ALRT`. |
-| `cnvralert [0|1]` | Show or set conversion-ready alert output. The query reads `DIAG_ALRT`. |
-| `alslow [0|1]` | Show or set slow-alert mode. The query reads `DIAG_ALRT`. |
-| `apol [0|1]` | Show or set alert polarity. The query reads `DIAG_ALRT`. |
+| `alatch [0\|1]` | Show or set alert latch mode. The query reads `DIAG_ALRT`. |
+| `cnvralert [0\|1]` | Show or set conversion-ready alert output. The query reads `DIAG_ALRT`. |
+| `alslow [0\|1]` | Show or set slow-alert mode. The query reads `DIAG_ALRT`. |
+| `apol [0\|1]` | Show or set alert polarity. The query reads `DIAG_ALRT`. |
 | `sovl [volts]` | Show or set shunt-overvoltage threshold. |
 | `suvl [volts]` | Show or set shunt-undervoltage threshold. |
 | `bovl [volts]` | Show or set bus-overvoltage threshold. |
@@ -142,18 +142,18 @@ but `ready_step` requires a positive budget.
 | `drv` | Print driver state and health counters. |
 | `probe` | Probe the selected device without health tracking. It reads `DIAG_ALRT`. |
 | `recover` | Invalidate cached hardware state and run bounded reinitialization. |
-| `verbose [0|1]` | Show or set verbose example output. |
-| `stress [N]` | Run `N` measurement cycles; default is 10. |
-| `stress_mix [N]` | Run `N` mixed-operation cycles; default is 50. |
+| `verbose [0\|1]` | Show or set verbose example output. |
+| `stress [1..100000]` | Run `N` measurement cycles; default is 10. |
+| `stress_mix [1..100000]` | Run `N` mixed-operation cycles; default is 50. |
 | `hilrun <token> <seq> <cmd>` | Execute one inner command inside a machine-readable HIL frame. |
-| `hilmark <token>` | Emit a legacy `HILMARK` token. New automation should use `hilrun`. |
+| `hilmark <token>` | Emit a bare `HILMARK` token. New automation should use `hilrun`. |
 | `xfer_reset` | Reset example-transport read/write counters. |
 | `xfer_stats` | Print example-transport counters. |
 | `xfer_assert <r> <w> <t>` | Assert exact read, write, and total transport counts. |
 | `selftest` | Run the diagnostic self-test. It reads `DIAG_ALRT`. |
 
-Stress counts must be positive and are bounded by the example. Stress commands
-are diagnostics, not qualification or lifetime tests.
+Stress counts must be positive and are capped at 100000 by the example. Stress
+commands are diagnostics, not qualification or lifetime tests.
 
 ## Fixed demo calibration contract
 
@@ -232,12 +232,12 @@ nested `hilrun` is rejected with `status=INVALID_PARAM`. The runner also rejects
 missing, mismatched, truncated, or oversized frames instead of attributing
 unrelated serial output to a command.
 
-The `status` field is an uppercase `INA228::Err` name. Important classes are:
-
 Interactive status output uses the same rule in both firmware profiles: a
 successful operation prints one green `Status: OK` line. The yellow `Message:`
 line is emitted only for non-OK diagnostic context, so success is not repeated
 or shown with a warning color.
+
+The `status` field is an uppercase `INA228::Err` name. Important classes are:
 
 | Status | Meaning in a frame |
 | --- | --- |
@@ -284,7 +284,7 @@ python tools\run_i2c_hil.py --suite exhaustive --dry-run --include-not-run --ben
 For a provenance-bound Arduino run from a clean tree:
 
 ```powershell
-$Version = (Get-Content library.json | ConvertFrom-Json).version
+$Version = (Get-Content library.json -Raw | ConvertFrom-Json).version
 $Commit = git rev-parse --short=12 HEAD
 python tools\run_i2c_hil.py --port COMx --baud 115200 --profile arduino --expected-library-version $Version --expected-commit $Commit --expected-git-status clean --suite exhaustive --require-framed --fail-on-unknown --include-not-run --benchmark-count 100 --report hil-arduino.md --transcript hil-arduino.txt
 ```
@@ -292,7 +292,7 @@ python tools\run_i2c_hil.py --port COMx --baud 115200 --profile arduino --expect
 For the native ESP-IDF firmware:
 
 ```powershell
-$Version = (Get-Content library.json | ConvertFrom-Json).version
+$Version = (Get-Content library.json -Raw | ConvertFrom-Json).version
 $Commit = git rev-parse --short=12 HEAD
 python tools\run_i2c_hil.py --port COMx --baud 115200 --profile idf --expected-library-version $Version --expected-commit $Commit --expected-git-status clean --suite exhaustive --require-framed --fail-on-unknown --include-not-run --benchmark-count 100 --report hil-idf.md --transcript hil-idf.txt
 ```
@@ -325,6 +325,11 @@ The frame `status` and runner verdict are different layers:
 | `FAIL` | A failure signature, unexpected non-OK status, failed assertion, self-test failure, or provenance mismatch was observed. |
 | `UNKNOWN` | Output was incomplete or ambiguous, required tokens were missing, or framing was missing/mismatched/truncated. |
 | `NOT RUN` | A known fixture-dependent check or unrequested soak was recorded as not executed. It is not a pass. |
+
+Framed `hilrun` mode is the default; `--no-command-framing` and the legacy
+`--legacy-marker` mode opt out of it. `--require-framed` rejects those opt-outs
+and promotes a missing or mismatched frame from `UNKNOWN` to `FAIL`, so release
+evidence cannot silently degrade to unframed output.
 
 Any `FAIL` makes the runner return nonzero. `UNKNOWN` returns nonzero when
 `--fail-on-unknown` is supplied; use that option for validation gates.

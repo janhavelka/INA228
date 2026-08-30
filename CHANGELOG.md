@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Conversion and reset waits are no longer skipped when the monotonic clock
+  advances during the blocking register write that arms them. The wait origin is
+  sampled after the write returns, so it can be newer than the timestamp the
+  caller sampled before `pollJob()`; the unsigned comparison underflowed and
+  consumed the whole wait, letting an instantaneous-sample job read all five
+  channels before the conversion completed and commit them as verified.
+- A successful cooperative software reset now sets
+  `SettingsSnapshot::thresholdsDirty`. `CONFIG.RST` reverts SOVL, SUVL, BOVL,
+  BUVL, TEMP_LIMIT and PWR_LIMIT to datasheet defaults and the driver never
+  replays them, so the owner previously had no signal that alert limits were
+  gone.
+- A reset job now records every register the reset restores in
+  `SettingsSnapshot::dirtyRegisterMask` instead of `CONFIG` alone.
+- `invalidateHardwareState()` no longer clears `dirtyRegisterMask` or overwrites
+  the first recorded `hardwareDirtyCause`.
+- A MEMSTAT checksum failure detected during an instantaneous-sample job now
+  marks the driver hardware-dirty instead of leaving `hardwareDirty` false.
+- `bind()` clears the sticky `thresholdsDirty` advisory, as documented.
+- `setAdcRange()` updates `CalibrationPlan::shuntFullScaleMicrovolts` on an
+  uncalibrated binding instead of reporting the previous range's full scale.
+- Failed alert-threshold writes now raise `thresholdsDirty`.
+- Examples: an operation-deadline timeout no longer wedges the CLI permanently in
+  `BUSY`; `mode 1`–`mode 7` report `IN_PROGRESS` as acceptance rather than
+  failure; the ESP-IDF poll loop no longer busy-spins at the default FreeRTOS
+  tick rate; the Arduino transport re-probes the address on a short read so an
+  absent device is reported as an address NACK instead of a generic I2C error;
+  and a raw `wreg16` write invalidates cached hardware state.
+- Tooling: `--require-framed` now actually fails a run on a missing frame;
+  `drv` lifetime counters no longer classify every later step as `FAIL` after one
+  recovered transient; a serial error mid-run no longer discards the report and
+  transcript; and the CLI help-row guard can no longer be satisfied by a
+  different command with a matching prefix.
+
+### Removed
+
+- Generated per-run hardware reports under `docs/validation/hardware/`, which
+  described an unreachable dirty commit. `docs/validation/hardware-evidence.md`
+  retains the durable summary of each run.
+- `tools/INA228_HIL_COMMAND_SEQUENCE.md`; its unique transfer-budget command
+  sequences moved into `docs/validation/hardware-validation-procedure.md`.
+
 ## [3.0.3] - 2026-08-04
 
 ### Changed

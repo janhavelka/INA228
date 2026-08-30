@@ -533,14 +533,27 @@ FAILURE_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+
+# `drv` reports lifetime counters and the last recorded error. Those lines
+# describe history that has already been recovered from, so scanning them for
+# failure evidence would make every later `drv` step FAIL once any transient
+# error has ever occurred -- including every iteration of a long soak. The live
+# signal, "Consecutive failures: N", is deliberately left in place.
+HISTORICAL_HEALTH_RE = re.compile(
+    r"^[ \t]*(?:Total failures|Last error|Error code|Error detail|Error msg)[ \t]*:.*$",
+    re.MULTILINE,
+)
+
+
 def clean_output(text: str) -> str:
     return ANSI_RE.sub("", text).replace("\r\n", "\n").replace("\r", "\n")
 
 
 def has_failure(text: str) -> bool:
-    upper = text.upper()
+    scanned = HISTORICAL_HEALTH_RE.sub("", text)
+    upper = scanned.upper()
     return any(token in upper for token in FAILURE_TOKENS) or any(
-        pattern.search(text) for pattern in FAILURE_PATTERNS
+        pattern.search(scanned) for pattern in FAILURE_PATTERNS
     )
 
 
@@ -742,16 +755,16 @@ def parser_self_test() -> int:
 
     version_output = (
         "Arduino-ESP32: 3.3.11\nESP-IDF: v5.5.5\n"
-        "INA228 library version: 3.0.2\n"
+        "INA228 library version: 9.9.9\n"
         "INA228 library commit: 0123456789ab (clean)\n"
     )
     if version_contract_errors(
-        version_output, "arduino", "3.0.2", "0123456789ab", "clean"
+        version_output, "arduino", "9.9.9", "0123456789ab", "clean"
     ):
         print("parser self-test FAILED: valid firmware provenance rejected")
         return 1
     if not version_contract_errors(
-        version_output, "arduino", "3.0.2", "deadbeefcafe", "clean"
+        version_output, "arduino", "9.9.9", "deadbeefcafe", "clean"
     ):
         print("parser self-test FAILED: stale firmware provenance accepted")
         return 1
@@ -765,7 +778,7 @@ def parser_self_test() -> int:
         baud=115200,
         profile="arduino",
         suite="smoke",
-        expected_library_version="3.0.2",
+        expected_library_version="9.9.9",
         expected_commit="0123456789ab",
         expected_git_status="clean",
         operator=None,
@@ -805,7 +818,8 @@ def print_plan(steps: Iterable[Step], soak_seconds: float,
         print(f"  {'<soak loop>':<16} # soak for {soak_seconds:.0f}s using "
               f"{len(SOAK_STEPS)} self-contained soak commands")
     if include_not_run:
-        print(f"  {'<not-run rows>':<16} # {len(STATIC_NOT_RUN_STEPS)} fixture/tooling limitations")
+        print(f"  {'<not-run rows>':<16} # {len(not_run_results(soak_seconds))} "
+              "fixture/tooling limitations")
 
 
 def read_response(serial_port, timeout_s: float, idle_s: float,
@@ -892,7 +906,9 @@ def strip_hilrun_frame(text: str, token: str, seq: str) -> tuple[str, str, bool]
     begin_line = f"HIL_BEGIN token={token} seq={seq}"
     end_re = hilrun_end_re(token, seq)
     begin_index = clean.find(begin_line)
-    end_match = end_re.search(clean)
+    # Search for the end marker after the begin marker so a stale end line can
+    # never produce an empty payload that still looks like a complete frame.
+    end_match = end_re.search(clean, max(begin_index, 0))
     if begin_index < 0 or end_match is None:
         return (
             clean + f"\n[runner] missing HIL frame token={token} seq={seq}",
@@ -986,7 +1002,12 @@ def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
     if stale.strip():
         output = "[runner] drained stale serial input before command:\n" + stale + "\n" + output
     elapsed = time.monotonic() - start
-    verdict = "UNKNOWN" if marker_missing else classify_step(classification_output, step)
+    if marker_missing:
+        # --require-framed asserts that framed evidence exists. Without it a lost
+        # frame is only inconclusive; with it, it is a failed release gate.
+        verdict = "FAIL" if args.require_framed else "UNKNOWN"
+    else:
+        verdict = classify_step(classification_output, step)
     if trailer_verdict == "FAIL":
         verdict = "FAIL"
     elif trailer_verdict == "UNKNOWN" and verdict == "PASS":
@@ -1323,33 +1344,48 @@ def run_serial(args: argparse.Namespace) -> int:
     serial_port.baudrate = args.baud
     serial_port.timeout = 0.05
     serial_port.write_timeout = 2.0
-    serial_port.open()
+    try:
+        serial_port.open()
+    except (serial.SerialException, OSError) as exc:
+        print(f"Unable to open {args.port}: {exc}")
+        return 2
 
-    with serial_port:
-        time.sleep(args.boot_settle_s)
-        boot_output = read_response(serial_port, args.boot_capture_s, args.idle_s,
-                                    args.prompt_token)
-        for step in steps:
-            result = run_step(serial_port, step, args)
-            results.append(result)
-            print(f"[{result.verdict}] {step.command} ({step.label}) {result.elapsed_s:.3f}s")
-            if args.verbose:
-                print(result.output.rstrip())
-            pause_s = max(args.command_pause_s, result.step.pause_after_s)
-            if pause_s > 0.0:
-                time.sleep(pause_s)
-        run_benchmarks(serial_port, args, results)
-        if soak_seconds > 0.0:
-            soak_summary = run_soak(serial_port, args, results, soak_seconds)
+    boot_output = ""
+    aborted: BaseException | None = None
+    try:
+        with serial_port:
+            time.sleep(args.boot_settle_s)
+            boot_output = read_response(serial_port, args.boot_capture_s, args.idle_s,
+                                        args.prompt_token)
+            for step in steps:
+                result = run_step(serial_port, step, args)
+                results.append(result)
+                print(f"[{result.verdict}] {step.command} ({step.label}) {result.elapsed_s:.3f}s")
+                if args.verbose:
+                    print(result.output.rstrip())
+                pause_s = max(args.command_pause_s, result.step.pause_after_s)
+                if pause_s > 0.0:
+                    time.sleep(pause_s)
+            run_benchmarks(serial_port, args, results)
+            if soak_seconds > 0.0:
+                soak_summary = run_soak(serial_port, args, results, soak_seconds)
+    except (serial.SerialException, OSError, KeyboardInterrupt) as exc:
+        # Never discard the evidence collected so far; a long soak that dies
+        # mid-run is exactly when the partial report matters most.
+        aborted = exc
+        print(f"Run aborted after {len(results)} steps: {exc!r}")
+    finally:
+        ended_at = dt.datetime.now().astimezone()
+        if args.include_not_run or report_path is not None:
+            results.extend(not_run_results(soak_seconds))
+        if transcript_path is not None:
+            write_transcript(transcript_path, results, boot_output)
+        if report_path is not None:
+            write_report(report_path, args, results, started_at, ended_at, transcript_path,
+                         soak_seconds, boot_output, soak_summary)
 
-    ended_at = dt.datetime.now().astimezone()
-    if args.include_not_run or report_path is not None:
-        results.extend(not_run_results(soak_seconds))
-    if transcript_path is not None:
-        write_transcript(transcript_path, results, boot_output)
-    if report_path is not None:
-        write_report(report_path, args, results, started_at, ended_at, transcript_path,
-                     soak_seconds, boot_output, soak_summary)
+    if aborted is not None:
+        return 2
 
     if any(result.verdict == "FAIL" for result in results):
         return 1
@@ -1403,7 +1439,7 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--legacy-marker", action="store_true",
                         help="Use the older command + hilmark framing instead of hilrun")
     parser.add_argument("--require-framed", action="store_true",
-                        help="Require the hilrun framed CLI path")
+                        help="Treat a missing or mismatched hilrun frame as FAIL instead of UNKNOWN")
     parser.add_argument("--max-frame-bytes", type=int, default=8192,
                         help="Maximum bytes to read for one framed command response")
     parser.add_argument("--frame-prefix", default="HIL",

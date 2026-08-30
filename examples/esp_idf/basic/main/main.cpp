@@ -88,7 +88,10 @@ uint32_t nowMs() {
 }
 
 void sleepMs(uint32_t ms) {
-  vTaskDelay(pdMS_TO_TICKS(ms == 0U ? 1U : ms));
+  // pdMS_TO_TICKS() truncates to 0 for sub-tick delays (1 ms at the default
+  // 100 Hz tick), which would turn every poll loop into a busy spin.
+  const TickType_t ticks = pdMS_TO_TICKS(ms);
+  vTaskDelay(ticks == 0 ? 1 : ticks);
 }
 
 const char* boolStr(bool value) {
@@ -542,10 +545,12 @@ INA228::Status pollOwnerJob(uint8_t maxTransfers, INA228::JobResult& result,
     return pollStatus;
   }
   st = device.takeJobResult(activeOperationId, result);
+  // The job already left ACTIVE, so release the slot either way; keeping it
+  // would make every later start return BUSY with no way back.
+  activeOperationId = 0U;
   if (!st.ok()) {
     return st;
   }
-  activeOperationId = 0U;
   completed = true;
   return result.job.status;
 }
@@ -580,8 +585,10 @@ INA228::Status runOwnerJob(INA228::JobKind kind, INA228::JobResult& result) {
     if (static_cast<uint32_t>(nowMs() - startedAtMs) >=
         EXAMPLE_OPERATION_DEADLINE_MS) {
       const uint32_t timedOutOperationId = activeOperationId;
+      // timeoutJob() reports the cancellation itself as OPERATION_TIMEOUT; that
+      // is the success path here, not an error.
       st = device.timeoutJob();
-      if (!st.ok()) {
+      if (!st.ok() && !st.is(INA228::Err::OPERATION_TIMEOUT)) {
         return st;
       }
       st = device.takeJobResult(timedOutOperationId, result);
@@ -1576,7 +1583,9 @@ void processCommand(char* cmd) {
     INA228::Status st = device.setMode(static_cast<INA228::Mode>(value));
     std::printf("setMode(%ld = %s): %s\n", static_cast<long>(value),
                 modeToStr(static_cast<INA228::Mode>(value)), errToStr(st.code));
-    if (!st.ok()) printStatus(st);
+    // A triggered mode starts a conversion and reports IN_PROGRESS; that is
+    // acceptance, not failure.
+    if (!(st.ok() || st.inProgress())) printStatus(st);
   } else if (std::strcmp(cmd, "convtime") == 0) {
     const INA228::Config& cfg = device.getConfig();
     std::printf("Conversion times: VBUS=%s  VSHUNT=%s  TEMP=%s\n",
@@ -1883,7 +1892,16 @@ void processCommand(char* cmd) {
       rejectInvalidCommand("Usage: wreg16 <addr> <val> confirm");
       return;
     }
-    printStatus(device.writeRegister16(static_cast<uint8_t>(reg), static_cast<uint16_t>(value)));
+    const INA228::Status st =
+        device.writeRegister16(static_cast<uint8_t>(reg), static_cast<uint16_t>(value));
+    if (st.ok()) {
+      // A raw write bypasses the typed cache, so the driver's verified view of
+      // hardware is no longer trustworthy. Invalidate it and tell the operator.
+      (void)device.invalidateHardwareState(INA228::Status::Error(
+          INA228::Err::CONFIG_MISMATCH, "Raw register write bypassed the driver cache"));
+      std::printf("Hardware state invalidated; run 'recover' before typed reads.\n");
+    }
+    printStatus(st);
   } else if ((arg = argAfter(cmd, "reg16 ")) != nullptr) {
     uint32_t reg = 0;
     if (!parseU32(arg, reg) || reg > 0xFFU) { rejectInvalidCommand("Usage: reg16 <addr>"); return; }
@@ -2016,7 +2034,13 @@ extern "C" void app_main(void) {
     timeout.tv_usec = static_cast<long>(CLI_POLL_TIMEOUT_MS * 1000U);
 
     const int ready = select(STDIN_FILENO + 1, &readfds, nullptr, nullptr, &timeout);
-    if (ready <= 0 || !FD_ISSET(STDIN_FILENO, &readfds)) {
+    if (ready < 0) {
+      // select() failed (for example a console VFS without select support).
+      // Back off instead of spinning at full task priority.
+      sleepMs(CLI_POLL_TIMEOUT_MS);
+      continue;
+    }
+    if (ready == 0 || !FD_ISSET(STDIN_FILENO, &readfds)) {
       continue;
     }
 

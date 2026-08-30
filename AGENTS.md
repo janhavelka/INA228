@@ -1,21 +1,22 @@
-# AGENTS.md - INA228 Production Embedded Guidelines
+# AGENTS.md - INA228 Contributor Guidelines
 
-## PlatformIO
+These are the binding engineering rules for this repository. `CONTRIBUTING.md`
+covers the day-to-day workflow; this file covers the design constraints that
+changes must respect.
 
-Before editing, fetch remotes and fast-forward the newest intended working
-branch to its upstream. Stop and report dirty, divergent, or conflicted state;
-never overwrite work to force a sync.
-
-On Windows, use `.\scripts\pio.cmd <arguments>`; it selects the current user's
-VS Code-managed installation. Never install another PlatformIO Core; if the
-wrapper cannot find it, stop and report the missing installation.
-
-## Role and Target
-You are a professional embedded software engineer building a production-grade INA228 power monitor library.
+## Scope
 
 - Target: ESP32-S2 / ESP32-S3, Arduino and ESP-IDF consumers, PlatformIO/ESP-IDF.
-- Goals: deterministic behavior, long-term stability, clean API contracts, portability, no surprises in the field.
-- These rules are binding.
+- The library itself is framework-neutral C++17 and is meant to be usable both
+  as a standalone bring-up/test tool for the INA228 and as a component inside a
+  larger firmware.
+- Goals: deterministic behavior, long-term stability, clean API contracts,
+  portability, no surprises in the field.
+
+## Build Tooling
+
+On Windows, use `.\scripts\pio.cmd <arguments>`; it selects the current user's
+VS Code-managed PlatformIO installation instead of a second Core install.
 
 ---
 
@@ -23,21 +24,24 @@ You are a professional embedded software engineer building a production-grade IN
 
 ```
 include/INA228/         - Public API headers only (Doxygen)
-  CommandTable.h        - Register addresses and bit masks
-  Status.h
-  Config.h
-  INA228.h
+  CommandTable.h        - Register addresses, masks, and scaling constants
+  Status.h              - Err codes and Status
+  Config.h              - Config, transport callbacks, enums
+  INA228.h              - Driver class
   Version.h             - Auto-generated (do not edit)
 src/                    - Implementation (.cpp)
+test/                   - Native Unity tests and framework stubs
 examples/
-  01_*/
-  common/               - Example-only helpers (Log.h, BoardConfig.h, I2cTransport.h,
-                          I2cScanner.h, CliStyle.h)
-platformio.ini
-library.json
-README.md
-CHANGELOG.md
-AGENTS.md
+  01_basic_bringup_cli/ - Arduino/PlatformIO bring-up CLI
+  esp_idf/basic/        - Native ESP-IDF bring-up CLI
+  common/               - Example-only helpers (Log.h, BuildConfig.h,
+                          BoardConfig.h, I2cTransport.h, I2cScanner.h,
+                          CliStyle.h)
+docs/                   - Integration, device reference, validation evidence
+tools/                  - HIL runner and static contract checks (not packaged)
+scripts/                - Version generation and the PlatformIO wrapper
+platformio.ini, library.json, idf_component.yml, CMakeLists.txt, Doxyfile
+README.md, CHANGELOG.md, CONTRIBUTING.md, SECURITY.md, AGENTS.md
 ```
 
 Rules:
@@ -69,8 +73,6 @@ Rules:
 - Do not add placeholder classes, future stubs, empty managers, broad
   frameworks, plugin systems, registries, or speculative extension points unless
   the current task explicitly requires them.
-- Keep changes tightly scoped to the user's request.
-- Preserve dirty user changes and never revert unrelated work.
 - Deterministic: no unbounded loops/waits; all timeouts via deadlines, never `delay()` in library code.
 - No unbounded retries, allocations, queues, or buffers in steady paths.
 - Every hardware operation that can block must have a timeout and an observable
@@ -79,7 +81,9 @@ Rules:
 - Prefer explicit state, explicit ownership, and small local helpers over hidden
   global state.
 - Do not hide hardware failures behind silent retries or fake success.
-- Non-blocking lifecycle: `Status begin(const Config&)`, `void tick(uint32_t nowMs)`, `void end()`.
+- Cooperative lifecycle: `bind()`, `start*()`, `pollJob(nowMs, maxTransfers)`,
+  `takeJobResult()`, `end()`. `begin()`/`tick()` remain as bounded synchronous
+  conveniences layered on the same engine.
 - Any I/O that can exceed ~1-2 ms must be split into state machine steps driven by `tick()`.
 - No heap allocation in steady state (no `String`, `std::vector`, `new` in normal ops).
 - Avoid dynamic allocation in steady embedded paths unless it is already an
@@ -154,7 +158,10 @@ struct Status {
 ## INA228 Driver Requirements
 
 - I2C address configurable: 16 addresses from 0x40 to 0x4F (A0/A1 pins: GND, VS, SDA, SCL).
-- Check device presence in `begin()` by reading MANUFACTURER_ID (0x5449) and DEVICE_ID (0x2281).
+- Check device identity by reading MANUFACTURER_ID (`0x5449`) and DEVICE_ID.
+  Validate `DEVICE_ID[15:4]` (DIEID) against `0x228` and check `DEVICE_ID[3:0]`
+  (revision) against `Config::supportedRevisionMask`. Do not compare the whole
+  DEVICE_ID against `0x2281`.
 - Verify MEMSTAT bit in DIAG_ALRT register for NV trim memory health.
 - Support shunt full-scale range selection: ±163.84 mV (ADCRANGE=0) or ±40.96 mV (ADCRANGE=1).
 - Configurable ADC conversion times: 50, 84, 150, 280, 540, 1052, 2074, 4120 µs.
@@ -178,62 +185,80 @@ struct Status {
 
 ---
 
-## Driver Architecture: Managed Synchronous Driver
+## Driver Architecture: Cooperative Owner Driver
 
-The driver follows a **managed synchronous** model with health tracking:
+The application owns the I2C bus and the clock. The driver exposes one
+cooperative operation at a time and never blocks or retries on its own.
 
-- All public I2C operations are **blocking** (no async - INA228 has no EEPROM writes).
-- `tick()` may be used for triggered conversion wait or continuous mode polling.
-- Health is tracked via **tracked transport wrappers** -- public API never calls `_updateHealth()` directly.
-- Recovery is **manual** via `recover()` - the application controls retry strategy.
+### Cooperative model (primary)
 
-### DriverState (4 states only)
+```
+bind(config)                 - validate + cache desired state, no I2C
+start<Operation>(token, &id) - arm one job, no I2C
+pollJob(nowMs, maxTransfers) - advance with a bounded transfer budget
+takeJobResult(id, &result)   - consume the terminal result exactly once
+```
+
+- `getJobLimits(kind, &limits)` declares the exact worst-case transfer count and
+  wait time for the currently bound profile. Retries are always zero.
+- Waits are gated on caller-supplied `nowMs`; a zero budget is legal and
+  bus-silent.
+- Terminal results are delivered exactly once and stay available until consumed.
+
+### Synchronous conveniences (legacy, retained)
+
+`begin()`, `recover()`, `resetAccumulators()`, and the scalar `read*()` calls
+drive the same engine with a bounded internal poll loop. They are convenient for
+bring-up and for single-owner firmware, but they take the bus for the whole
+operation. Prefer the cooperative API in a shared-bus firmware.
+
+### HardwareState
+
+```cpp
+enum class HardwareState : uint8_t { UNBOUND, UNKNOWN, SYNCHRONIZED, RESYNC_REQUIRED };
+```
+
+Converted current/power/energy/charge require `SYNCHRONIZED` plus a clean
+calibration contract. Any partial or ambiguous write marks the driver dirty and
+forces a verified reinitialization before those values are trusted again.
+
+### DriverState (transport health)
 
 ```cpp
 enum class DriverState : uint8_t {
-  UNINIT,    // begin() not called or end() called
+  UNINIT,    // bind()/begin() not completed, or end() called
   READY,     // Operational, consecutiveFailures == 0
   DEGRADED,  // 1 <= consecutiveFailures < offlineThreshold
   OFFLINE    // consecutiveFailures >= offlineThreshold
 };
 ```
 
-State transitions:
-- `begin()` success -> READY
-- Any I2C failure in READY -> DEGRADED
-- Success in DEGRADED/OFFLINE -> READY
-- Failures reach `offlineThreshold` -> OFFLINE
-- `end()` -> UNINIT
+`HealthPolicy::PASSIVE` is the default: health is observed but never suppresses
+owner-requested I2C. `HealthPolicy::LATCH_OFFLINE` is a legacy opt-in that
+latches OFFLINE and requires `recover()`.
 
 ### Transport Wrapper Architecture
 
 All I2C goes through layered wrappers:
 
 ```
-Public API (readShuntVoltage, readBusVoltage, etc.)
-    ↓
+Public API (readShuntVoltage, readBusVoltage, pollJob, ...)
+    v
 Register helpers (readReg16, readReg24, readReg40, writeReg16)
-    ↓
+    v
 TRACKED wrappers (_i2cWriteReadTracked, _i2cWriteTracked)
-    ↓  <- _updateHealth() called here ONLY
+    v  <- _updateHealth() called here ONLY
 RAW wrappers (_i2cWriteReadRaw, _i2cWriteRaw)
-    ↓
+    v
 Transport callbacks (Config::i2cWrite, i2cWriteRead)
 ```
 
 **Rules:**
-- Public API methods NEVER call `_updateHealth()` directly
-- `readReg*()`/`writeReg*()` use TRACKED wrappers -> health updated automatically
-- `probe()` uses RAW wrappers -> no health tracking (diagnostic only)
-- `recover()` tracks probe failures (driver is initialized, so failures count)
-
-### Health Tracking Rules
-
-- `_updateHealth()` called ONLY inside tracked transport wrappers.
-- State transitions guarded by `_initialized` (no DEGRADED/OFFLINE before `begin()` succeeds).
-- NOT called for config/param validation errors (INVALID_CONFIG, INVALID_PARAM).
-- NOT called for precondition errors (NOT_INITIALIZED).
-- `probe()` uses raw I2C and does NOT update health (diagnostic only).
+- Public API methods NEVER call `_updateHealth()` directly.
+- `readReg*()`/`writeReg*()` use TRACKED wrappers -> health updated automatically.
+- `probe()` uses RAW wrappers -> no health tracking (diagnostic only).
+- Health transitions are guarded by `_initialized`, and are not applied to
+  config/param validation or precondition errors.
 
 ### Health Tracking Fields
 
@@ -241,7 +266,7 @@ Transport callbacks (Config::i2cWrite, i2cWriteRead)
 - `_lastErrorMs` - timestamp of last failed I2C operation
 - `_lastError` - most recent error Status
 - `_consecutiveFailures` - failures since last success (resets on success)
-- `_totalFailures` / `_totalSuccess` - lifetime counters (wrap at max)
+- `_totalFailures` / `_totalSuccess` - lifetime counters (saturate at max)
 
 ---
 

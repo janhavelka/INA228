@@ -1090,10 +1090,21 @@ void test_example_transport_validates_params_and_handles_write_read() {
   st = transport::wireWriteRead(0x40, &tx, 1, &rx, 1, 50, &Wire);
   TEST_ASSERT_TRUE(st.ok());
 
+  // A short read re-probes the address to recover the phase that
+  // endTransmission(false) cannot report on arduino-esp32. The device still
+  // acknowledges here, so the phase stays unknown rather than becoming a
+  // generic I2C error.
   Wire._setRequestFromResult(0);
   st = transport::wireWriteRead(0x40, &tx, 1, &rx, 1, 50, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_UNKNOWN_PHASE),
                           static_cast<uint8_t>(st.code));
+
+  // When the re-probe also NACKs, the absent device is reported precisely.
+  Wire._setEndTransmissionResult(2);
+  st = transport::wireWriteRead(0x40, &tx, 1, &rx, 1, 50, &Wire);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+                          static_cast<uint8_t>(st.code));
+  Wire._setEndTransmissionResult(0);
 }
 
 // ===========================================================================
@@ -4676,6 +4687,169 @@ void test_passive_health_never_suppresses_owner_requested_transport() {
 }
 
 // ===========================================================================
+// Regression: wait origins newer than the caller timestamp
+// ===========================================================================
+
+// A blocking write can cross a millisecond boundary, so the hook-sampled wait
+// origin can be newer than the timestamp the caller sampled before pollJob().
+// The gate must treat that as "not elapsed" instead of underflowing.
+void test_wait_origin_newer_than_caller_timestamp_does_not_skip_wait() {
+  const uint32_t advanceMs[] = {0u, 1u, 5u};
+  for (size_t index = 0; index < 3; ++index) {
+    FakeBus bus;
+    INA228::INA228 dev;
+    TEST_ASSERT_TRUE(dev.bind(makeCooperativeConfig(bus)).ok());
+    (void)initializeCooperativeDevice(dev, bus);
+
+    // Make every write advance the fake clock, then hold the caller's
+    // timestamp at the pre-write value for the whole poll.
+    bus.successfulWriteDurationReg = cmd::REG_ADC_CONFIG;
+    bus.successfulWriteDurationMatch =
+        static_cast<uint8_t>(bus.writeMatchCount[cmd::REG_ADC_CONFIG] + 1u);
+    bus.advanceNowMsOnWrite = advanceMs[index];
+
+    uint32_t operationId = 0;
+    TEST_ASSERT_TRUE(dev.startInstantaneousSample(9u, operationId).ok());
+    const uint32_t callerNowMs = bus.nowMs;
+    const Status st = dev.pollJob(callerNowMs, 20u);
+    TEST_ASSERT_TRUE(st.inProgress());
+
+    JobSnapshot snapshot{};
+    TEST_ASSERT_TRUE(dev.getJobState(snapshot).ok());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::ACTIVE),
+                            static_cast<uint8_t>(snapshot.state));
+    // Verify/verify/trigger only; the conversion wait must still be pending.
+    TEST_ASSERT_EQUAL_UINT16(3u, snapshot.transfersCompleted);
+    TEST_ASSERT_TRUE(dev.cancelJob().is(Err::CANCELLED));
+    JobResult drained{};
+    (void)dev.takeJobResult(operationId, drained);
+  }
+}
+
+// ===========================================================================
+// Regression: reset side effects the owner cannot see any other way
+// ===========================================================================
+
+void test_reset_marks_thresholds_dirty_and_reports_full_dirty_register_set() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.bind(makeCooperativeConfig(bus)).ok());
+  (void)initializeCooperativeDevice(dev, bus);
+
+  SettingsSnapshot settings{};
+  TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+  TEST_ASSERT_FALSE(settings.thresholdsDirty);
+
+  // A successful reset reverts SOVL/SUVL/BOVL/BUVL/TEMP_LIMIT/PWR_LIMIT to
+  // datasheet defaults, and the driver never replays them.
+  uint32_t operationId = 0;
+  TEST_ASSERT_TRUE(dev.startReset(11u, operationId).ok());
+  TEST_ASSERT_TRUE(pollCooperativeToTerminal(dev, bus).ok());
+  JobResult result{};
+  TEST_ASSERT_TRUE(dev.takeJobResult(operationId, result).ok());
+  TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+  TEST_ASSERT_TRUE(settings.thresholdsDirty);
+
+  // A reset that fails after the reset write must report every register the
+  // reset restored, not just CONFIG.
+  FakeBus failing;
+  INA228::INA228 failedDev;
+  TEST_ASSERT_TRUE(failedDev.bind(makeCooperativeConfig(failing)).ok());
+  (void)initializeCooperativeDevice(failedDev, failing);
+  failing.nthReadFailureRegs[0] = cmd::REG_CONFIG;
+  failing.nthReadFailureMatches[0] =
+      static_cast<uint8_t>(failing.readMatchCount[cmd::REG_CONFIG] + 1u);
+  failing.nthReadFailureStatus[0] =
+      Status::Error(Err::I2C_TIMEOUT, "forced reset verify failure", -7);
+  failing.nthReadFailureCount = 1;
+
+  uint32_t failedOperationId = 0;
+  TEST_ASSERT_TRUE(failedDev.startReset(12u, failedOperationId).ok());
+  TEST_ASSERT_FALSE(pollCooperativeToTerminal(failedDev, failing).ok());
+  JobResult failedResult{};
+  TEST_ASSERT_TRUE(
+      failedDev.takeJobResult(failedOperationId, failedResult).ok());
+
+  SettingsSnapshot failedSettings{};
+  TEST_ASSERT_TRUE(failedDev.getSettings(failedSettings).ok());
+  TEST_ASSERT_TRUE(failedSettings.hardwareDirty);
+  const uint8_t resetRegisters[] = {
+      cmd::REG_CONFIG,     cmd::REG_ADC_CONFIG, cmd::REG_SHUNT_CAL,
+      cmd::REG_SHUNT_TEMPCO, cmd::REG_DIAG_ALRT, cmd::REG_SOVL,
+      cmd::REG_SUVL,       cmd::REG_BOVL,       cmd::REG_BUVL,
+      cmd::REG_TEMP_LIMIT, cmd::REG_PWR_LIMIT};
+  for (size_t i = 0; i < sizeof(resetRegisters) / sizeof(resetRegisters[0]); ++i) {
+    TEST_ASSERT_TRUE((failedSettings.dirtyRegisterMask &
+                      (uint64_t{1} << resetRegisters[i])) != 0);
+  }
+}
+
+// ===========================================================================
+// Regression: invalidation preserves evidence; bind() clears advisories
+// ===========================================================================
+
+void test_invalidate_preserves_dirty_evidence_and_bind_clears_advisories() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.bind(makeCooperativeConfig(bus)).ok());
+  (void)initializeCooperativeDevice(dev, bus);
+
+  bus.writeFailureRegs[0] = cmd::REG_SHUNT_TEMPCO;
+  bus.writeFailureCount = 1;
+  TEST_ASSERT_FALSE(dev.setShuntTempCoeff(1234u).ok());
+  bus.writeFailureCount = 0;
+
+  SettingsSnapshot before{};
+  TEST_ASSERT_TRUE(dev.getSettings(before).ok());
+  TEST_ASSERT_TRUE(before.hardwareDirty);
+  TEST_ASSERT_TRUE((before.dirtyRegisterMask &
+                    (uint64_t{1} << cmd::REG_SHUNT_TEMPCO)) != 0);
+  const Err firstCause = before.hardwareDirtyCause.code;
+
+  // Owner invalidation makes hardware less trusted; it must not erase which
+  // registers are suspect, nor rewrite the first recorded cause.
+  TEST_ASSERT_TRUE(dev.invalidateHardwareState(
+      Status::Error(Err::HARDWARE_STATE_UNKNOWN, "owner invalidation")).ok());
+  SettingsSnapshot after{};
+  TEST_ASSERT_TRUE(dev.getSettings(after).ok());
+  TEST_ASSERT_TRUE(after.hardwareDirty);
+  TEST_ASSERT_EQUAL_UINT64(before.dirtyRegisterMask, after.dirtyRegisterMask);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(firstCause),
+                          static_cast<uint8_t>(after.hardwareDirtyCause.code));
+
+  // A fresh binding starts from a clean advisory state.
+  dev.invalidateHardwareState(Status::Ok());
+  TEST_ASSERT_TRUE(dev.bind(makeCooperativeConfig(bus)).ok());
+  SettingsSnapshot rebound{};
+  TEST_ASSERT_TRUE(dev.getSettings(rebound).ok());
+  TEST_ASSERT_FALSE(rebound.thresholdsDirty);
+  TEST_ASSERT_EQUAL_UINT64(0u, rebound.dirtyRegisterMask);
+}
+
+// ===========================================================================
+// Regression: uncalibrated ADC range change keeps the plan coherent
+// ===========================================================================
+
+void test_uncalibrated_adc_range_change_updates_plan_full_scale() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  CalibrationPlan plan{};
+  TEST_ASSERT_TRUE(dev.getCalibrationPlan(plan).ok());
+  TEST_ASSERT_EQUAL_UINT32(163840u, plan.shuntFullScaleMicrovolts);
+
+  TEST_ASSERT_TRUE(dev.setAdcRange(AdcRange::MV_40_96).ok());
+  TEST_ASSERT_TRUE(dev.getCalibrationPlan(plan).ok());
+  TEST_ASSERT_EQUAL_UINT32(40960u, plan.shuntFullScaleMicrovolts);
+
+  SettingsSnapshot settings{};
+  TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AdcRange::MV_40_96),
+                          static_cast<uint8_t>(settings.adcRange));
+}
+
+// ===========================================================================
 // Entry point
 // ===========================================================================
 
@@ -4799,5 +4973,9 @@ int main() {
   RUN_TEST(test_retained_reset_and_replay_wrappers_are_bounded_or_restricted);
   RUN_TEST(test_latched_offline_policy_remains_explicit_legacy_opt_in);
   RUN_TEST(test_passive_health_never_suppresses_owner_requested_transport);
+  RUN_TEST(test_wait_origin_newer_than_caller_timestamp_does_not_skip_wait);
+  RUN_TEST(test_reset_marks_thresholds_dirty_and_reports_full_dirty_register_set);
+  RUN_TEST(test_invalidate_preserves_dirty_evidence_and_bind_clears_advisories);
+  RUN_TEST(test_uncalibrated_adc_range_change_updates_plan_full_scale);
   return UNITY_END();
 }

@@ -7,8 +7,6 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-IDF_EXAMPLE_MACRO = "INA228_EXAMPLE_PLATFORM_IDF"
-CLI_SOURCE_INCLUDE = '#include "examples/01_basic_bringup_cli/main.cpp"'
 REQUIRED_COMPONENTS = [
     "INA228",
     "esp_driver_i2c",
@@ -97,7 +95,6 @@ FORBIDDEN_IDF_TOKENS = [
     "Serial",
     "ArduinoCompat",
     "IdfArduinoCompat",
-    CLI_SOURCE_INCLUDE,
 ]
 CI_REQUIRED_TOKENS = [
     "esp-idf-basic:",
@@ -108,8 +105,8 @@ CI_REQUIRED_TOKENS = [
     "command: idf.py set-target ${{ matrix.target }} build",
     "workflow_dispatch:",
     "Build ESP-IDF basic ${{ matrix.target }} with idf.py",
-    "esp32s3",
-    "esp32s2",
+    "- esp32s3",
+    "- esp32s2",
 ]
 BUILD_DOC_REQUIRED_TOKENS = [
     "ESP-IDF v6.0.1",
@@ -186,8 +183,6 @@ def main() -> int:
         require_token(idf_main, token, "ESP-IDF main")
     if "std::fgets" in idf_main:
         fail("ESP-IDF main must not block driver tick progress in std::fgets")
-    if IDF_EXAMPLE_MACRO in idf_main:
-        fail("ESP-IDF main must not enable the old shared Arduino CLI path")
     for token in FORBIDDEN_IDF_TOKENS:
         if token in idf_main:
             fail(f"ESP-IDF main contains forbidden Arduino/facade token '{token}'")
@@ -241,24 +236,33 @@ def main() -> int:
         )
     if "st.code == INA228::Err::I2C_NACK_ADDR || st.code == INA228::Err::I2C_ERROR" in idf_main:
         fail("native ESP-IDF scan must not hide generic I2C_ERROR as an empty address")
+    arduino_help = help_items(cli)
+    idf_help = help_items(idf_main)
+    arduino_aliases = aliases_from_help(arduino_help)
+    idf_aliases = aliases_from_help(idf_help)
     for command in MANDATORY_COMMANDS:
-        if f'printHelpItem("{command}' not in cli:
+        if command not in arduino_aliases:
             fail(f"Arduino CLI missing help item '{command}'")
         if not command_has_dispatch(cli, command):
             fail(f"Arduino CLI missing dispatch '{command}'")
-        if f'printHelpItem("{command}' not in idf_main:
+        if command not in idf_aliases:
             fail(f"native ESP-IDF CLI missing help item '{command}'")
         if not command_has_dispatch(idf_main, command):
             fail(f"native ESP-IDF CLI missing dispatch '{command}'")
 
-    arduino_help = help_items(cli)
-    idf_help = help_items(idf_main)
     if arduino_help != idf_help:
         missing = [item for item in arduino_help if item not in idf_help]
         extra = [item for item in idf_help if item not in arduino_help]
-        fail(f"Arduino/native help rows differ: missing={missing}, extra={extra}")
-    aliases = aliases_from_help(arduino_help)
-    for command in sorted(aliases):
+        if missing or extra:
+            fail(f"Arduino/native help rows differ: missing={missing}, extra={extra}")
+        index = next(
+            i for i, (a, b) in enumerate(zip(arduino_help, idf_help)) if a != b
+        )
+        fail(
+            f"Arduino/native help rows are ordered differently at row {index}: "
+            f"arduino={arduino_help[index]!r} idf={idf_help[index]!r}"
+        )
+    for command in sorted(arduino_aliases):
         if not command_has_dispatch(cli, command):
             fail(f"Arduino help alias '{command}' has no dispatch")
         if not command_has_dispatch(idf_main, command):

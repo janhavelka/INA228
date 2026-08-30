@@ -18,7 +18,7 @@ health policy, and recovery.
 
 - ESP32-S2 and ESP32-S3
 - Arduino/PlatformIO
-- Native ESP-IDF component use
+- Native ESP-IDF component use; `idf_component.yml` declares `idf >= 6.0.0`
 - Host/native tests
 - C++17 or GNU++17
 
@@ -337,10 +337,13 @@ python scripts/generate_version.py bump patch
 # Or set an explicit release version:
 python scripts/generate_version.py set X.Y.Z
 python scripts/generate_version.py check
+# Rewrite the generated files from library.json without changing the version:
+python scripts/generate_version.py sync
 ```
 
 The generator synchronizes `Version.h`, `idf_component.yml`, and Doxygen's
-project version from `library.json`.
+project version from `library.json`. `check` verifies they agree and fails
+otherwise; PlatformIO also runs it as a pre-build script.
 
 Version 3 is a breaking release because configuration and cooperative-owner
 operation contracts were added and the default health policy changed to passive.

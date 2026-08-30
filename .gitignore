@@ -39,7 +39,14 @@ wifi_credentials.h
 *.tmp
 *.bak
 *.log
-docs/reports/
 
 # Generated documentation
 docs/doxygen/
+
+# Local validation artifacts (see docs/validation/release-checklist.md)
+INA228-*.tar.gz
+package-smoke/
+package-contents.log
+static-contract-logs/
+hil-*.md
+hil-*.txt

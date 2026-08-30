@@ -80,14 +80,10 @@ status-sensitive bits, and can leave cached configuration out of sync.
 
 ## Hardware-in-the-loop runs
 
-After flashing firmware built from the source tree being validated, run the
-same framed suite with the native profile:
-
-```powershell
-$Version = (Get-Content library.json | ConvertFrom-Json).version
-$Commit = git rev-parse --short=12 HEAD
-python tools\run_i2c_hil.py --port COMx --baud 115200 --profile idf --expected-library-version $Version --expected-commit $Commit --expected-git-status clean --suite exhaustive --require-framed --fail-on-unknown --include-not-run --benchmark-count 100 --report hil-idf.md --transcript hil-idf.txt
-```
+After flashing firmware built from the source tree being validated, run the same
+framed suite with the native profile using the canonical `--profile idf`
+invocation from the [HIL runner reference](../../../docs/CLI.md#hil-runner); it
+is not duplicated here so the two cannot drift.
 
 The `idf` profile currently requires `Runtime: native ESP-IDF v6.0.1` in the
 `version` output, plus the expected library version, commit, and clean/dirty

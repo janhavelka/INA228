@@ -326,10 +326,12 @@ INA228::Status pollOwnerJob(uint8_t maxTransfers, INA228::JobResult& result,
   }
 
   st = device.takeJobResult(activeOperationId, result);
+  // The job already left ACTIVE, so release the slot either way; keeping it
+  // would make every later start return BUSY with no way back.
+  activeOperationId = 0U;
   if (!st.ok()) {
     return st;
   }
-  activeOperationId = 0U;
   completed = true;
   return result.job.status;
 }
@@ -353,8 +355,10 @@ INA228::Status runOwnerJob(INA228::JobKind kind, INA228::JobResult& result) {
     if (static_cast<uint32_t>(millis() - startedAtMs) >=
         EXAMPLE_OPERATION_DEADLINE_MS) {
       const uint32_t timedOutOperationId = activeOperationId;
+      // timeoutJob() reports the cancellation itself as OPERATION_TIMEOUT; that
+      // is the success path here, not an error.
       st = device.timeoutJob();
-      if (!st.ok()) {
+      if (!st.ok() && !st.is(INA228::Err::OPERATION_TIMEOUT)) {
         return st;
       }
       st = device.takeJobResult(timedOutOperationId, result);
@@ -1896,10 +1900,13 @@ void processCommand(const String& cmdLine) {
       return;
     }
     auto st = device.setMode(static_cast<Mode>(val));
+    // A triggered mode starts a conversion and reports IN_PROGRESS; that is
+    // acceptance, not failure.
+    const bool accepted = st.ok() || st.inProgress();
     LOGI("setMode(%ld = %s): %s%s%s",
          static_cast<long>(val), modeToStr(static_cast<Mode>(val)),
-         LOG_COLOR_RESULT(st.ok()), errToStr(st.code), LOG_COLOR_RESET);
-    if (!st.ok()) printStatus(st);
+         LOG_COLOR_RESULT(accepted), errToStr(st.code), LOG_COLOR_RESET);
+    if (!accepted) printStatus(st);
     return;
   }
 
@@ -2440,6 +2447,13 @@ void processCommand(const String& cmdLine) {
       return;
     }
     auto st = device.writeRegister16(static_cast<uint8_t>(addr), static_cast<uint16_t>(value));
+    if (st.ok()) {
+      // A raw write bypasses the typed cache, so the driver's verified view of
+      // hardware is no longer trustworthy. Invalidate it and tell the operator.
+      (void)device.invalidateHardwareState(INA228::Status::Error(
+          INA228::Err::CONFIG_MISMATCH, "Raw register write bypassed the driver cache"));
+      Serial.println("Hardware state invalidated; run 'recover' before typed reads.");
+    }
     printStatus(st);
     return;
   }

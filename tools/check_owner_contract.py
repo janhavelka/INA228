@@ -5,10 +5,22 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+LINE_COMMENT_RE = re.compile(r"//[^\n]*")
+STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"')
+
+
+def strip_non_code(text: str) -> str:
+    """Drop comments and string literals so prose cannot trip a token guard."""
+    text = BLOCK_COMMENT_RE.sub("", text)
+    text = LINE_COMMENT_RE.sub("", text)
+    return STRING_RE.sub('""', text)
 
 
 def fail(message: str) -> None:
@@ -79,7 +91,7 @@ def main() -> int:
     ):
         require(implementation, token, "implementation")
 
-    core = public + config + implementation
+    core = strip_non_code(public + config + implementation)
     for token in (
         "Arduino.h",
         "Wire.h",

@@ -7,7 +7,9 @@
 
 class TwoWire {
 public:
-  void begin(int sda = -1, int scl = -1) { (void)sda; (void)scl; }
+  // arduino-esp32's TwoWire::begin(sda, scl) returns bool; match it so the
+  // example transport's error handling compiles the same way under test.
+  bool begin(int sda = -1, int scl = -1) { (void)sda; (void)scl; return true; }
   void setClock(uint32_t freq) { (void)freq; }
   void setTimeOut(uint32_t timeoutMs) { _timeoutMs = timeoutMs; }
   uint32_t getTimeOut() const { return _timeoutMs; }

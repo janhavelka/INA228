@@ -150,12 +150,12 @@ def test_framework_and_provenance_contract() -> None:
     arduino = (
         "Arduino-ESP32: 3.3.11\n"
         "ESP-IDF: v5.5.5\n"
-        "INA228 library version: 3.0.2\n"
+        "INA228 library version: 9.9.9\n"
         "INA228 library commit: 0123456789ab (clean)\n"
     )
     assert_equal(
         runner.version_contract_errors(
-            arduino, "arduino", "3.0.2", "0123456789ab", "clean"
+            arduino, "arduino", "9.9.9", "0123456789ab", "clean"
         ),
         [],
         "Arduino provenance",
@@ -171,7 +171,7 @@ def test_framework_and_provenance_contract() -> None:
     assert_true(
         bool(
             runner.version_contract_errors(
-                arduino, "arduino", "3.0.2", "deadbeefcafe", "clean"
+                arduino, "arduino", "9.9.9", "deadbeefcafe", "clean"
             )
         ),
         "wrong firmware commit must fail",
@@ -180,7 +180,7 @@ def test_framework_and_provenance_contract() -> None:
     assert_true(
         bool(
             runner.version_contract_errors(
-                dirty, "arduino", "3.0.2", "0123456789ab", "clean"
+                dirty, "arduino", "9.9.9", "0123456789ab", "clean"
             )
         ),
         "dirty release firmware must fail",
@@ -188,12 +188,12 @@ def test_framework_and_provenance_contract() -> None:
 
     idf = (
         "Runtime: native ESP-IDF v6.0.1\n"
-        "INA228 library version: 3.0.2\n"
+        "INA228 library version: 9.9.9\n"
         "INA228 library commit: 0123456789ab (clean)\n"
     )
     assert_equal(
         runner.version_contract_errors(
-            idf, "idf", "3.0.2", "0123456789ab", "clean"
+            idf, "idf", "9.9.9", "0123456789ab", "clean"
         ),
         [],
         "native IDF provenance",
@@ -202,7 +202,7 @@ def test_framework_and_provenance_contract() -> None:
     assert_true(
         bool(
             runner.version_contract_errors(
-                short_commit, "arduino", "3.0.2", "0123456789ab", "clean"
+                short_commit, "arduino", "9.9.9", "0123456789ab", "clean"
             )
         ),
         "short firmware commit must fail",
@@ -219,7 +219,7 @@ def test_stale_input_cannot_supply_framed_verdict() -> None:
         max_frame_bytes=4096,
         post_frame_drain_s=0.001,
         profile="arduino",
-        expected_library_version="3.0.2",
+        expected_library_version="9.9.9",
         expected_commit="0123456789ab",
         expected_git_status="clean",
         framework_token=None,
@@ -227,11 +227,11 @@ def test_stale_input_cannot_supply_framed_verdict() -> None:
     step = runner.Step("version", ("INA228 library version:",), "provenance")
     stale = (
         b"Arduino-ESP32: 3.3.11\n"
-        b"INA228 library version: 3.0.2\n"
+        b"INA228 library version: 9.9.9\n"
         b"INA228 library commit: 0123456789ab (clean)\n"
     )
     result = runner.run_step(
-        FakeFramedSerial(stale, "INA228 library version: 3.0.2"), step, args
+        FakeFramedSerial(stale, "INA228 library version: 9.9.9"), step, args
     )
     if result.verdict != "FAIL":
         raise AssertionError(
@@ -250,7 +250,7 @@ def test_post_frame_trailer_cannot_hide_failure() -> None:
         max_frame_bytes=4096,
         post_frame_drain_s=0.001,
         profile="arduino",
-        expected_library_version="3.0.2",
+        expected_library_version="9.9.9",
         expected_commit="0123456789ab",
         expected_git_status="clean",
         framework_token=None,
@@ -258,7 +258,7 @@ def test_post_frame_trailer_cannot_hide_failure() -> None:
     payload = (
         "Arduino-ESP32: 3.3.11\n"
         "ESP-IDF: v5.5.5\n"
-        "INA228 library version: 3.0.2\n"
+        "INA228 library version: 9.9.9\n"
         "INA228 library commit: 0123456789ab (clean)"
     )
     step = runner.Step("version", ("INA228 library version:",), "provenance")

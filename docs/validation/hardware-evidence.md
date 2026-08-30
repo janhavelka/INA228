@@ -1,8 +1,12 @@
 # Hardware Evidence Summary
 
-This file summarizes dated HIL evidence without upgrading its claim level.
-Current detailed reports remain under `docs/validation/hardware/`; older report
-summaries are retained below.
+This file is the retained summary of dated HIL runs. It records what was
+measured, on which revision and fixture, and nothing stronger. Claim rules and
+the outstanding release gates live in [validation-status.md](validation-status.md).
+
+The generated per-run report files are not kept in the repository: they were
+machine-produced transcripts of dirty worktrees that cannot be reproduced. The
+durable facts from each run are the table rows below.
 
 ## Current v3 Migration Evidence
 
@@ -16,10 +20,6 @@ manufacturer ID `0x5449`, device ID `0x2281`, and healthy MEMSTAT.
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | PIOArduino 55.03.311 exhaustive + benchmark | `4c32312` + dirty migration changes | 9.0 s | 851 | 0 | 0 | 5 | Full synchronous and cooperative feature sweep, exact transfer budgets, 100 iterations across six read paths, 1,000 measurement samples, and 1,000 mixed operations. |
 | PIOArduino 55.03.311 shakedown soak | `4c32312` + dirty migration changes | 63.3 s | 5,940 | 0 | 0 | 4 | Eight smoke checks plus 5,932 soak commands over the requested 60-second interval; not the release-gate 8-hour soak. |
-
-Detailed retained reports (raw serial transcripts were removed during the
-v3.0.3 repository cleanup):
-`hardware/2026-07-31/4c32312-dirty-pioarduino-55.03.311-esp32s3/`.
 
 This evidence used a low-voltage connected fixture. It did not include
 controlled fault injection, ALERT-pin capture, reference-instrument accuracy
@@ -41,25 +41,6 @@ Fixture: `INA228_0x41_low_voltage_no_fault_injection`.
 | 2026-06-23 transfer-count suite | `29228f1122dfd0cb3bc8d82c5b92535a2f042ca8` | not retained | 53 | 0 | 0 | 5 | Validated example callback transfer counts for deterministic fixed-step paths; not logic-analyzer bus-byte evidence. |
 | 2026-06-23 targeted stress | `5840497166200a3b1eb9e8f68f447b6d7182367a` | 382.8 s | 6787 | 0 | 1 | 4 | Requested 600 s stress stopped early after one UNKNOWN serial framing row. |
 | 2026-06-23 20-hour soak attempt | `851ac4c` | 14159.7 s | 128416 | 0 | 1 | 4 | 20-hour request did not complete; one UNKNOWN serial framing row; not clean soak evidence. |
-
-## Release-Grade Evidence Still Required
-
-- Clean git status before build and upload.
-- Clean-commit framed exhaustive suite with `0 FAIL` and `0 UNKNOWN`, including
-  the feature sweep and exact fixed-step callback-budget assertions.
-- Framed 8-hour soak with `0 FAIL` and `0 UNKNOWN`.
-- Fault-injection fixture coverage for address NACK, data/unknown-phase NACK,
-  timeout, stuck-bus/bus error, OFFLINE behavior, and recovery.
-- ALERT-pin capture for polarity, latch/transparent behavior, conversion-ready
-  routing, and safe threshold crossings.
-- Controlled MCU reset and INA228 power-cycle evidence.
-- Reviewed CI logs for the final revision under test. The v3.0.3
-  release-content, clean-base, and exact v3.0.2 release commits satisfied this
-  software gate in
-  [CI run 31000462035](https://github.com/janhavelka/INA228/actions/runs/31000462035),
-  [CI run 30902376574](https://github.com/janhavelka/INA228/actions/runs/30902376574)
-  and [CI run 30815246708](https://github.com/janhavelka/INA228/actions/runs/30815246708),
-  respectively.
 
 ## Serial/HIL Runner Finding
 

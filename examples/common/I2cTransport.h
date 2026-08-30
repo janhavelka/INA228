@@ -18,6 +18,15 @@
 
 namespace transport {
 
+/// Largest single-transfer payload the underlying Wire buffer can hold.
+#if defined(I2C_BUFFER_LENGTH)
+static constexpr size_t WIRE_BUFFER_LIMIT = I2C_BUFFER_LENGTH;
+#elif defined(BUFFER_LENGTH)
+static constexpr size_t WIRE_BUFFER_LIMIT = BUFFER_LENGTH;
+#else
+static constexpr size_t WIRE_BUFFER_LIMIT = 32;
+#endif
+
 struct TransferStats {
   uint32_t read = 0;
   uint32_t write = 0;
@@ -80,8 +89,7 @@ inline INA228::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
     return INA228::Status::Error(INA228::Err::INVALID_PARAM, "Invalid I2C write params");
   }
 
-  // Check for oversized writes (ESP32 Wire buffer is 128 bytes)
-  if (len > 128) {
+  if (len > WIRE_BUFFER_LIMIT) {
     return INA228::Status::Error(INA228::Err::INVALID_PARAM, "Write exceeds I2C buffer",
                                  static_cast<int32_t>(len));
   }
@@ -90,6 +98,9 @@ inline INA228::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
   wire->beginTransmission(addr);
   size_t written = wire->write(data, len);
   if (written != len) {
+    // Close the transaction we opened; leaving it dangling corrupts the next
+    // beginTransmission() on cores that keep buffer state.
+    (void)wire->endTransmission(true);
     return INA228::Status::Error(INA228::Err::I2C_ERROR, "I2C write incomplete",
                                   static_cast<int32_t>(written));
   }
@@ -128,8 +139,7 @@ inline INA228::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLe
   if (txLen == 0 || rxLen == 0) {
     return INA228::Status::Error(INA228::Err::INVALID_PARAM, "I2C read length invalid");
   }
-  // Check for oversized transfers (ESP32 Wire buffer is 128 bytes)
-  if (txLen > 128 || rxLen > 128) {
+  if (txLen > WIRE_BUFFER_LIMIT || rxLen > WIRE_BUFFER_LIMIT) {
     return INA228::Status::Error(INA228::Err::INVALID_PARAM, "I2C read exceeds buffer");
   }
 
@@ -137,6 +147,7 @@ inline INA228::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLe
   wire->beginTransmission(addr);
   size_t written = wire->write(tx, txLen);
   if (written != txLen) {
+    (void)wire->endTransmission(true);
     return INA228::Status::Error(INA228::Err::I2C_ERROR, "I2C write incomplete",
                                  static_cast<int32_t>(written));
   }
@@ -148,8 +159,18 @@ inline INA228::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLe
 
   size_t read = wire->requestFrom(addr, static_cast<uint8_t>(rxLen));
   if (read != rxLen) {
-    return INA228::Status::Error(INA228::Err::I2C_ERROR, "I2C read length mismatch",
-                                  static_cast<int32_t>(read));
+    // On arduino-esp32 endTransmission(false) only latches the repeated-start
+    // flag; the whole write+read is issued by requestFrom(), so the phase
+    // information is lost here. Re-probe the address so a removed or NACKing
+    // device is still reported precisely instead of as a generic I2C error.
+    wire->beginTransmission(addr);
+    const uint8_t probe = wire->endTransmission(true);
+    if (probe != 0) {
+      return mapWireResult(probe, "I2C read failed");
+    }
+    return INA228::Status::Error(INA228::Err::I2C_NACK_UNKNOWN_PHASE,
+                                 "I2C read length mismatch",
+                                 static_cast<int32_t>(read));
   }
 
   for (size_t i = 0; i < rxLen; ++i) {
@@ -193,7 +214,9 @@ inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutM
   delayMicroseconds(5);
 #endif
 
-  Wire.begin(sda, scl);
+  if (!Wire.begin(sda, scl)) {
+    return false;
+  }
   Wire.setClock(freq);
   Wire.setTimeOut(timeoutMs);
   return true;

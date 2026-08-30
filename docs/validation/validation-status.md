@@ -1,6 +1,6 @@
 # Validation status
 
-Date: 2026-08-05
+Last reviewed: 2026-08-27
 
 This file separates implemented behavior, current local evidence, CI
 configuration, historical HIL, and physical validation. Do not infer a stronger
@@ -18,6 +18,12 @@ The v3.0.3 release-content commit
 on 2026-08-05, including all of the same software gates. It adds no new
 hardware-validation claim.
 
+Tag `v3.0.3` points at `6137ee7984f191ceedd8cdb65886112b9da1ea15`, one commit
+after `dc05bd7`. That commit changes only `.github/workflows/ci.yml` (GitHub
+action major versions) and validation documentation; no library source, example,
+or packaging file differs. No separate CI run is recorded for the tagged commit
+itself.
+
 | Evidence level | Current status |
 |---|---|
 | Implemented | Cooperative owner API, post-write sample/reset/configured-trigger timing, fixed calibration, hardware synchronization, job identity/effects, diagnostics, accumulator epochs, Arduino/native ESP-IDF examples, docs, metadata, and CI guards are present. |
@@ -32,10 +38,8 @@ hardware-validation claim.
 | ESP-IDF CI | CI runs 31000462035, 30902376574, and 30815246708 used ESP-IDF v6.0.1 and passed native example builds for ESP32-S2 and ESP32-S3 on the v3.0.3 release-content, clean-base, and exact v3.0.2 release commits, respectively. |
 | ESP-IDF locally built | NOT RUN on 2026-08-04: `idf.py` is unavailable and `IDF_PATH` is unset in the current shell. Arduino builds are not treated as local native ESP-IDF evidence. |
 | Historical low-voltage HIL | v2 Arduino ESP32-S3 evidence is preserved in `hardware-evidence.md`; it does not validate v3. |
-| v3 low-voltage HIL | Dirty-worktree S3 evidence on 2026-07-31 passed 851 exhaustive/benchmark commands and a separate 5,940-command, 60-second shakedown (eight smoke plus 5,932 soak commands) with zero FAIL/UNKNOWN results. Exact reports are under `hardware/2026-07-31/`; raw transcripts were removed during repository cleanup. |
-| Earlier cleanup-worktree S3 HIL | After rebuilding and hash-verified flashing, a local framed exhaustive/benchmark run on the same serial-numbered COM4 fixture passed 851 checks with 0 FAIL, 0 UNKNOWN, and 5 explicit NOT RUN fixture/soak rows. Its temporary report was not retained and it does not cover v3.0.2 or the v3.0.3 release candidate. |
-| v3.0.2 HIL | On 2026-08-04, the Arduino ESP32-S3 firmware from clean commit `cb3eb2bc6d5c` passed 189/189 executable checks in the framed targeted suite on COM21, with zero FAIL/UNKNOWN results and five explicit NOT RUN fixture/soak rows. Its temporary ignored report and transcript were removed after review, and this run predates the CLI-output and final v3.0.3 cleanup. |
-| CLI-output smoke HIL | The dirty CLI-fix worktree was rebuilt and flashed to COM21 on 2026-08-04. Its framed smoke suite passed 8/8 checks with zero FAIL/UNKNOWN results, and the transcript contained no redundant `Message: OK`. This run predates the final v3.0.3 metadata and refactor cleanup; its temporary report and transcript were removed after review. |
+| v3 low-voltage HIL | Dirty-worktree S3 evidence on 2026-07-31 passed 851 exhaustive/benchmark commands and a separate 5,940-command, 60-second shakedown (eight smoke plus 5,932 soak commands) with zero FAIL/UNKNOWN results. Summarized in `hardware-evidence.md`; the generated reports and raw transcripts are not retained. |
+| v3.0.2-era HIL | On 2026-08-04 the Arduino ESP32-S3 firmware from clean commit `cb3eb2bc6d5c` passed 189/189 executable checks in the framed targeted suite (zero FAIL/UNKNOWN, five explicit NOT RUN fixture/soak rows), and a follow-up smoke suite on the CLI-output fix passed 8/8. Both runs predate the final v3.0.3 tree and neither report was retained. |
 | Release-grade hardware validated | Not claimed. The clean targeted HIL predates the v3.0.3 worktree, and the subsequent CLI-fix run was dirty and smoke-only. Neither covers controlled fault injection, ALERT-pin capture, reference-instrument accuracy measurements, controlled power cycling, the alternate low-range calibration profile, S2/ESP-IDF physical runs, or an 8-hour clean soak. |
 
 ## Current native coverage

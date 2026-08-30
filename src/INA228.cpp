@@ -13,11 +13,32 @@ namespace {
 
 static constexpr uint32_t RESET_STARTUP_MS =
     (cmd::POR_STARTUP_US + 999U) / 1000U;
+/// Registers a CONFIG.RST software reset restores to their defaults.
+static constexpr uint64_t RESET_TOUCHED_REGISTER_MASK =
+    (1ULL << cmd::REG_CONFIG) | (1ULL << cmd::REG_ADC_CONFIG) |
+    (1ULL << cmd::REG_SHUNT_CAL) | (1ULL << cmd::REG_SHUNT_TEMPCO) |
+    (1ULL << cmd::REG_DIAG_ALRT) | (1ULL << cmd::REG_SOVL) |
+    (1ULL << cmd::REG_SUVL) | (1ULL << cmd::REG_BOVL) |
+    (1ULL << cmd::REG_BUVL) | (1ULL << cmd::REG_TEMP_LIMIT) |
+    (1ULL << cmd::REG_PWR_LIMIT);
 static constexpr uint16_t DIAG_EVIDENCE_MASK =
     cmd::DIAG_ENERGYOF | cmd::DIAG_CHARGEOF | cmd::DIAG_MATHOF |
     cmd::DIAG_TMPOL | cmd::DIAG_SHNTOL | cmd::DIAG_SHNTUL |
     cmd::DIAG_BUSOL | cmd::DIAG_BUSUL | cmd::DIAG_POL |
     cmd::DIAG_CNVRF;
+
+/// @brief Wrap-safe "has @p waitMs elapsed since @p startMs" test.
+///
+/// Wait origins are sampled after a blocking write returns, so they can be
+/// slightly newer than a timestamp the caller sampled before the call. A plain
+/// `now - start >= wait` underflows in that case and reports the wait as
+/// already elapsed. Treating a delta in the upper half of the uint32 range as
+/// "origin is in the future, not elapsed" keeps normal wraparound working while
+/// rejecting that inversion.
+static bool waitElapsed(uint32_t nowMs, uint32_t startMs, uint32_t waitMs) {
+  const uint32_t elapsed = nowMs - startMs;
+  return elapsed < 0x80000000U && elapsed >= waitMs;
+}
 
 static bool isValidAddress(uint8_t addr) {
   return addr >= 0x40 && addr <= 0x4F;
@@ -514,6 +535,7 @@ Status INA228::bind(const Config& config) {
   _diagAlertSnapshot = DiagAlertSnapshot{};
   _diagnosticEvents = DiagnosticEvents{};
   _clearHardwareDirty();
+  _thresholdsDirty = false;
   _hardwareDirty = true;
   _hardwareDirtyCause = Status::Error(
       Err::HARDWARE_STATE_UNKNOWN, "Bound hardware has not been verified");
@@ -773,6 +795,7 @@ void INA228::_invalidateJobHardwareState(const Status& cause) {
   _dirtyRegisterMask |= _jobTouchedRegisterMask;
   _hardwareDirtyCause = cause;
   _deviceIdentityValid = false;
+  _invalidateTriggeredConversionTiming();
   _invalidateAccumulatorEpoch();
 }
 
@@ -863,12 +886,17 @@ Status INA228::invalidateHardwareState(const Status& cause) {
   if (_cooperativeJobActive()) {
     result = _cancelJob(reason, JobState::FAILED);
   }
+  // Keep any register evidence already accumulated: invalidation makes the
+  // hardware less trusted, never more, and hardwareDirtyCause documents the
+  // FIRST cause. Clearing them here would discard what a failed job just
+  // recorded.
+  if (!_hardwareDirty) {
+    _hardwareDirtyCause = reason;
+  }
   _hardwareState = HardwareState::RESYNC_REQUIRED;
   _initialized = false;
   _driverState = DriverState::UNINIT;
   _hardwareDirty = true;
-  _hardwareDirtyCause = reason;
-  _dirtyRegisterMask = 0;
   _deviceIdentityValid = false;
   _invalidateAccumulatorEpoch();
   _trigPending = false;
@@ -1208,9 +1236,9 @@ Status INA228::_pollJobTransfer(uint32_t nowMs) {
       _initialized = true;
       if (!_jobDeferredStatus.ok()) {
         if (_jobDeferredStatus.code == Err::MEMORY_ERROR) {
-          _hardwareState = HardwareState::RESYNC_REQUIRED;
-          _initialized = false;
-          _driverState = DriverState::UNINIT;
+          // A bad NV trim checksum invalidates the whole cached contract, not
+          // just the three lifecycle fields this branch used to touch.
+          _invalidateJobHardwareState(_jobDeferredStatus);
         }
         return _finishJob(_jobDeferredStatus, JobState::FAILED,
                           JobEffect::CONFIRMED, nowMs);
@@ -1230,11 +1258,17 @@ Status INA228::_pollJobTransfer(uint32_t nowMs) {
                         JobEffect::CONFIRMED, nowMs);
 
     case JobPhase::RESET_WRITE:
-      _jobTouchedRegisterMask |= (1ULL << cmd::REG_CONFIG);
+      // CONFIG.RST restores every register, not just CONFIG, so the whole
+      // writable set is potentially dirty from this point on.
+      _jobTouchedRegisterMask |= RESET_TOUCHED_REGISTER_MASK;
       st = writeReg16(cmd::REG_CONFIG, cmd::CONFIG_RST);
       if (!st.ok()) return _failJob(st, true, nowMs);
       _jobHadSuccessfulWrite = true;
       _hardwareState = HardwareState::RESYNC_REQUIRED;
+      // Alert thresholds are not part of the replayed configuration, so a
+      // successful reset silently reverts them to datasheet defaults. Raise the
+      // sticky advisory so the owner reapplies engineering-unit limits.
+      _markThresholdsDirty();
       // Reset invalidates any earlier conversion. Discard its timing before
       // arming the reset wait so the single deferred origin stays unambiguous.
       _trigPending = false;
@@ -1318,11 +1352,11 @@ Status INA228::_pollJobImpl(uint32_t nowMs, uint8_t maxTransfers,
 
   if (_jobPhase == JobPhase::SAMPLE_WAIT) {
     const uint32_t waitMs = _instantaneousSampleWaitMs();
-    if ((nowMs - _jobWaitStartMs) >= waitMs) {
+    if (waitElapsed(nowMs, _jobWaitStartMs, waitMs)) {
       _setJobPhase(JobPhase::SAMPLE_DIAG);
     }
   } else if (_jobPhase == JobPhase::RESET_WAIT &&
-             (nowMs - _jobWaitStartMs) >= RESET_STARTUP_MS) {
+             waitElapsed(nowMs, _jobWaitStartMs, RESET_STARTUP_MS)) {
     _setJobPhase(JobPhase::RESET_VERIFY_CLEAR);
   }
 
@@ -1335,7 +1369,7 @@ Status INA228::_pollJobImpl(uint32_t nowMs, uint8_t maxTransfers,
   while (used < maxTransfers && _cooperativeJobActive()) {
     if (_jobPhase == JobPhase::SAMPLE_WAIT) {
       const uint32_t waitMs = _instantaneousSampleWaitMs();
-      if ((nowMs - _jobWaitStartMs) < waitMs) {
+      if (!waitElapsed(nowMs, _jobWaitStartMs, waitMs)) {
         _jobPollActive = false;
         return Status{Err::IN_PROGRESS, 0, "Conversion wait in progress"};
       }
@@ -1343,7 +1377,7 @@ Status INA228::_pollJobImpl(uint32_t nowMs, uint8_t maxTransfers,
       continue;
     }
     if (_jobPhase == JobPhase::RESET_WAIT) {
-      if ((nowMs - _jobWaitStartMs) < RESET_STARTUP_MS) {
+      if (!waitElapsed(nowMs, _jobWaitStartMs, RESET_STARTUP_MS)) {
         _jobPollActive = false;
         return Status{Err::IN_PROGRESS, 0, "Reset startup wait in progress"};
       }
@@ -2161,6 +2195,8 @@ Status INA228::setAdcRange(AdcRange range) {
   bool newClamped = false;
   bool newMaxCurrentExceedsRange = false;
   CalibrationPlan newPlan = oldPlan;
+  newPlan.shuntFullScaleMicrovolts =
+      range == AdcRange::MV_40_96 ? 40960U : 163840U;
   if (_usesFixedCalibration) {
     Status planStatus = calculateCalibration(_config.calibration, range, newPlan);
     if (!planStatus.ok()) return planStatus;
@@ -2419,7 +2455,7 @@ Status INA228::setShuntOvervoltageThreshold(float voltageV) {
   if (!clean.ok()) return clean;
   uint16_t regVal = 0;
   Status encoded = encodeShuntThreshold(voltageV, _config.adcRange, regVal);
-  return encoded.ok() ? writeReg16(cmd::REG_SOVL, regVal) : encoded;
+  return encoded.ok() ? _writeThresholdRegister(cmd::REG_SOVL, regVal) : encoded;
 }
 
 Status INA228::setShuntUndervoltageThreshold(float voltageV) {
@@ -2430,7 +2466,7 @@ Status INA228::setShuntUndervoltageThreshold(float voltageV) {
   if (!clean.ok()) return clean;
   uint16_t regVal = 0;
   Status encoded = encodeShuntThreshold(voltageV, _config.adcRange, regVal);
-  return encoded.ok() ? writeReg16(cmd::REG_SUVL, regVal) : encoded;
+  return encoded.ok() ? _writeThresholdRegister(cmd::REG_SUVL, regVal) : encoded;
 }
 
 Status INA228::setBusOvervoltageThreshold(float voltageV) {
@@ -2441,7 +2477,7 @@ Status INA228::setBusOvervoltageThreshold(float voltageV) {
   if (!clean.ok()) return clean;
   uint16_t regVal = 0;
   Status encoded = encodeBusThreshold(voltageV, regVal);
-  return encoded.ok() ? writeReg16(cmd::REG_BOVL, regVal) : encoded;
+  return encoded.ok() ? _writeThresholdRegister(cmd::REG_BOVL, regVal) : encoded;
 }
 
 Status INA228::setBusUndervoltageThreshold(float voltageV) {
@@ -2452,7 +2488,7 @@ Status INA228::setBusUndervoltageThreshold(float voltageV) {
   if (!clean.ok()) return clean;
   uint16_t regVal = 0;
   Status encoded = encodeBusThreshold(voltageV, regVal);
-  return encoded.ok() ? writeReg16(cmd::REG_BUVL, regVal) : encoded;
+  return encoded.ok() ? _writeThresholdRegister(cmd::REG_BUVL, regVal) : encoded;
 }
 
 Status INA228::setTemperatureOverlimitThreshold(float tempC) {
@@ -2470,7 +2506,7 @@ Status INA228::setTemperatureOverlimitThreshold(float tempC) {
     return Status::Error(Err::INVALID_PARAM, "Temperature threshold out of range");
   }
   auto regVal = static_cast<int16_t>(scaled);
-  return writeReg16(cmd::REG_TEMP_LIMIT, static_cast<uint16_t>(regVal));
+  return _writeThresholdRegister(cmd::REG_TEMP_LIMIT, static_cast<uint16_t>(regVal));
 }
 
 Status INA228::setPowerOverlimitThreshold(float powerW) {
@@ -2491,7 +2527,7 @@ Status INA228::setPowerOverlimitThreshold(float powerW) {
     return Status::Error(Err::INVALID_PARAM, "Power threshold out of range");
   }
   auto regVal = static_cast<uint16_t>(scaled);
-  return writeReg16(cmd::REG_PWR_LIMIT, regVal);
+  return _writeThresholdRegister(cmd::REG_PWR_LIMIT, regVal);
 }
 
 // ===========================================================================
@@ -2718,6 +2754,11 @@ Status INA228::writeRegister16(uint8_t reg, uint16_t value) {
     return Status::Error(Err::BUSY, "Cooperative job owns hardware access");
   }
   Status st = writeReg16(reg, value);
+  if (!st.ok() && _isThresholdRegister(reg)) {
+    // A failed threshold write may still have landed; the sticky advisory is
+    // the only way the owner learns the limit needs reapplying.
+    _markThresholdsDirty();
+  }
   if (!st.ok() &&
       (reg == cmd::REG_DIAG_ALRT || reg == cmd::REG_CONFIG ||
        reg == cmd::REG_SHUNT_CAL || reg == cmd::REG_ADC_CONFIG ||
@@ -2840,6 +2881,9 @@ Status INA228::_setAlertConfigBit(uint16_t bit, bool enabled) {
 // ===========================================================================
 
 Status INA228::_updateHealth(const Status& st) {
+  // Health describes steady-state transport. Initialization and recovery
+  // traffic is deliberately excluded so a recovery attempt cannot inflate the
+  // counters that gate recovery.
   if (!_initialized) {
     return st;
   }
@@ -2966,7 +3010,7 @@ Status INA228::_ensureCalibrated() const {
 
 bool INA228::_triggerDeadlineElapsed(uint32_t nowMs) const {
   return _deferredTimeOrigin != DeferredTimeOrigin::TRIGGERED_CONVERSION &&
-         (nowMs - _trigStartMs) >= estimateConversionTimeMs();
+         waitElapsed(nowMs, _trigStartMs, estimateConversionTimeMs());
 }
 
 bool INA228::_modeSupportsEnergyAccumulation() const {
@@ -3120,6 +3164,15 @@ void INA228::_clearHardwareDirty() {
 
 void INA228::_markThresholdsDirty() {
   _thresholdsDirty = true;
+}
+
+Status INA228::_writeThresholdRegister(uint8_t reg, uint16_t value) {
+  Status st = writeReg16(reg, value);
+  if (!st.ok()) {
+    // The write may still have landed; the owner must reapply the limit.
+    _markThresholdsDirty();
+  }
+  return st;
 }
 
 bool INA228::_isThresholdRegister(uint8_t reg) const {

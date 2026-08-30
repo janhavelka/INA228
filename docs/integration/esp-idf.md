@@ -14,7 +14,8 @@ and a native callback adapter. It contains no Arduino compatibility layer.
 ## Component use
 
 Add this repository as an ESP-IDF component or use `idf_component.yml`. The core
-requires C++17. The example CMake project builds the library sources and public
+requires C++17, and the component manifest declares `idf >= 6.0.0`; CI builds the
+native example against ESP-IDF v6.0.1. The example CMake project builds the library sources and public
 headers directly so CI can validate both ESP32-S2 and ESP32-S3.
 
 The callback adapter should retain the IDF handles in application-owned context:

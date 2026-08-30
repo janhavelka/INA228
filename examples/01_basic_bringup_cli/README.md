@@ -76,13 +76,9 @@ driver's cached configuration.
 ## Hardware-in-the-loop runs
 
 The runner uses framed `hilrun` commands by default. After flashing firmware
-built from the tree you intend to validate:
-
-```powershell
-$Version = (Get-Content library.json | ConvertFrom-Json).version
-$Commit = git rev-parse --short=12 HEAD
-python tools\run_i2c_hil.py --port COMx --baud 115200 --profile arduino --expected-library-version $Version --expected-commit $Commit --expected-git-status clean --suite exhaustive --require-framed --fail-on-unknown --include-not-run --benchmark-count 100 --report hil-arduino.md --transcript hil-arduino.txt
-```
+built from the tree you intend to validate, run the canonical `--profile arduino`
+invocation from the [HIL runner reference](../../docs/CLI.md#hil-runner); it is
+not duplicated here so the two cannot drift.
 
 The `arduino` profile currently verifies `Arduino-ESP32: 3.3.11` and
 `ESP-IDF: v5.5.5` in the `version` response in addition to library version,
