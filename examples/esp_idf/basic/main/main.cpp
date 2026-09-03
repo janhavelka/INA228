@@ -952,6 +952,14 @@ void printDiag() {
   std::printf("  POL:       %s\n", boolStr(diag.pOL));
 }
 
+void printThresholdReapplyWarning(const INA228::SettingsSnapshot& settings,
+                                  bool indented = false) {
+  if (settings.thresholdsDirty) {
+    std::printf("%sWarning: engineering-unit thresholds may need reapplication.\n",
+                indented ? "  " : "");
+  }
+}
+
 void printAlertLimits() {
   uint16_t sovl = 0;
   uint16_t suvl = 0;
@@ -974,9 +982,7 @@ void printAlertLimits() {
   const bool shuntDecodeValid =
       device.hardwareState() == INA228::HardwareState::SYNCHRONIZED;
   std::printf("=== Alert Limits ===\n");
-  if (settings.thresholdsDirty) {
-    std::printf("  Warning: engineering-unit thresholds may need reapplication.\n");
-  }
+  printThresholdReapplyWarning(settings, true);
   if (shuntDecodeValid) {
     std::printf("  SOVL:       0x%04X  %.3f mV\n", sovl,
                 static_cast<double>(shuntLimitToMv(sovl, settings.adcRange)));
@@ -1006,9 +1012,7 @@ void printShuntAlertLimit(const char* label, uint8_t reg) {
   }
   INA228::SettingsSnapshot settings{};
   (void)device.getSettings(settings);
-  if (settings.thresholdsDirty) {
-    std::printf("Warning: engineering-unit thresholds may need reapplication.\n");
-  }
+  printThresholdReapplyWarning(settings);
   if (device.hardwareState() == INA228::HardwareState::SYNCHRONIZED) {
     std::printf("%s: 0x%04X  %.3f mV\n", label, raw,
                 static_cast<double>(shuntLimitToMv(raw, settings.adcRange)));
@@ -1020,21 +1024,29 @@ void printShuntAlertLimit(const char* label, uint8_t reg) {
 void printBusAlertLimit(const char* label, uint8_t reg) {
   uint16_t raw = 0;
   INA228::Status st = device.readRegister16(reg, raw);
-  if (st.ok()) {
-    std::printf("%s: 0x%04X  %.4f V\n", label, raw, static_cast<double>(busLimitToV(raw)));
-  } else {
+  if (!st.ok()) {
     printStatus(st);
+    return;
   }
+  INA228::SettingsSnapshot settings{};
+  (void)device.getSettings(settings);
+  printThresholdReapplyWarning(settings);
+  std::printf("%s: 0x%04X  %.4f V\n", label, raw,
+              static_cast<double>(busLimitToV(raw)));
 }
 
 void printTemperatureAlertLimit() {
   uint16_t raw = 0;
   INA228::Status st = device.readRegister16(INA228::cmd::REG_TEMP_LIMIT, raw);
-  if (st.ok()) {
-    std::printf("TEMP_LIMIT: 0x%04X  %.2f C\n", raw, static_cast<double>(tempLimitToC(raw)));
-  } else {
+  if (!st.ok()) {
     printStatus(st);
+    return;
   }
+  INA228::SettingsSnapshot settings{};
+  (void)device.getSettings(settings);
+  printThresholdReapplyWarning(settings);
+  std::printf("TEMP_LIMIT: 0x%04X  %.2f C\n", raw,
+              static_cast<double>(tempLimitToC(raw)));
 }
 
 void printPowerAlertLimit() {
@@ -1046,9 +1058,7 @@ void printPowerAlertLimit() {
   }
   INA228::SettingsSnapshot settings{};
   (void)device.getSettings(settings);
-  if (settings.thresholdsDirty) {
-    std::printf("Warning: engineering-unit thresholds may need reapplication.\n");
-  }
+  printThresholdReapplyWarning(settings);
   if (settings.calibrated) {
     std::printf("PWR_LIMIT: 0x%04X  %.6f W\n", raw,
                 powerLimitToW(raw, settings.currentLsb));
@@ -1265,16 +1275,16 @@ void runStress(uint32_t count) {
     INA228::Status st = device.readMeasurement(m);
     if (st.ok()) {
       ++ok;
-      if (verboseMode) {
-        std::printf("  %lu: Vbus=%.4f V Current=%.6f A Power=%.6f W\n",
-                    static_cast<unsigned long>(i + 1U), m.busVoltageV, m.currentA, m.powerW);
-      }
     } else {
       ++fail;
       if (firstFailure.ok()) {
         firstFailure = st;
       }
       lastFailure = st;
+      if (verboseMode) {
+        std::printf("  [%lu] failed: %s\n",
+                    static_cast<unsigned long>(i), errToStr(st.code));
+      }
     }
     printStressProgress(i + 1U, count, ok, fail);
     taskYIELD();

@@ -36,3 +36,6 @@ committed; [hardware-evidence.md](validation/hardware-evidence.md) keeps the
 durable summary of each run instead.
 
 Generated Doxygen output belongs in `docs/doxygen/` and should not be committed.
+
+Internal `CODE_AUDIT*.md` review records are intentionally omitted from this
+consumer index and from exported library packages.

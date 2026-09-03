@@ -100,6 +100,7 @@ inline INA228::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
   if (written != len) {
     // Start a fresh empty transaction to discard the partial TX buffer before
     // closing it; do not deliberately put a truncated register write on-bus.
+    transferStatsStorage().write++;
     wire->beginTransmission(addr);
     (void)wire->endTransmission(true);
     return INA228::Status::Error(INA228::Err::I2C_ERROR, "I2C write incomplete",
@@ -148,6 +149,7 @@ inline INA228::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLe
   wire->beginTransmission(addr);
   size_t written = wire->write(tx, txLen);
   if (written != txLen) {
+    transferStatsStorage().write++;
     wire->beginTransmission(addr);
     (void)wire->endTransmission(true);
     return INA228::Status::Error(INA228::Err::I2C_ERROR, "I2C write incomplete",
@@ -165,6 +167,7 @@ inline INA228::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLe
     // flag; the whole write+read is issued by requestFrom(), so the phase
     // information is lost here. Re-probe the address so a removed or NACKing
     // device is still reported precisely instead of as a generic I2C error.
+    transferStatsStorage().write++;
     wire->beginTransmission(addr);
     const uint8_t probe = wire->endTransmission(true);
     if (probe != 0) {

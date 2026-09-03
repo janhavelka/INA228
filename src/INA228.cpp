@@ -788,6 +788,12 @@ Status INA228::_failJob(const Status& status, bool failedSideEffectingTransfer,
   if (identityJob || resetMayHaveInvalidatedTrigger) {
     _invalidateTriggeredConversionTiming();
   }
+  if (verificationJob && failedSideEffectingTransfer &&
+      !invalidatesHardwareState) {
+    // A failed destructive DIAG read may still have consumed CNVRF. Preserve
+    // the verified configuration, but stop claiming a conversion is pending.
+    _invalidateTriggeredConversionTiming();
+  }
   return _finishJob(status, JobState::FAILED, effect, nowMs);
 }
 

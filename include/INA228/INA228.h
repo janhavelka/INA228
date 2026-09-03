@@ -109,8 +109,8 @@ struct SettingsSnapshot {
 
 /// @brief Diagnostic, alert configuration, and alert flag bits from DIAG_ALRT.
 /// @note Values produced by readDiagAlert() come from a destructive hardware
-/// read. That read can clear CNVRF and latched alert status bits according to
-/// the INA228 datasheet.
+/// read. That read can clear CNVRF and latched limit status bits according to
+/// the INA228 datasheet; it does not clear ENERGYOF, CHARGEOF, or MATHOF.
 struct DiagAlert {
   bool alatch = false;     ///< Alert latch enabled
   bool cnvr = false;       ///< Conversion ready on ALERT pin
@@ -330,6 +330,8 @@ public:
   /// Requires initialized, synchronized hardware, valid calibration, and a
   /// shutdown or continuous base mode. Starting is bus-silent. Completion is
   /// delivered exactly once through takeJobResult() after pollJob() terminates.
+  /// After a triggered conversion completes, select shutdown or a continuous
+  /// mode with setMode() before starting this operation.
   /// @param requestToken Caller-defined correlation token
   /// @param operationId Receives the new driver-assigned operation identity
   /// @return Status::Ok() when started, or a precondition error
@@ -610,9 +612,12 @@ public:
   /// It requires an initialized, calibrated, clean driver because current and
   /// power scaling depend on the cached SHUNT_CAL/current-LSB contract.
   /// ENERGY and CHARGE fields in @p raw are ignored.
+  /// @note Returns MATH_OVERFLOW when valid raw DIAG_ALRT evidence contains
+  /// MATHOF. The latch remains set until another triggered conversion or
+  /// resetAccumulators() clears it.
   /// @param raw Raw register sample or staged raw values
   /// @param out IntegerSample result
-  /// @return Status::Ok() on success
+  /// @return Status::Ok(), MATH_OVERFLOW, or a calibration/state error
   Status convertRawSample(const RawSample& raw, IntegerSample& out) const;
 
   /// Start a triggered one-shot measurement.
@@ -884,8 +889,8 @@ public:
   /// Read diagnostic, alert configuration, and alert flag bits.
   ///
   /// This performs a destructive hardware read of DIAG_ALRT. It can clear
-  /// CNVRF and latched alert flags; the exact raw value is preserved in
-  /// getDiagAlertSnapshot().
+  /// CNVRF and latched limit flags; it does not clear ENERGYOF, CHARGEOF, or
+  /// MATHOF. The exact raw value is preserved in getDiagAlertSnapshot().
   /// @param out Receives parsed DIAG_ALRT fields
   /// @return Status::Ok(), or a transport/precondition error
   Status readDiagAlert(DiagAlert& out);
@@ -893,7 +898,8 @@ public:
   /// Read raw DIAG_ALRT register value.
   ///
   /// This performs a destructive hardware read and preserves the exact raw
-  /// value in getDiagAlertSnapshot().
+  /// value in getDiagAlertSnapshot(). It can clear CNVRF and latched limit
+  /// flags, but does not clear ENERGYOF, CHARGEOF, or MATHOF.
   /// @param raw Receives the DIAG_ALRT register value
   /// @return Status::Ok(), or a transport/precondition error
   Status readDiagAlertRaw(uint16_t& raw);
@@ -902,6 +908,7 @@ public:
   ///
   /// This is equivalent to readDiagAlertRaw() and is named for callers that
   /// want to make the clear-on-read behavior visible in their poll jobs.
+  /// ENERGYOF, CHARGEOF, and MATHOF are not cleared by this read.
   /// @param raw Receives the consumed DIAG_ALRT register value
   /// @return Status::Ok(), or a transport/precondition error
   Status readAndClearDiagAlert(uint16_t& raw);

@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import pathlib
 import sys
 import types
+from contextlib import redirect_stdout
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -68,6 +70,13 @@ class FakeFramedSerial:
 
     def flush(self) -> None:
         return None
+
+
+class FakeUnframedSerial(FakeFramedSerial):
+    def write(self, data: bytes) -> int:
+        self.writes.append(data.decode("ascii"))
+        self.buffer.extend((self.payload.rstrip() + "\n").encode("ascii"))
+        return len(data)
 
 
 def assert_equal(actual, expected, label: str) -> None:
@@ -304,6 +313,50 @@ def test_frame_identity_and_completion_are_exact() -> None:
     assert_true(not complete, "stale end before begin accepted")
 
 
+def test_require_framed_reaches_run_step_missing_frame_verdict() -> None:
+    args = types.SimpleNamespace(
+        drain_before_command_s=0.0,
+        frame_prefix="TEST",
+        no_command_framing=False,
+        timeout_s=0.01,
+        max_frame_bytes=4096,
+        post_frame_drain_s=0.0,
+        profile="arduino",
+        expected_library_version="any",
+        expected_commit="any",
+        expected_git_status="any",
+        framework_token=None,
+        require_framed=False,
+    )
+    step = runner.Step("vbus", ("Vbus",), "sample")
+    optional = runner.run_step(FakeUnframedSerial(b"", "Vbus: 12.0 V"), step, args)
+    assert_equal(optional.verdict, "UNKNOWN", "optional missing frame")
+
+    args.require_framed = True
+    required = runner.run_step(FakeUnframedSerial(b"", "Vbus: 12.0 V"), step, args)
+    assert_equal(required.verdict, "FAIL", "required missing frame")
+
+
+def test_local_modes_skip_git_provenance_and_keep_report_plan_parity() -> None:
+    original_git_text = runner.git_text
+    runner.git_text = lambda _args: "unavailable"
+    try:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            assert_equal(
+                runner.main(["--dry-run", "--suite", "smoke", "--report", "report.md"]),
+                0,
+                "source-export dry run",
+            )
+        assert_true("<not-run rows>" in output.getvalue(), "report NOT RUN plan row")
+
+        with redirect_stdout(io.StringIO()):
+            assert_equal(runner.main(["--parser-self-test"]), 0,
+                         "source-export parser self-test")
+    finally:
+        runner.git_text = original_git_text
+
+
 def test_repeated_clock_tokens_still_get_unique_sequences() -> None:
     args = types.SimpleNamespace(
         drain_before_command_s=0.0,
@@ -382,6 +435,8 @@ def main() -> int:
         test_stale_input_cannot_supply_framed_verdict,
         test_post_frame_trailer_cannot_hide_failure,
         test_frame_identity_and_completion_are_exact,
+        test_require_framed_reaches_run_step_missing_frame_verdict,
+        test_local_modes_skip_git_provenance_and_keep_report_plan_parity,
         test_repeated_clock_tokens_still_get_unique_sequences,
         test_interrupted_compressed_soak_preserves_unstored_summary,
     )

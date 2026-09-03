@@ -77,6 +77,19 @@ INA228::Status validateContext(uint8_t addr, void* user, Ina228IdfI2c*& ctx) {
   return INA228::Status::Ok();
 }
 
+INA228::Status removePendingTemporaryDevice(Ina228IdfI2c& ctx) {
+  if (ctx.temporaryDevPendingRemoval == nullptr) {
+    return INA228::Status::Ok();
+  }
+  ctx.lastError = i2c_master_bus_rm_device(ctx.temporaryDevPendingRemoval);
+  if (ctx.lastError != ESP_OK) {
+    return mapEspTransferErr(ctx.lastError,
+                             "I2C temporary device removal retry failed");
+  }
+  ctx.temporaryDevPendingRemoval = nullptr;
+  return INA228::Status::Ok();
+}
+
 }  // namespace
 
 Ina228IdfI2c& ina228IdfTransportContext() {
@@ -133,6 +146,10 @@ bool ina228IdfInitI2c(int sda, int scl, uint32_t freqHz, uint16_t timeoutMs,
 }
 
 INA228::Status ina228IdfDeinitI2c() {
+  INA228::Status pendingRemoval = removePendingTemporaryDevice(gTransport);
+  if (!pendingRemoval.ok()) {
+    return pendingRemoval;
+  }
   if (gTransport.dev != nullptr) {
     gTransport.lastError = i2c_master_bus_rm_device(gTransport.dev);
     if (gTransport.lastError != ESP_OK) {
@@ -237,6 +254,11 @@ INA228::Status ina228IdfI2cWriteReadAt(uint8_t addr, const uint8_t* txData,
     return INA228::Status::Error(INA228::Err::INVALID_PARAM, "Invalid I2C read buffer");
   }
 
+  INA228::Status pendingRemoval = removePendingTemporaryDevice(*ctx);
+  if (!pendingRemoval.ok()) {
+    return pendingRemoval;
+  }
+
   i2c_master_dev_handle_t tempDev = nullptr;
   i2c_master_dev_handle_t dev = nullptr;
   if (addr == ctx->address && ctx->dev != nullptr) {
@@ -257,10 +279,15 @@ INA228::Status ina228IdfI2cWriteReadAt(uint8_t addr, const uint8_t* txData,
       dev, txData, txLen, rxData, rxLen, clampTimeoutMs(timeoutMs));
   if (tempDev != nullptr) {
     const esp_err_t cleanupError = i2c_master_bus_rm_device(tempDev);
-    if (transferError == ESP_OK && cleanupError != ESP_OK) {
-      ctx->lastError = cleanupError;
-      return mapEspTransferErr(cleanupError,
-                               "I2C temporary device removal failed");
+    if (cleanupError != ESP_OK) {
+      // Retain ownership so the next scan transfer or deinit can retry cleanup
+      // instead of leaking an SDK-owned handle when the transfer also failed.
+      ctx->temporaryDevPendingRemoval = tempDev;
+      if (transferError == ESP_OK) {
+        ctx->lastError = cleanupError;
+        return mapEspTransferErr(cleanupError,
+                                 "I2C temporary device removal failed");
+      }
     }
   }
   ctx->lastError = transferError;

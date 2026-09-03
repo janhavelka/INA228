@@ -61,6 +61,8 @@
       ".gitignore",
       "AGENTS.md",
       "docs/CODE_AUDIT.md",
+      "docs/CODE_AUDIT_RESOLUTION.md",
+      "docs/CODE_AUDIT_FOLLOWUP.md",
       "CODEOWNERS",
       "CONTRIBUTING.md",
       "Doxyfile",

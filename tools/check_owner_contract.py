@@ -17,6 +17,7 @@ NON_CODE_RE = re.compile(
     r'/\*.*?\*/|//[^\n]*',
     re.DOTALL,
 )
+INCLUDE_RE = re.compile(r'(?m)^\s*#\s*include\s*[<"]([^">]+)[">]')
 
 
 def strip_non_code(text: str) -> str:
@@ -34,6 +35,8 @@ def validate_lexer() -> None:
         fail("internal lexer hid executable code following a raw string")
     if "vTaskDelay(1)" in strip_non_code(hidden):
         fail("internal lexer retained code-like text inside a raw string")
+    if INCLUDE_RE.findall('#include "Arduino.h"\n') != ["Arduino.h"]:
+        fail("internal include lexer missed a quoted framework include")
 
 
 def fail(message: str) -> None:
@@ -63,6 +66,7 @@ def main() -> int:
     arduino = read("examples/01_basic_bringup_cli/main.cpp")
     idf = read("examples/esp_idf/basic/main/main.cpp")
     platformio = read("platformio.ini")
+    version_script = read("scripts/generate_version.py")
 
     for token in (
         "Status bind(const Config& config)",
@@ -105,7 +109,13 @@ def main() -> int:
     ):
         require(implementation, token, "implementation")
 
-    core = strip_non_code(public + config + implementation)
+    core_source = public + config + implementation
+    for included in INCLUDE_RE.findall(core_source):
+        if included in ("Arduino.h", "Wire.h", "driver/i2c_master.h") or \
+                included.startswith("freertos/"):
+            fail(f"core contains forbidden framework include '{included}'")
+
+    core = strip_non_code(core_source)
     for token in (
         "Arduino.h",
         "Wire.h",
@@ -142,6 +152,9 @@ def main() -> int:
 
     require(platformio, "build_unflags =\n  -std=gnu++11", "PlatformIO")
     require(platformio, "-std=gnu++17", "PlatformIO")
+    require(version_script, "elif ENV is not None:", "version generator import guard")
+    if re.search(r"(?m)^main\(\[\]\)\s*$", version_script):
+        fail("version generator runs synchronization on ordinary import")
 
     version = str(json.loads(read("library.json"))["version"])
     require(read("include/INA228/Version.h"),

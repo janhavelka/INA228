@@ -1092,8 +1092,11 @@ void test_example_transport_validates_params_and_handles_write_read() {
 
   Wire._clearEndTransmissionResult();
   Wire._setRequestFromResult(1);
+  transport::resetTransferStats();
   st = transport::wireWriteRead(0x40, &tx, 1, &rx, 1, 50, &Wire);
   TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(1u, transport::transferStats().read);
+  TEST_ASSERT_EQUAL_UINT32(0u, transport::transferStats().write);
 
   // A short read re-probes the address to recover the phase that
   // endTransmission(false) cannot report on arduino-esp32. The device still
@@ -1102,35 +1105,46 @@ void test_example_transport_validates_params_and_handles_write_read() {
   Wire._setRequestFromResult(0);
   Wire._queueEndTransmissionResult(0);
   Wire._queueEndTransmissionResult(0);
+  transport::resetTransferStats();
   st = transport::wireWriteRead(0x40, &tx, 1, &rx, 1, 50, &Wire);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(1u, transport::transferStats().read);
+  TEST_ASSERT_EQUAL_UINT32(1u, transport::transferStats().write);
 
   // When the re-probe also NACKs, the absent device is reported precisely.
   Wire._clearEndTransmissionResult();
   Wire._queueEndTransmissionResult(0);
   Wire._queueEndTransmissionResult(2);
+  transport::resetTransferStats();
   st = transport::wireWriteRead(0x40, &tx, 1, &rx, 1, 50, &Wire);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(1u, transport::transferStats().read);
+  TEST_ASSERT_EQUAL_UINT32(1u, transport::transferStats().write);
   Wire._clearEndTransmissionResult();
   Wire._clearRequestFromOverride();
 
   const uint8_t twoBytes[] = {0x00, 0x55};
   Wire._setWriteResult(1);
   Wire._resetTransmissionObservations();
+  transport::resetTransferStats();
   st = transport::wireWrite(0x40, twoBytes, sizeof(twoBytes), 50, &Wire);
   TEST_ASSERT_TRUE(st.is(Err::I2C_ERROR));
   TEST_ASSERT_EQUAL_UINT32(2u, Wire._beginTransmissionCallCount());
   TEST_ASSERT_EQUAL_UINT32(1u, Wire._endTransmissionCallCount());
   TEST_ASSERT_EQUAL_UINT32(0u, Wire._lastEndTransmissionLength());
+  TEST_ASSERT_EQUAL_UINT32(2u, transport::transferStats().write);
 
   Wire._resetTransmissionObservations();
+  transport::resetTransferStats();
   st = transport::wireWriteRead(0x40, twoBytes, sizeof(twoBytes), &rx, 1, 50, &Wire);
   TEST_ASSERT_TRUE(st.is(Err::I2C_ERROR));
   TEST_ASSERT_EQUAL_UINT32(2u, Wire._beginTransmissionCallCount());
   TEST_ASSERT_EQUAL_UINT32(1u, Wire._endTransmissionCallCount());
   TEST_ASSERT_EQUAL_UINT32(0u, Wire._lastEndTransmissionLength());
+  TEST_ASSERT_EQUAL_UINT32(1u, transport::transferStats().read);
+  TEST_ASSERT_EQUAL_UINT32(1u, transport::transferStats().write);
   Wire._clearWriteOverride();
 
   uint8_t boundary[transport::WIRE_BUFFER_LIMIT + 1U] = {};
@@ -3728,6 +3742,43 @@ void test_verify_configuration_distinguishes_inconclusive_transport_from_disproo
   }
 }
 
+void test_verify_configuration_diag_failure_clears_pending_trigger_timing() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.bind(makeCooperativeConfig(bus)).ok());
+  (void)initializeCooperativeDevice(dev, bus);
+  TEST_ASSERT_TRUE(dev.triggerConversion(Mode::TRIG_ALL).inProgress());
+
+  SettingsSnapshot settings{};
+  TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+  TEST_ASSERT_TRUE(settings.triggeredConversionPending);
+
+  bus.readError = Status::Error(Err::I2C_TIMEOUT,
+                                "verification DIAG timeout", -59);
+  queueNthReadFailure(bus, cmd::REG_DIAG_ALRT,
+                      static_cast<uint8_t>(bus.readMatchCount[
+                          cmd::REG_DIAG_ALRT] + 1U));
+  uint32_t operationId = 0;
+  TEST_ASSERT_TRUE(dev.startVerifyConfiguration(0x4406U, operationId).ok());
+  TEST_ASSERT_TRUE(pollCooperativeToTerminal(dev, bus).is(Err::I2C_TIMEOUT));
+  JobResult result{};
+  TEST_ASSERT_TRUE(dev.takeJobResult(operationId, result).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobEffect::INDETERMINATE),
+                          static_cast<uint8_t>(result.job.effect));
+
+  TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+  TEST_ASSERT_FALSE(settings.triggeredConversionPending);
+  TEST_ASSERT_TRUE(settings.initialized);
+  TEST_ASSERT_TRUE(dev.isInitialized());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareState::SYNCHRONIZED),
+                          static_cast<uint8_t>(dev.hardwareState()));
+
+  bus.reg24[cmd::REG_VBUS] = 0x123450U;
+  float busVoltage = -1.0f;
+  TEST_ASSERT_TRUE(dev.readBusVoltage(busVoltage).ok());
+  TEST_ASSERT_TRUE(busVoltage > 0.0f);
+}
+
 void test_job_identity_exactly_once_and_rebinding_do_not_leak_context() {
   FakeBus busA;
   FakeBus busB;
@@ -5317,6 +5368,7 @@ int main() {
   RUN_TEST(test_verify_configuration_failure_injection_covers_every_transfer_stage);
   RUN_TEST(test_verify_configuration_is_read_only_bounded_and_generation_stable);
   RUN_TEST(test_verify_configuration_distinguishes_inconclusive_transport_from_disproof);
+  RUN_TEST(test_verify_configuration_diag_failure_clears_pending_trigger_timing);
   RUN_TEST(test_job_identity_exactly_once_and_rebinding_do_not_leak_context);
   RUN_TEST(test_cancel_and_timeout_are_bus_silent_with_precise_effects);
   RUN_TEST(test_triggered_sample_sequence_wait_budget_and_atomic_result);

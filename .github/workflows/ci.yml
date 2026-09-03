@@ -198,6 +198,7 @@ jobs:
             .pio/ \
             .vscode/ \
             docs/doxygen/ \
+            docs/CODE_AUDIT \
             docs/reference/vendor/ \
             docs/validation/hardware/ \
             scripts/ \

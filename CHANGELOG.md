@@ -9,75 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Triggered conversion completion no longer rewrites the cached MODE to
-  shutdown; the cache now continues to mirror `ADC_CONFIG.MODE`, while the
-  pending flag records whether the one-shot conversion is still active.
-- Instantaneous samples include a bounded whole-device timing margin before
-  the single CNVRF check, without adding transfers or retries.
+- Triggered completion no longer rewrites cached MODE to shutdown: MODE mirrors
+  `ADC_CONFIG`, while a separate flag records whether the one-shot is pending.
+  Owners must select shutdown or a continuous mode before starting an
+  instantaneous sample after a triggered conversion. A failed destructive DIAG
+  read during verification now clears uncertain trigger timing without
+  invalidating otherwise verified configuration.
+- Instantaneous samples include a bounded whole-device timing margin before the
+  single CNVRF check, with no new transfers or retries.
 - Read-only configuration verification preserves synchronized hardware and the
-  accumulator epoch after an inconclusive transport error, but still
-  invalidates them when identity, presence, MEMSTAT, or register readback
-  disproves the cached state.
-- MATHOF diagnostics now consistently state that the latch is cleared by a new
-  triggered conversion or accumulator reset.
-- A reset marks alert thresholds dirty before the reset write, covering the
-  ambiguous case where hardware applies the reset but the transport reports an
-  error. Raw `CONFIG.RST` writes now apply the same full reset-register,
-  threshold, accumulator, and trigger-timing bookkeeping. Internal invalidation
-  also preserves the first dirty cause.
-- Hardware APIs now distinguish an active cooperative owner from an unconsumed
-  terminal result in their `BUSY` diagnostic.
-- Arduino and native ESP-IDF `probe`, `stress_mix`, self-test, and transfer
-  accounting behavior are aligned. Bound-device probes preserve destructive
-  DIAG evidence, alert-limit decoding checks synchronized range/calibration,
-  and both CLIs expose cooperative read-only verification. Scan, probe,
-  self-test, and recovery commands now reject an active cooperative owner before
-  raw bus access or invalidation.
-- Arduino short-read fallback no longer invents a NACK phase when a follow-up
-  address probe succeeds, and partial TX buffers are discarded without sending
-  truncated payloads. ESP-IDF unknown error fallbacks map to generic I2C error;
-  ESP-IDF's documented invalid-response NACK remains phase-unknown. Native IDF
-  device selection, teardown, and temporary-handle cleanup failures are now
-  returned with their original SDK detail instead of being discarded.
-- Static guards now parse multiline IDF include directories, enforce exact
-  command/profile/stress/self-test parity, and lex comments and literals in
-  source order, including C++ raw strings. They scan every native-IDF source and
-  require exact ESP32-S2/S3 CI targets. HIL classification ignores historical
-  health only for `drv`; frame sequences stay unique even on a coarse monotonic
-  clock; and interrupted compressed soaks preserve all completed summary data
-  alongside an explicit failing abort row.
+  accumulator epoch after inconclusive transport errors, while identity,
+  presence, revision, MEMSTAT, and register mismatches still require verified
+  reinitialization.
+- MATHOF errors and public Doxygen consistently describe the latch, its
+  `MATH_OVERFLOW` result, and which DIAG_ALRT flags a destructive read does and
+  does not clear.
+- Hardware APIs distinguish an active cooperative owner from an unconsumed
+  terminal result in `BUSY` diagnostics.
 - Conversion and reset waits are no longer skipped when the monotonic clock
   advances during the blocking register write that arms them. The wait origin is
   sampled after the write returns, so it can be newer than the timestamp the
   caller sampled before `pollJob()`; the unsigned comparison underflowed and
   consumed the whole wait, letting an instantaneous-sample job read all five
   channels before the conversion completed and commit them as verified.
-- A successful cooperative software reset now sets
-  `SettingsSnapshot::thresholdsDirty`. `CONFIG.RST` reverts SOVL, SUVL, BOVL,
-  BUVL, TEMP_LIMIT and PWR_LIMIT to datasheet defaults and the driver never
-  replays them, so the owner previously had no signal that alert limits were
-  gone.
-- A reset job now records every register the reset restores in
-  `SettingsSnapshot::dirtyRegisterMask` instead of `CONFIG` alone.
-- `invalidateHardwareState()` no longer clears `dirtyRegisterMask` or overwrites
-  the first recorded `hardwareDirtyCause`.
-- A MEMSTAT checksum failure detected during an instantaneous-sample job now
-  marks the driver hardware-dirty instead of leaving `hardwareDirty` false.
-- `bind()` clears the sticky `thresholdsDirty` advisory, as documented.
-- `setAdcRange()` updates `CalibrationPlan::shuntFullScaleMicrovolts` on an
-  uncalibrated binding instead of reporting the previous range's full scale.
-- Failed alert-threshold writes now raise `thresholdsDirty`.
+- Software and raw `CONFIG.RST` resets mark all reset-restored registers and
+  alert thresholds dirty before an ambiguous write can return. Invalidation
+  preserves the first dirty cause and register set; MEMSTAT sample failures,
+  failed threshold writes, rebinding, and uncalibrated ADC-range changes now
+  maintain their documented dirty/calibration snapshots.
 - Examples: an operation-deadline timeout no longer wedges the CLI permanently in
   `BUSY`; `mode 1`–`mode 7` report `IN_PROGRESS` as acceptance rather than
   failure; the ESP-IDF poll loop no longer busy-spins at the default FreeRTOS
   tick rate; the Arduino transport re-probes the address on a short read so an
   absent device is reported as an address NACK instead of a generic I2C error;
   and a raw `wreg16` write invalidates cached hardware state.
-- Tooling: `--require-framed` now actually fails a run on a missing frame;
-  `drv` lifetime counters no longer classify every later step as `FAIL` after one
-  recovered transient; a serial error mid-run no longer discards the report and
-  transcript; and the CLI help-row guard can no longer be satisfied by a
-  different command with a matching prefix.
+- Example limit queries consistently warn when engineering-unit thresholds need
+  reapplication, and verbose stress mode reports failures on both platforms.
+  Arduino counts short-read probes and partial-buffer discard transactions as
+  real bus traffic. ESP-IDF retains failed temporary-device removals for bounded
+  cleanup retry instead of leaking handles when a transfer also fails.
+- Tooling wires `--require-framed` through `run_step`, ignores historical
+  counters in any driver-health block while retaining live consecutive failures,
+  emits report-induced NOT RUN rows in dry-run plans, and permits parser tests
+  and dry runs from source exports. Static guards scan every native-IDF source,
+  balance nested CMake calls, check owner guards per command, and detect quoted
+  framework includes in core code.
+- Importing `scripts/generate_version.py` from ordinary Python is read-only;
+  automatic synchronization is limited to PlatformIO pre-build use or explicit
+  commands. Internal audit records are excluded from exported packages and
+  guarded by CI.
 
 ### Removed
 

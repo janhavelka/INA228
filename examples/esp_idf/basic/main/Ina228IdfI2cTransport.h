@@ -13,6 +13,8 @@
 struct Ina228IdfI2c {
   i2c_master_bus_handle_t bus = nullptr;
   i2c_master_dev_handle_t dev = nullptr;
+  // Retained only after a bounded temporary-device cleanup failure.
+  i2c_master_dev_handle_t temporaryDevPendingRemoval = nullptr;
   uint8_t address = 0x40;
   uint32_t frequencyHz = 400000;
   esp_err_t lastError = ESP_OK;

@@ -555,11 +555,10 @@ FAILURE_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 
 
-# `drv` reports lifetime counters and the last recorded error. Those lines
-# describe history that has already been recovered from, so scanning them for
-# failure evidence would make every later `drv` step FAIL once any transient
-# error has ever occurred -- including every iteration of a long soak. The live
-# signal, "Consecutive failures: N", is deliberately left in place.
+# Driver-health blocks report lifetime counters and the last recorded error.
+# Those lines describe history that has already been recovered from, so scanning
+# them would make later `drv` or `recover` steps FAIL after any transient. The
+# live signal, "Consecutive failures: N", is deliberately left in place.
 HISTORICAL_HEALTH_RE = re.compile(
     r"^[ \t]*(?:Total failures|Last error|Error code|Error detail|Error msg)[ \t]*:.*$",
     re.MULTILINE,
@@ -579,7 +578,11 @@ def has_failure(text: str) -> bool:
 
 def classify_step(output: str, step: Step) -> str:
     text = clean_output(output)
-    scanned = HISTORICAL_HEALTH_RE.sub("", text) if step.command == "drv" else text
+    scanned = (
+        HISTORICAL_HEALTH_RE.sub("", text)
+        if "=== Driver Health ===" in text
+        else text
+    )
     expected_seen = all(token in text for token in step.expected)
     if step.expect_failure and expected_seen:
         unexpected_text = scanned
@@ -697,6 +700,14 @@ def parser_self_test() -> int:
          Step("drv", ("Driver Health", "State:", "Online:"), "case"), "PASS"),
         ("=== Driver Health ===\n  Consecutive failures: 1\n",
          Step("drv", ("Driver Health",), "case"), "FAIL"),
+        ("Status: OK\n=== Driver Health ===\n  State: READY\n"
+         "  Consecutive failures: 0\n  Total failures: 3\n"
+         "  Last error: I2C_TIMEOUT\n  Error code: I2C_TIMEOUT\n",
+         Step("recover", ("Status: OK", "Driver Health"), "case"), "PASS"),
+        ("Status: OK\n=== Driver Health ===\n  State: DEGRADED\n"
+         "  Consecutive failures: 2\n  Total failures: 3\n"
+         "  Last error: I2C_TIMEOUT\n  Error code: I2C_TIMEOUT\n",
+         Step("recover", ("Status: OK", "Driver Health"), "case"), "FAIL"),
         ("Last error: I2C_TIMEOUT\n",
          Step("settings", ("Last error",), "case"), "FAIL"),
         ("  Status: I2C_TIMEOUT (code=14, detail=-1)\n",
@@ -1475,13 +1486,6 @@ def main(argv: Sequence[str]) -> int:
         parser.error("max frame bytes must be positive")
     if args.require_framed and args.no_command_framing:
         parser.error("--require-framed cannot be combined with raw framing")
-    if (args.expected_commit != "any" and
-            re.fullmatch(r"[0-9a-fA-F]{12}", args.expected_commit) is None):
-        parser.error("--expected-commit must be a 12-digit Git SHA or 'any'")
-    if (args.expected_library_version != "any" and
-            re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", args.expected_library_version) is None):
-        parser.error("--expected-library-version must be SemVer or 'any'")
-
     soak_seconds = args.soak_seconds
     if args.soak_hours > 0.0:
         soak_seconds = args.soak_hours * 3600.0
@@ -1490,8 +1494,15 @@ def main(argv: Sequence[str]) -> int:
         return parser_self_test()
     if args.dry_run:
         print_plan(selected_steps(args.suite), soak_seconds,
-                   args.benchmark_count, args.include_not_run)
+                   args.benchmark_count,
+                   args.include_not_run or bool(args.report))
         return 0
+    if (args.expected_commit != "any" and
+            re.fullmatch(r"[0-9a-fA-F]{12}", args.expected_commit) is None):
+        parser.error("--expected-commit must be a 12-digit Git SHA or 'any'")
+    if (args.expected_library_version != "any" and
+            re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", args.expected_library_version) is None):
+        parser.error("--expected-library-version must be SemVer or 'any'")
     if not args.port:
         parser.error("--port is required unless --dry-run or --parser-self-test is used")
     return run_serial(args)

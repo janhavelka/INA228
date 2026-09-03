@@ -374,7 +374,7 @@ def main(args: List[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-
-# PlatformIO imports this module as a pre-build `extra_scripts` hook, so the
-# argument-less sync runs on import. main([]) can only return 0.
-main([])
+elif ENV is not None:
+    # PlatformIO imports this module as a pre-build `extra_scripts` hook.
+    # Ordinary Python imports must remain read-only.
+    main([])

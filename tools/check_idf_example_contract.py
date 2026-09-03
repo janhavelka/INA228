@@ -136,6 +136,90 @@ def require_token(text: str, token: str, label: str) -> None:
         fail(f"{label} missing token '{token}'")
 
 
+def balanced_contents(text: str, opening_index: int,
+                      opening: str, closing: str) -> str:
+    """Return balanced delimiter contents while ignoring literals/comments."""
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    line_comment = False
+    block_comment = False
+    index = opening_index
+    while index < len(text):
+        char = text[index]
+        following = text[index + 1] if index + 1 < len(text) else ""
+        if line_comment:
+            if char == "\n":
+                line_comment = False
+        elif block_comment:
+            if char == "*" and following == "/":
+                block_comment = False
+                index += 1
+        elif quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char == "/" and following == "/":
+            line_comment = True
+            index += 1
+        elif char == "/" and following == "*":
+            block_comment = True
+            index += 1
+        elif char in ('"', "'"):
+            quote = char
+        elif char == opening:
+            depth += 1
+        elif char == closing:
+            depth -= 1
+            if depth == 0:
+                return text[opening_index + 1:index]
+        index += 1
+    fail(f"unbalanced '{opening}{closing}' delimiters")
+    raise AssertionError("unreachable")
+
+
+def cmake_command_args(text: str, command: str) -> str:
+    match = re.search(rf"\b{re.escape(command)}\s*\(", text)
+    if match is None:
+        fail(f"CMake missing {command}()")
+    opening_index = text.find("(", match.start())
+    return balanced_contents(text, opening_index, "(", ")")
+
+
+def command_dispatch_block(cli: str, command: str) -> str:
+    patterns = (
+        rf'\bif\s*\([^{{;]*\bcmd\s*==\s*"{re.escape(command)}"[^{{;]*\)',
+        rf'\b(?:else\s+)?if\s*\([^{{;]*std::strcmp\(\s*cmd\s*,\s*'
+        rf'"{re.escape(command)}"\s*\)\s*==\s*0[^{{;]*\)',
+    )
+    match = None
+    for pattern in patterns:
+        match = re.search(pattern, cli)
+        if match is not None:
+            break
+    if match is None:
+        fail(f"missing exact dispatch block for '{command}'")
+    opening_index = cli.find("{", match.end())
+    if opening_index < 0:
+        fail(f"dispatch '{command}' has no body")
+    return balanced_contents(cli, opening_index, "{", "}")
+
+
+def function_block(source: str, function: str) -> str:
+    match = re.search(rf"\b{re.escape(function)}\s*\(", source)
+    if match is None:
+        fail(f"missing function '{function}'")
+    args_open = source.find("(", match.start())
+    balanced_contents(source, args_open, "(", ")")
+    body_open = source.find("{", args_open)
+    if body_open < 0:
+        fail(f"function '{function}' has no body")
+    return balanced_contents(source, body_open, "{", "}")
+
+
 def command_has_dispatch(cli: str, command: str) -> bool:
     patterns = [
         rf'cmd\s*==\s*"{re.escape(command)}"',
@@ -199,7 +283,15 @@ def config_value(text: str, field: str) -> int:
     return int(match.group(1), 0)
 
 
+def validate_parsers() -> None:
+    nested = "idf_component_register(SRCS helper(foo) INCLUDE_DIRS include)"
+    args = cmake_command_args(nested, "idf_component_register")
+    if "INCLUDE_DIRS include" not in args:
+        fail("balanced CMake parser truncated a nested argument")
+
+
 def main() -> int:
+    validate_parsers()
     for rel in REQUIRED_FILES:
         if not (ROOT / rel).exists():
             fail(f"missing {rel}")
@@ -229,15 +321,11 @@ def main() -> int:
         ROOT / "examples" / "esp_idf" / "basic" / "main" / "CMakeLists.txt"
     ).read_text(encoding="utf-8", errors="replace")
     cmake_code = re.sub(r"(?m)#.*$", "", cmake)
-    component = re.search(
-        r"\bidf_component_register\s*\((.*?)\)", cmake_code, re.DOTALL
-    )
-    if component is None:
-        fail("ESP-IDF main CMake missing idf_component_register()")
+    component_args = cmake_command_args(cmake_code, "idf_component_register")
     include_dirs = re.search(
         r"\bINCLUDE_DIRS\b(.*?)(?=\b(?:REQUIRES|PRIV_REQUIRES|EMBED_FILES|"
         r"EMBED_TXTFILES|WHOLE_ARCHIVE)\b|$)",
-        component.group(1),
+        component_args,
         re.DOTALL,
     )
     if include_dirs is None:
@@ -270,6 +358,8 @@ def main() -> int:
         "INA228::Status ina228IdfSelectDeviceAddress",
         "INA228::Status ina228IdfDeinitI2c",
         "I2C temporary device removal failed",
+        "temporaryDevPendingRemoval",
+        "removePendingTemporaryDevice",
         "single-owner",
     ):
         require_token(transport, token, "ESP-IDF transport")
@@ -293,6 +383,12 @@ def main() -> int:
         fail("native ESP-IDF sources must not include implementation .cpp files")
     if "examples/01_basic_bringup_cli" in idf_sources or "examples/common/" in idf_sources:
         fail("native ESP-IDF sources must not include Arduino example paths")
+    for token in FORBIDDEN_IDF_TOKENS:
+        if token in idf_sources:
+            fail(
+                "native ESP-IDF sources contain forbidden Arduino/facade "
+                f"token '{token}'"
+            )
 
     cli = (ROOT / "examples" / "01_basic_bringup_cli" / "main.cpp").read_text(
         encoding="utf-8", errors="replace"
@@ -310,9 +406,32 @@ def main() -> int:
             "Finish the cooperative operation before accessing the bus",
             f"{label} cooperative bus-owner guard",
         )
-        if text.count("diagnosticBusAccessStatus()") < 5:
-            fail(
-                f"{label} must guard probe, scan, selftest, and recover while a job is active"
+        guarded_helpers = {
+            "probe": "probeAddressRaw",
+            "selftest": "runSelfTest",
+        }
+        for command in ("scan", "scanina", "probe", "recover", "selftest"):
+            dispatch = command_dispatch_block(text, command)
+            helper = guarded_helpers.get(command)
+            if helper is None:
+                require_token(
+                    dispatch,
+                    "diagnosticBusAccessStatus()",
+                    f"{label} '{command}' owner guard",
+                )
+            else:
+                require_token(dispatch, f"{helper}(",
+                              f"{label} '{command}' guarded route")
+                require_token(
+                    function_block(text, helper),
+                    "diagnosticBusAccessStatus()",
+                    f"{label} '{command}' helper owner guard",
+                )
+        for function in ("printBusAlertLimit", "printTemperatureAlertLimit"):
+            require_token(
+                function_block(text, function),
+                "printThresholdReapplyWarning(settings)",
+                f"{label} {function} threshold advisory",
             )
     if "st.code == INA228::Err::I2C_NACK_ADDR || st.code == INA228::Err::I2C_ERROR" in idf_main:
         fail("native ESP-IDF scan must not hide generic I2C_ERROR as an empty address")
@@ -346,6 +465,14 @@ def main() -> int:
     idf_stress = string_array(idf_main, "STRESS_MIX_OPERATIONS")
     if arduino_stress != idf_stress:
         fail(f"stress_mix operations differ: arduino={arduino_stress} idf={idf_stress}")
+    for text, label in ((cli, "Arduino CLI"), (idf_main, "native ESP-IDF CLI")):
+        stress_body = function_block(text, "runStress")
+        if re.search(
+            r"if\s*\(verboseMode\)\s*\{[^{}]*failed:",
+            stress_body,
+            re.DOTALL,
+        ) is None:
+            fail(f"{label} verbose stress output must report failed samples")
     for text, label in ((cli, "Arduino CLI"), (idf_main, "native ESP-IDF CLI")):
         match = re.search(
             r"bool\s+stressMixStatusAccepted\([^)]*\)\s*\{(.*?)\}", text, re.DOTALL

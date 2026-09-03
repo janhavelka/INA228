@@ -1007,6 +1007,14 @@ void printDiag() {
   Serial.printf("  POL:       %s\n", log_bool_str(diag.pOL));
 }
 
+void printThresholdReapplyWarning(const INA228::SettingsSnapshot& settings,
+                                  bool indented = false) {
+  if (settings.thresholdsDirty) {
+    Serial.printf("%sWarning: engineering-unit thresholds may need reapplication.\n",
+                  indented ? "  " : "");
+  }
+}
+
 void printAlertLimits() {
   uint16_t sovl = 0;
   uint16_t suvl = 0;
@@ -1032,9 +1040,7 @@ void printAlertLimits() {
       device.hardwareState() == INA228::HardwareState::SYNCHRONIZED;
 
   Serial.println("=== Alert Limits ===");
-  if (settings.thresholdsDirty) {
-    Serial.println("  Warning: engineering-unit thresholds may need reapplication.");
-  }
+  printThresholdReapplyWarning(settings, true);
   if (shuntDecodeValid) {
     Serial.printf("  SOVL:      0x%04X  %.3f mV\n", sovl,
                   static_cast<double>(shuntLimitToMv(sovl, settings.adcRange)));
@@ -1065,9 +1071,7 @@ void printShuntAlertLimit(const char* label, uint8_t reg) {
 
   INA228::SettingsSnapshot settings{};
   (void)device.getSettings(settings);
-  if (settings.thresholdsDirty) {
-    Serial.println("Warning: engineering-unit thresholds may need reapplication.");
-  }
+  printThresholdReapplyWarning(settings);
   if (device.hardwareState() == INA228::HardwareState::SYNCHRONIZED) {
     Serial.printf("%s: 0x%04X  %.3f mV\n", label, raw,
                   static_cast<double>(shuntLimitToMv(raw, settings.adcRange)));
@@ -1084,6 +1088,9 @@ void printBusAlertLimit(const char* label, uint8_t reg) {
     return;
   }
 
+  INA228::SettingsSnapshot settings{};
+  (void)device.getSettings(settings);
+  printThresholdReapplyWarning(settings);
   Serial.printf("%s: 0x%04X  %.4f V\n",
                 label,
                 raw,
@@ -1098,6 +1105,9 @@ void printTemperatureAlertLimit() {
     return;
   }
 
+  INA228::SettingsSnapshot settings{};
+  (void)device.getSettings(settings);
+  printThresholdReapplyWarning(settings);
   Serial.printf("TEMP_LIMIT: 0x%04X  %.2f C\n",
                 raw,
                 static_cast<double>(tempLimitToC(raw)));
@@ -1113,9 +1123,7 @@ void printPowerAlertLimit() {
 
   INA228::SettingsSnapshot settings{};
   (void)device.getSettings(settings);
-  if (settings.thresholdsDirty) {
-    Serial.println("Warning: engineering-unit thresholds may need reapplication.");
-  }
+  printThresholdReapplyWarning(settings);
   if (settings.calibrated) {
     Serial.printf("PWR_LIMIT: 0x%04X  %.6f W\n", raw,
                   powerLimitToW(raw, settings.currentLsb));
