@@ -4,8 +4,14 @@ Reviewed tree: `a41646c` (`main`, in sync with `origin/main`).
 Reviewed against: [`CODE_AUDIT.md`](CODE_AUDIT.md) and its disposition record
 [`CODE_AUDIT_RESOLUTION.md`](CODE_AUDIT_RESOLUTION.md).
 
-This file is a task list for an AI coder. Delete it once every item is
-resolved or explicitly declined.
+Disposition updated 2026-09-09: Tasks 1–9 are resolved in commit
+`2cc5874a4991ff300deb88120a7c796fe46286b1`, verified by
+[CI run 33728387995](https://github.com/janhavelka/INA228/actions/runs/33728387995)
+on 2026-09-03 (127 native tests and 11 parser regression groups).
+The original findings below are retained as historical review input, not open
+work. See the Tasks 1–9 table and subsequent fresh-sweep dispositions in
+[`CODE_AUDIT_RESOLUTION.md`](CODE_AUDIT_RESOLUTION.md). The release-version
+decision remains separate; fixes currently remain under `[Unreleased]`.
 
 ---
 

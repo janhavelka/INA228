@@ -293,6 +293,18 @@ static Status buildLegacyCalibrationPlan(float shuntOhm, float maxCurrentA,
   candidate.representableCurrentMilliAmps = static_cast<uint32_t>(
       (static_cast<uint64_t>(candidate.effectiveCurrentLsbNanoAmps) *
        524287ULL) / 1000000ULL);
+  // Flag only a material shortfall. The legacy contract picks
+  // CURRENT_LSB = maxCurrentA / 2^19, so the requested maximum sits one LSB
+  // above the largest positive CURRENT code (2^19 - 1) by construction, and
+  // float storage of shuntOhm and CURRENT_LSB moves it a further fraction of an
+  // LSB. Two LSBs of slack absorb both. Without it every well-formed legacy
+  // binding is rejected, including the datasheet's own 16.2 mOhm / 10 A
+  // example; with it, a genuinely unrepresentable design (one whose quantized
+  // SHUNT_CAL cannot span the requested current at all) is still caught.
+  const double representableAmps = static_cast<double>(currentLsb) * 524287.0;
+  const double quantizationSlackAmps = static_cast<double>(currentLsb) * 2.0;
+  candidate.maxCurrentExceedsCurrentRegister =
+      static_cast<double>(maxCurrentA) > representableAmps + quantizationSlackAmps;
   candidate.quantized = candidate.selectedCurrentLsbNanoAmps !=
                         candidate.effectiveCurrentLsbNanoAmps;
   plan = candidate;
@@ -502,10 +514,13 @@ Status INA228::_validateBinding(const Config& config, CalibrationPlan& plan,
   if (!st.ok()) {
     return Status::Error(Err::INVALID_CONFIG, st.msg, st.detail);
   }
-  if (plan.clamped || plan.maxCurrentExceedsShuntRange) {
+  if (plan.clamped || plan.maxCurrentExceedsShuntRange ||
+      plan.maxCurrentExceedsCurrentRegister) {
     return Status::Error(Err::INVALID_CONFIG,
                          plan.clamped ? "Legacy SHUNT_CAL would clamp" :
-                                        "Legacy maximum current exceeds shunt range");
+                         plan.maxCurrentExceedsShuntRange ?
+                             "Legacy maximum current exceeds shunt range" :
+                             "Legacy CURRENT_LSB cannot represent maximum current");
   }
   return Status::Ok();
 }
@@ -626,6 +641,7 @@ void INA228::_clearCooperativeState() {
   _terminalResult = JobResult{};
   _terminalResultAvailable = false;
   _jobPollActive = false;
+  _legacySampleOperationId = 0;
   _jobHadSuccessfulWrite = false;
   _jobTouchedRegisterMask = 0;
   _jobIdentityScratch = DeviceIdentity{};
@@ -647,6 +663,11 @@ Status INA228::_startJob(JobKind kind, JobPhase firstPhase,
   }
   if (_cooperativeJobActive() || _terminalResultAvailable) {
     return Status::Error(Err::BUSY, "A job or unconsumed result already exists");
+  }
+  if (kind != JobKind::INITIALIZE && kind != JobKind::REINITIALIZE &&
+      kind != JobKind::RESET) {
+    Status allowed = _ensureNormalI2cAllowed();
+    if (!allowed.ok()) return allowed;
   }
 
   const uint32_t id = _nextOperationIdValue();
@@ -768,7 +789,8 @@ Status INA228::_failJob(const Status& status, bool failedSideEffectingTransfer,
   }
   const bool verificationJob =
       _jobSnapshot.kind == JobKind::VERIFY_CONFIGURATION;
-  const bool verificationDisproved = verificationJob &&
+  const bool verificationDisproved =
+      (verificationJob || _jobSnapshot.kind == JobKind::INSTANTANEOUS_SAMPLE) &&
       (status.code == Err::CONFIG_MISMATCH ||
        status.code == Err::DEVICE_NOT_FOUND ||
        status.code == Err::DEVICE_ID_MISMATCH ||
@@ -778,7 +800,7 @@ Status INA228::_failJob(const Status& status, bool failedSideEffectingTransfer,
   const bool invalidatesHardwareState = verificationJob
       ? verificationDisproved
       : (failedSideEffectingTransfer || _jobHadSuccessfulWrite || identityJob ||
-         _jobSnapshot.kind == JobKind::INSTANTANEOUS_SAMPLE);
+         verificationDisproved);
   if (invalidatesHardwareState) {
     _invalidateJobHardwareState(status);
   }
@@ -880,6 +902,8 @@ Status INA228::getJobLimits(JobKind kind, JobLimits& out) const {
       break;
     case JobKind::NONE:
       return Status::Error(Err::INVALID_PARAM, "NONE has no job limits");
+    default:
+      return Status::Error(Err::INVALID_PARAM, "Unknown job kind");
   }
   out = limits;
   return Status::Ok();
@@ -905,6 +929,9 @@ Status INA228::takeJobResult(uint32_t expectedOperationId, JobResult& out) {
   }
   out = _terminalResult;
   _terminalResultAvailable = false;
+  if (_legacySampleOperationId == expectedOperationId) {
+    _legacySampleOperationId = 0;
+  }
   _jobSnapshot.resultAvailable = false;
   _terminalResult = JobResult{};
   return Status::Ok();
@@ -967,6 +994,10 @@ Status INA228::acknowledgeDiagnosticEvents(uint16_t mask) {
   const uint16_t acknowledged = mask & DIAG_EVIDENCE_MASK;
   _diagnosticEvents.stickyEvents &= static_cast<uint16_t>(~acknowledged);
   _diagnosticEvents.newlyObservedEvents &= static_cast<uint16_t>(~acknowledged);
+  if (_diagAlertSnapshot.valid) {
+    _diagAlertSnapshot.raw &= static_cast<uint16_t>(~acknowledged);
+    parseDiagAlert(_diagAlertSnapshot.raw, _diagAlertSnapshot.diag);
+  }
   for (uint8_t bit = 0; bit < 16; ++bit) {
     if ((acknowledged & (static_cast<uint16_t>(1U) << bit)) != 0) {
       _diagnosticEvents.firstObservedAtMs[bit] = 0;
@@ -1748,17 +1779,18 @@ Status INA228::readPowerSampleRawStep(RawSample& rawOut, IntegerSample& integerO
     return Status::Error(Err::INVALID_CONFIG,
                          "Use startInstantaneousSample/pollJob without a time hook");
   }
-  uint32_t operationId = 0;
-  if (!_cooperativeJobActive()) {
+  uint32_t operationId = _legacySampleOperationId;
+  if (!_cooperativeJobActive() && !_terminalResultAvailable) {
     Status started = startInstantaneousSample(0, operationId);
     if (!started.ok()) return started;
+    _legacySampleOperationId = operationId;
   } else {
-    if (_jobSnapshot.kind != JobKind::INSTANTANEOUS_SAMPLE) {
-      return Status::Error(Err::BUSY, "Another cooperative job is active");
+    if (operationId == 0 || _jobSnapshot.operationId != operationId) {
+      return Status::Error(Err::BUSY, "Another owner holds the job or result");
     }
-    operationId = _jobSnapshot.operationId;
   }
-  Status polled = _pollJobImpl(_nowMs(), maxInstructions, true);
+  Status polled = _terminalResultAvailable ? _terminalResult.job.status
+      : _pollJobImpl(_nowMs(), maxInstructions, true);
   if (polled.inProgress()) return polled;
   JobResult result{};
   Status taken = takeJobResult(operationId, result);
@@ -2256,10 +2288,13 @@ Status INA228::setAdcRange(AdcRange range) {
     newShuntCal = newPlan.shuntCal;
     newClamped = newPlan.clamped;
     newMaxCurrentExceedsRange = newPlan.maxCurrentExceedsShuntRange;
-    if (newClamped || newMaxCurrentExceedsRange) {
+    if (newClamped || newMaxCurrentExceedsRange ||
+        newPlan.maxCurrentExceedsCurrentRegister) {
       return Status::Error(Err::INVALID_CONFIG,
                            newClamped ? "SHUNT_CAL would clamp" :
-                                        "Maximum current exceeds shunt range");
+                           newMaxCurrentExceedsRange ?
+                               "Maximum current exceeds shunt range" :
+                               "CURRENT_LSB cannot represent maximum current");
     }
   }
 
@@ -2323,11 +2358,14 @@ Status INA228::setCalibration(float shuntOhm, float maxCurrentA) {
   if (!st.ok()) {
     return st;
   }
-  if (newPlan.clamped || newPlan.maxCurrentExceedsShuntRange) {
+  if (newPlan.clamped || newPlan.maxCurrentExceedsShuntRange ||
+      newPlan.maxCurrentExceedsCurrentRegister) {
     return Status::Error(
         Err::INVALID_CONFIG,
         newPlan.clamped ? "SHUNT_CAL would clamp" :
-                          "Maximum current exceeds shunt range");
+        newPlan.maxCurrentExceedsShuntRange ?
+            "Maximum current exceeds shunt range" :
+            "CURRENT_LSB cannot represent maximum current");
   }
 
   st = writeReg16(cmd::REG_SHUNT_CAL, newPlan.shuntCal);
@@ -2689,11 +2727,10 @@ Status INA228::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
     return allowed;
   }
 
-  Status st = _i2cWriteReadRaw(txBuf, txLen, rxBuf, rxLen);
-  if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
-    return st;
+  if (_config.i2cWriteRead == nullptr) {
+    return Status::Error(Err::INVALID_CONFIG, "I2C write-read not set");
   }
-  return _updateHealth(st);
+  return _updateHealth(_i2cWriteReadRaw(txBuf, txLen, rxBuf, rxLen));
 }
 
 Status INA228::_i2cWriteTracked(const uint8_t* buf, size_t len) {
@@ -2705,11 +2742,10 @@ Status INA228::_i2cWriteTracked(const uint8_t* buf, size_t len) {
     return allowed;
   }
 
-  Status st = _i2cWriteRaw(buf, len);
-  if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
-    return st;
+  if (_config.i2cWrite == nullptr) {
+    return Status::Error(Err::INVALID_CONFIG, "I2C write not set");
   }
-  return _updateHealth(st);
+  return _updateHealth(_i2cWriteRaw(buf, len));
 }
 
 // ===========================================================================
@@ -2970,8 +3006,12 @@ Status INA228::_ensureNormalI2cAllowed() const {
   if (!_hardwareAccessAllowed()) {
     return _hardwareAccessBusyStatus();
   }
+  const bool recoveryJob = _jobPollActive &&
+      (_jobSnapshot.kind == JobKind::INITIALIZE ||
+       _jobSnapshot.kind == JobKind::REINITIALIZE ||
+       _jobSnapshot.kind == JobKind::RESET);
   if (_config.healthPolicy == HealthPolicy::LATCH_OFFLINE && _initialized &&
-      _driverState == DriverState::OFFLINE && !_jobPollActive) {
+      _driverState == DriverState::OFFLINE && !recoveryJob) {
     return Status::Error(Err::BUSY, "Driver is offline; call recover()");
   }
   return Status::Ok();

@@ -828,7 +828,8 @@ void test_begin_rejects_non_finite_calibration() {
   INA228::INA228 dev;
   Config cfg = makeConfig(bus);
   cfg.shuntResistanceOhm = std::numeric_limits<float>::quiet_NaN();
-  cfg.maxExpectedCurrentA = 10.0f;
+  // Keep SHUNT_CAL=4050 while leaving room below the rounded CURRENT limit.
+  cfg.maxExpectedCurrentA = 9.999f;
   Status st = dev.begin(cfg);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
                           static_cast<uint8_t>(st.code));
@@ -1006,7 +1007,8 @@ void test_recover_replay_failures_mark_dirty_for_each_write_position() {
     INA228::INA228 dev;
     Config cfg = makeConfig(bus);
     cfg.shuntResistanceOhm = 0.0162f;
-    cfg.maxExpectedCurrentA = 10.0f;
+    // Keep SHUNT_CAL=4050 while leaving room below the rounded CURRENT limit.
+    cfg.maxExpectedCurrentA = 9.999f;
     TEST_ASSERT_TRUE(dev.begin(cfg).ok());
     TEST_ASSERT_TRUE(dev.setAlertLatch(true).ok());
     TEST_ASSERT_TRUE(dev.writeRegister16(cmd::REG_SHUNT_TEMPCO, 0x1234).ok());
@@ -1780,7 +1782,7 @@ void test_legacy_range_change_uses_validated_calibration_plan_at_boundary() {
     FakeBus bus;
     INA228::INA228 dev;
     TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
-    TEST_ASSERT_TRUE(dev.setCalibration(0.015f, 2.7306f).ok());
+    TEST_ASSERT_TRUE(dev.setCalibration(0.015f, 2.7304f).ok());
     TEST_ASSERT_TRUE(dev.setAdcRange(AdcRange::MV_40_96).ok());
 
     CalibrationPlan plan{};
@@ -1796,7 +1798,7 @@ void test_legacy_range_change_uses_validated_calibration_plan_at_boundary() {
     FakeBus bus;
     INA228::INA228 dev;
     TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
-    TEST_ASSERT_TRUE(dev.setCalibration(0.015f, 2.7307f).ok());
+    TEST_ASSERT_TRUE(dev.setCalibration(0.015f, 2.732f).ok());
     CalibrationPlan oldPlan{};
     TEST_ASSERT_TRUE(dev.getCalibrationPlan(oldPlan).ok());
     const uint32_t transfersBefore = bus.readCalls + bus.writeCalls;
@@ -2156,7 +2158,8 @@ void test_read_integer_sample_uses_fixed_units_without_accumulators() {
   INA228::INA228 dev;
   Config cfg = makeConfig(bus);
   cfg.shuntResistanceOhm = 0.0162f;
-  cfg.maxExpectedCurrentA = 10.0f;
+  // Keep SHUNT_CAL=4050 while leaving room below the rounded CURRENT limit.
+  cfg.maxExpectedCurrentA = 9.999f;
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
   loadPositiveMeasurementRegisters(bus);
   bus.diagAlrt = cmd::DIAG_MEMSTAT;
@@ -2178,7 +2181,8 @@ void test_convert_raw_sample_uses_fixed_units_without_i2c() {
   INA228::INA228 dev;
   Config cfg = makeConfig(bus);
   cfg.shuntResistanceOhm = 0.0162f;
-  cfg.maxExpectedCurrentA = 10.0f;
+  // Keep SHUNT_CAL=4050 while leaving room below the rounded CURRENT limit.
+  cfg.maxExpectedCurrentA = 9.999f;
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   RawSample raw{};
@@ -2222,7 +2226,8 @@ void test_convert_raw_sample_reports_math_overflow_evidence() {
   INA228::INA228 dev;
   Config cfg = makeConfig(bus);
   cfg.shuntResistanceOhm = 0.0162f;
-  cfg.maxExpectedCurrentA = 10.0f;
+  // Keep SHUNT_CAL=4050 while leaving room below the rounded CURRENT limit.
+  cfg.maxExpectedCurrentA = 9.999f;
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   RawSample raw{};
@@ -2243,7 +2248,8 @@ void test_repeated_current_math_overflow_clears_after_accumulator_reset() {
   INA228::INA228 dev;
   Config cfg = makeConfig(bus);
   cfg.shuntResistanceOhm = 0.0162f;
-  cfg.maxExpectedCurrentA = 10.0f;
+  // Keep SHUNT_CAL=4050 while leaving room below the rounded CURRENT limit.
+  cfg.maxExpectedCurrentA = 9.999f;
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
   bus.reg24[cmd::REG_CURRENT] = 0x100000U;
   bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_MATHOF;
@@ -2264,7 +2270,8 @@ void test_20bit_edge_vectors_and_low_nibble_masking() {
   INA228::INA228 dev;
   Config cfg = makeConfig(bus);
   cfg.shuntResistanceOhm = 0.0162f;
-  cfg.maxExpectedCurrentA = 10.0f;
+  // Keep SHUNT_CAL=4050 while leaving room below the rounded CURRENT limit.
+  cfg.maxExpectedCurrentA = 9.999f;
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   struct Case {
@@ -2345,7 +2352,8 @@ void test_read_raw_sample_failures_leave_output_unchanged() {
     INA228::INA228 dev;
     Config cfg = makeConfig(bus);
     cfg.shuntResistanceOhm = 0.0162f;
-    cfg.maxExpectedCurrentA = 10.0f;
+    // Keep SHUNT_CAL=4050 while leaving room below the rounded CURRENT limit.
+    cfg.maxExpectedCurrentA = 9.999f;
     TEST_ASSERT_TRUE(dev.begin(cfg).ok());
     bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_CNVRF;
     dev.tick(bus.nowMs);
@@ -2435,7 +2443,8 @@ void test_datasheet_table_8_4_measurement_vectors_and_negative_shunt() {
   INA228::INA228 dev;
   Config cfg = makeConfig(bus);
   cfg.shuntResistanceOhm = 0.0162f;
-  cfg.maxExpectedCurrentA = 10.0f;
+  // Keep SHUNT_CAL=4050 while leaving room below the rounded CURRENT limit.
+  cfg.maxExpectedCurrentA = 9.999f;
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
   TEST_ASSERT_TRUE(dev.resetAccumulators().ok());
 
@@ -2497,7 +2506,7 @@ void test_set_calibration_invalid_params_do_not_touch_i2c_or_cache() {
   FakeBus bus;
   INA228::INA228 dev;
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
-  TEST_ASSERT_TRUE(dev.setCalibration(0.0162f, 10.0f).ok());
+  TEST_ASSERT_TRUE(dev.setCalibration(0.0162f, 9.999f).ok());
   const Config oldConfig = dev.getConfig();
   const float oldLsb = dev.currentLsb();
   const uint16_t oldReg = bus.reg16[cmd::REG_SHUNT_CAL];
@@ -2535,7 +2544,7 @@ void test_set_calibration_write_failure_preserves_committed_scale() {
   FakeBus bus;
   INA228::INA228 dev;
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
-  TEST_ASSERT_TRUE(dev.setCalibration(0.0162f, 10.0f).ok());
+  TEST_ASSERT_TRUE(dev.setCalibration(0.0162f, 9.999f).ok());
 
   const Config oldConfig = dev.getConfig();
   const float oldLsb = dev.currentLsb();
@@ -2667,7 +2676,8 @@ void test_threshold_setters_encode_exact_register_vectors() {
   INA228::INA228 dev;
   Config cfg = makeConfig(bus);
   cfg.shuntResistanceOhm = 0.0162f;
-  cfg.maxExpectedCurrentA = 10.0f;
+  // Keep SHUNT_CAL=4050 while leaving room below the rounded CURRENT limit.
+  cfg.maxExpectedCurrentA = 9.999f;
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   TEST_ASSERT_TRUE(dev.setShuntOvervoltageThreshold(0.010f).ok());
@@ -2718,7 +2728,8 @@ void test_threshold_write_failures_preserve_registers() {
     INA228::INA228 dev;
     Config cfg = makeConfig(bus);
     cfg.shuntResistanceOhm = 0.0162f;
-    cfg.maxExpectedCurrentA = 10.0f;
+    // Keep SHUNT_CAL=4050 while leaving room below the rounded CURRENT limit.
+    cfg.maxExpectedCurrentA = 9.999f;
     TEST_ASSERT_TRUE(dev.begin(cfg).ok());
     bus.reg16[c.reg] = c.resetValue;
     bus.writeError = Status::Error(Err::I2C_ERROR,
@@ -2986,6 +2997,194 @@ void test_register_access_after_end_does_not_touch_bus() {
 // Cooperative production-contract tests
 // ===========================================================================
 
+void test_sample_preflight_failure_preserves_epoch_unless_configuration_disproved() {
+  const uint8_t regs[] = {cmd::REG_CONFIG, cmd::REG_SHUNT_CAL};
+  const Err errors[] = {Err::I2C_TIMEOUT, Err::I2C_NACK_UNKNOWN_PHASE,
+                        Err::I2C_NACK_ADDR, Err::CONFIG_MISMATCH};
+  for (uint8_t reg : regs) {
+    for (Err error : errors) {
+      FakeBus bus;
+      bus.autoClearAccumulatorReset = true;
+      INA228::INA228 dev;
+      TEST_ASSERT_TRUE(dev.begin(makeCooperativeConfig(bus)).ok());
+      TEST_ASSERT_TRUE(dev.resetAccumulators().ok());
+      bus.reg40[cmd::REG_ENERGY] = 100U;
+      if (error == Err::CONFIG_MISMATCH) {
+        bus.reg16[reg] ^= reg == cmd::REG_CONFIG ? cmd::CONFIG_ADCRANGE : 1U;
+      } else {
+        bus.readError = Status::Error(error, "sample preflight failure", -55);
+        queueNthReadFailure(bus, reg, bus.readMatchCount[reg] + 1U);
+      }
+      uint32_t id = 0;
+      TEST_ASSERT_TRUE(dev.startInstantaneousSample(99, id).ok());
+      TEST_ASSERT_TRUE(pollCooperativeToTerminal(dev, bus).is(error));
+      JobResult result{};
+      TEST_ASSERT_TRUE(dev.takeJobResult(id, result).ok());
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobEffect::NONE),
+                              static_cast<uint8_t>(result.job.effect));
+      const bool preserved = error == Err::I2C_TIMEOUT ||
+                             error == Err::I2C_NACK_UNKNOWN_PHASE;
+      TEST_ASSERT_EQUAL(preserved, dev.isInitialized());
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(preserved
+          ? HardwareState::SYNCHRONIZED : HardwareState::RESYNC_REQUIRED),
+          static_cast<uint8_t>(dev.hardwareState()));
+      double energy = 0.0;
+      const Status st = dev.readEnergy(energy);
+      if (preserved) {
+        TEST_ASSERT_TRUE(st.ok());
+        TEST_ASSERT_TRUE(energy > 0.0);
+      } else {
+        TEST_ASSERT_TRUE(st.is(Err::NOT_INITIALIZED));
+      }
+    }
+  }
+}
+
+void test_latched_offline_blocks_runtime_jobs_until_verified_recovery() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeCooperativeConfig(bus);
+  cfg.healthPolicy = HealthPolicy::LATCH_OFFLINE;
+  cfg.offlineThreshold = 1;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  bus.readErrorRemaining = 1;
+  float value = 0.0f;
+  TEST_ASSERT_TRUE(dev.readBusVoltage(value).is(Err::I2C_ERROR));
+  const uint32_t before = bus.readCalls + bus.writeCalls;
+  uint32_t id = 123;
+  TEST_ASSERT_TRUE(dev.startVerifyConfiguration(1, id).is(Err::BUSY));
+  TEST_ASSERT_TRUE(dev.startInstantaneousSample(2, id).is(Err::BUSY));
+  TEST_ASSERT_TRUE(dev.startAccumulatorReset(3, id).is(Err::BUSY));
+  TEST_ASSERT_EQUAL_UINT32(123U, id);
+  TEST_ASSERT_EQUAL_UINT32(before, bus.readCalls + bus.writeCalls);
+  TEST_ASSERT_TRUE(dev.isInitialized());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_TRUE(dev.recover().ok());
+  TEST_ASSERT_EQUAL_UINT32(14U, bus.readCalls + bus.writeCalls - before);
+  TEST_ASSERT_TRUE(dev.startVerifyConfiguration(4, id).ok());
+  TEST_ASSERT_TRUE(pollCooperativeToTerminal(dev, bus).ok());
+  JobResult result{};
+  TEST_ASSERT_TRUE(dev.takeJobResult(id, result).ok());
+}
+
+void test_legacy_calibration_rejects_insufficient_current_register_range() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistanceOhm = 0.0005f;
+  cfg.maxExpectedCurrentA = 0.1f;
+  TEST_ASSERT_TRUE(dev.bind(cfg).is(Err::INVALID_CONFIG));
+  TEST_ASSERT_EQUAL_UINT32(0U, bus.readCalls + bus.writeCalls);
+  cfg.shuntResistanceOhm = 0.0f;
+  cfg.maxExpectedCurrentA = 0.0f;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  const uint32_t before = bus.readCalls + bus.writeCalls;
+  TEST_ASSERT_TRUE(dev.setCalibration(0.0005f, 0.1f).is(Err::INVALID_CONFIG));
+  TEST_ASSERT_EQUAL_UINT32(before, bus.readCalls + bus.writeCalls);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, dev.currentLsb());
+}
+
+void test_diagnostic_acknowledgement_clears_matching_snapshot_evidence() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeCooperativeConfig(bus)).ok());
+  bus.diagAlrt = cmd::DIAG_MEMSTAT | cmd::DIAG_SHNTOL | cmd::DIAG_TMPOL;
+  DiagAlert diag{};
+  TEST_ASSERT_TRUE(dev.readDiagAlert(diag).ok());
+  const uint32_t before = bus.readCalls + bus.writeCalls;
+  TEST_ASSERT_TRUE(dev.acknowledgeDiagnosticEvents(cmd::DIAG_SHNTOL).ok());
+  DiagAlertSnapshot snapshot{};
+  TEST_ASSERT_TRUE(dev.getDiagAlertSnapshot(snapshot).ok());
+  TEST_ASSERT_FALSE(snapshot.diag.shntOL);
+  TEST_ASSERT_TRUE(snapshot.diag.tmpOL);
+  TEST_ASSERT_TRUE(snapshot.diag.memstat);
+  TEST_ASSERT_EQUAL_UINT32(before, bus.readCalls + bus.writeCalls);
+  TEST_ASSERT_TRUE(dev.acknowledgeDiagnosticEvents(0xFFFF).ok());
+  TEST_ASSERT_TRUE(dev.getDiagAlertSnapshot(snapshot).ok());
+  TEST_ASSERT_FALSE(snapshot.diag.tmpOL);
+  // An active hardware condition must be observable again after acknowledgment.
+  TEST_ASSERT_TRUE(dev.readDiagAlert(diag).ok());
+  DiagnosticEvents events{};
+  TEST_ASSERT_TRUE(dev.getDiagnosticEvents(events).ok());
+  TEST_ASSERT_BITS_HIGH(cmd::DIAG_SHNTOL | cmd::DIAG_TMPOL, events.newlyObservedEvents);
+}
+
+void test_unknown_job_limits_reject_without_modifying_output() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.bind(makeCooperativeConfig(bus)).ok());
+  JobLimits limits{};
+  limits.maxTransfers = 123;
+  TEST_ASSERT_TRUE(dev.getJobLimits(static_cast<JobKind>(42), limits)
+                       .is(Err::INVALID_PARAM));
+  TEST_ASSERT_EQUAL_UINT16(123U, limits.maxTransfers);
+  TEST_ASSERT_EQUAL_UINT32(0U, bus.readCalls + bus.writeCalls);
+}
+
+void test_callback_validation_errors_are_tracked_for_reads_and_writes() {
+  const Err errors[] = {Err::INVALID_PARAM, Err::INVALID_CONFIG};
+  for (Err error : errors) {
+    for (bool write : {false, true}) {
+      FakeBus bus;
+      INA228::INA228 dev;
+      Config cfg = makeCooperativeConfig(bus);
+      cfg.healthPolicy = HealthPolicy::LATCH_OFFLINE;
+      cfg.offlineThreshold = 1;
+      TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+      const uint32_t failures = dev.totalFailures();
+      bus.readError = bus.writeError = Status::Error(error, "adapter error", -77);
+      bus.readErrorRemaining = bus.writeErrorRemaining = 1;
+      uint16_t raw = 0;
+      const Status st = write ? dev.writeRegister16(cmd::REG_SOVL, 123)
+                              : dev.readRegister16(cmd::REG_CONFIG, raw);
+      TEST_ASSERT_TRUE(st.is(error));
+      TEST_ASSERT_EQUAL_INT32(-77, st.detail);
+      TEST_ASSERT_EQUAL_UINT32(failures + 1U, dev.totalFailures());
+      TEST_ASSERT_EQUAL_UINT8(1U, dev.consecutiveFailures());
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+                              static_cast<uint8_t>(dev.state()));
+    }
+  }
+}
+
+void test_legacy_sample_step_does_not_adopt_owner_job() {
+  FakeBus bus;
+  INA228::INA228 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeCooperativeConfig(bus)).ok());
+  uint32_t id = 0;
+  TEST_ASSERT_TRUE(dev.startInstantaneousSample(99, id).ok());
+  RawSample raw = sentinelRawSample();
+  IntegerSample values{};
+  const uint32_t before = bus.readCalls + bus.writeCalls;
+  TEST_ASSERT_TRUE(dev.readPowerSampleRawStep(raw, values, 1).is(Err::BUSY));
+  TEST_ASSERT_EQUAL_UINT32(before, bus.readCalls + bus.writeCalls);
+  assertSentinelRawSample(raw);
+  TEST_ASSERT_TRUE(dev.pollJob(bus.nowMs, 3).inProgress());
+  bus.diagAlrt |= cmd::DIAG_CNVRF;
+  TEST_ASSERT_TRUE(pollCooperativeToTerminal(dev, bus).ok());
+  TEST_ASSERT_TRUE(dev.readPowerSampleRawStep(raw, values, 1).is(Err::BUSY));
+  JobResult result{};
+  TEST_ASSERT_TRUE(dev.takeJobResult(id, result).ok());
+  TEST_ASSERT_EQUAL_UINT32(99U, result.job.requestToken);
+  TEST_ASSERT_TRUE(result.hasInstantaneousSample);
+  TEST_ASSERT_TRUE(dev.takeJobResult(id, result).is(Err::RESULT_NOT_AVAILABLE));
+
+  // Its own job may be advanced by either API, but the result still has one owner.
+  TEST_ASSERT_TRUE(dev.readPowerSampleRawStep(raw, values, 3).inProgress());
+  bus.diagAlrt |= cmd::DIAG_CNVRF;
+  TEST_ASSERT_TRUE(pollCooperativeToTerminal(dev, bus).ok());
+  TEST_ASSERT_TRUE(dev.readPowerSampleRawStep(raw, values, 1).ok());
+  TEST_ASSERT_TRUE(dev.readPowerSampleRawStep(raw, values, 1).inProgress());
+  TEST_ASSERT_TRUE(dev.cancelJob().is(Err::CANCELLED));
+  TEST_ASSERT_TRUE(dev.readPowerSampleRawStep(raw, values, 1).is(Err::CANCELLED));
+  // Token zero is not an ownership marker; external zero-token jobs stay external.
+  TEST_ASSERT_TRUE(dev.startInstantaneousSample(0, id).ok());
+  TEST_ASSERT_TRUE(dev.readPowerSampleRawStep(raw, values, 1).is(Err::BUSY));
+  TEST_ASSERT_TRUE(dev.cancelJob().is(Err::CANCELLED));
+  TEST_ASSERT_TRUE(dev.takeJobResult(id, result).ok());
+}
+
 void test_cooperative_bind_is_zero_i2c_and_validates_contract() {
   FakeBus bus;
   INA228::INA228 dev;
@@ -3106,6 +3305,46 @@ void test_instantaneous_sample_wait_includes_bounded_device_timing_margin() {
     TEST_ASSERT_TRUE(dev.getJobLimits(JobKind::INSTANTANEOUS_SAMPLE, limits).ok());
     TEST_ASSERT_EQUAL_UINT32(13373000U, limits.maxWaitMicroseconds);
     TEST_ASSERT_EQUAL_UINT16(11U, limits.maxTransfers);
+  }
+}
+
+// The legacy contract derives CURRENT_LSB as maxExpectedCurrentA / 2^19, which
+// lands one LSB above the largest positive CURRENT code by construction. A
+// register-range check that does not allow for that quantization (and for float
+// storage of the shunt value) rejects every well-formed legacy binding,
+// including the datasheet's own worked example.
+void test_legacy_calibration_accepts_well_formed_bindings_and_rejects_real_shortfall() {
+  struct Case {
+    float shuntOhm;
+    float maxCurrentA;
+    bool expectOk;
+  };
+  static const Case cases[] = {
+      {0.0162f, 10.0f, true},   // datasheet worked example
+      {0.002f, 10.0f, true},
+      {0.010f, 5.0f, true},
+      {0.100f, 1.0f, true},
+      {0.001f, 50.0f, true},
+      {0.0005f, 0.100f, false}, // SHUNT_CAL quantizes to 1; spans only ~80 mA
+  };
+
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+    FakeBus bus;
+    INA228::INA228 dev;
+    Config cfg = makeConfig(bus);
+    cfg.shuntResistanceOhm = cases[i].shuntOhm;
+    cfg.maxExpectedCurrentA = cases[i].maxCurrentA;
+    const Status st = dev.begin(cfg);
+    if (cases[i].expectOk) {
+      TEST_ASSERT_TRUE_MESSAGE(st.ok(), "well-formed legacy binding was rejected");
+      CalibrationPlan plan{};
+      TEST_ASSERT_TRUE(dev.getCalibrationPlan(plan).ok());
+      TEST_ASSERT_FALSE(plan.maxCurrentExceedsCurrentRegister);
+      TEST_ASSERT_TRUE(plan.shuntCal > 0);
+    } else {
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                              static_cast<uint8_t>(st.code));
+    }
   }
 }
 
@@ -4312,7 +4551,8 @@ void test_sample_failure_injection_covers_every_transfer_stage_without_retry() {
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
                             static_cast<uint8_t>(st.code));
     TEST_ASSERT_EQUAL_UINT32(index + 1u, bus.transferHistoryCount);
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareState::RESYNC_REQUIRED),
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(index < 2U ? HardwareState::SYNCHRONIZED
+                                                        : HardwareState::RESYNC_REQUIRED),
                             static_cast<uint8_t>(dev.hardwareState()));
     JobResult result{};
     TEST_ASSERT_TRUE(dev.takeJobResult(operationId, result).ok());
@@ -5354,9 +5594,17 @@ int main() {
   RUN_TEST(test_public_register_access_preserves_transport_errors);
   RUN_TEST(test_register_access_after_end_does_not_touch_bus);
 
+  RUN_TEST(test_sample_preflight_failure_preserves_epoch_unless_configuration_disproved);
+  RUN_TEST(test_latched_offline_blocks_runtime_jobs_until_verified_recovery);
+  RUN_TEST(test_legacy_calibration_rejects_insufficient_current_register_range);
+  RUN_TEST(test_diagnostic_acknowledgement_clears_matching_snapshot_evidence);
+  RUN_TEST(test_unknown_job_limits_reject_without_modifying_output);
+  RUN_TEST(test_callback_validation_errors_are_tracked_for_reads_and_writes);
+  RUN_TEST(test_legacy_sample_step_does_not_adopt_owner_job);
   RUN_TEST(test_cooperative_bind_is_zero_i2c_and_validates_contract);
   RUN_TEST(test_cooperative_job_limits_are_exact_and_retry_free);
   RUN_TEST(test_instantaneous_sample_wait_includes_bounded_device_timing_margin);
+  RUN_TEST(test_legacy_calibration_accepts_well_formed_bindings_and_rejects_real_shortfall);
   RUN_TEST(test_fixed_calibration_plans_cover_tunnelmonitor_profile_and_strict_limits);
   RUN_TEST(test_identity_parser_splits_die_and_revision_strictly);
   RUN_TEST(test_cooperative_initialize_budget_order_forwarding_and_alert_determinism);

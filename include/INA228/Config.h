@@ -134,7 +134,8 @@ struct AlertConfig {
 /// @brief Transport health behavior.
 enum class HealthPolicy : uint8_t {
   PASSIVE = 0,       ///< Observe transfers but never suppress owner-requested I2C
-  LATCH_OFFLINE      ///< Legacy admission latch; recover() is required
+  /// Legacy latch; only initialize/reinitialize/reset jobs (including recover()) bypass it.
+  LATCH_OFFLINE
 };
 
 /// @brief Configuration for INA228 driver.
@@ -168,6 +169,9 @@ struct Config {
 
   // === Calibration ===
   CalibrationConfig calibration{};          ///< Preferred fixed-unit calibration contract
+  /// Legacy calibration also rejects plans whose rounded milliamp request
+  /// exceeds the integer plan's representable CURRENT limit. Use fixed-unit
+  /// calibration with an explicit unsafe-plan opt-in when intentionally needed.
   float shuntResistanceOhm = 0.0f;      ///< Installed Kelvin-sensed shunt value in ohms (0 = uncalibrated)
   float maxExpectedCurrentA = 0.0f;     ///< CURRENT_LSB design point in amps (0 = uncalibrated)
 

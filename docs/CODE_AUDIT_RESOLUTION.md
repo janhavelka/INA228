@@ -1,4 +1,8 @@
-# Code Audit Resolution — 2026-08-30
+# Code Audit Resolution — updated 2026-09-09
+
+The original review below is retained with its historical context. Tasks 1–9
+of the follow-up are committed in `2cc5874`; the final sections record the
+2026-09-09 fresh-sweep review and its local validation separately from CI/HIL.
 
 This report records the review and resolution of every finding in
 [`CODE_AUDIT.md`](CODE_AUDIT.md) against the current `main` codebase. The
@@ -129,7 +133,7 @@ was not exact. These corrections do not change the implemented policies.
   `docs/CODE_AUDIT.md`. The original audit is retained as review input and this
   file is its disposition record.
 
-## Validation
+## Historical validation — 2026-08-30
 
 Performed on Windows with the repository-prescribed PlatformIO wrapper. The
 shell had an unrelated `PLATFORMIO_CORE_DIR=C:\pio` override; clearing it for
@@ -154,3 +158,89 @@ Code-managed Core and installed platforms to be used.
 No physical INA228, high-voltage, fault-injection, ALERT-pin, or soak validation
 was performed in this review. Existing hardware-evidence limitations remain in
 force.
+
+## Follow-up Tasks 1–9 — resolved in `2cc5874`
+
+These dispositions close [`CODE_AUDIT_FOLLOWUP.md`](CODE_AUDIT_FOLLOWUP.md).
+The historical 126-test/nine-group table above describes the earlier tree.
+Commit `2cc5874a4991ff300deb88120a7c796fe46286b1` passed 127 native tests,
+11 standalone HIL parser groups, and all six CI jobs in
+[run 33728387995](https://github.com/janhavelka/INA228/actions/runs/33728387995)
+on 2026-09-03, including both native ESP-IDF targets.
+
+| Task | Committed disposition |
+| --- | --- |
+| 1 | Destructive verify-DIAG failure clears uncertain trigger timing without revoking synchronized configuration. |
+| 2 | HIL classification removes historical counters from health blocks, including `recover`, while retaining live failure evidence. |
+| 3 | The native-IDF guard scans all component C/C++ sources and headers. |
+| 4 | Standalone regressions exercise the actual `run_step` wiring for `--require-framed`. |
+| 5 | Public API and changelog document retained `TRIG_*` mode and instantaneous-sample base-mode preconditions. |
+| 6 | Package rules and CI exclude all `docs/CODE_AUDIT*` records. |
+| 7 | Local evidence was updated for the follow-up tree; the current validation page now also records its committed CI result. |
+| 8 | Unreleased changes were consolidated into one changelog section. |
+| 9 | Report-induced NOT RUN parity, quoted core includes, source-export dry runs, threshold advisories, retained IDF cleanup handles, Arduino transfer accounting, diagnostic Doxygen, balanced/per-command guards, read-only version-module import, and verbose stress reporting are resolved. |
+
+## Fresh sweep against `2cc5874` — 2026-09-09
+
+Reviewed the new report against a clean `2cc5874`, without reopening prior audit
+rounds. Seven new core regressions failed before production edits, with all 127
+existing tests still passing. Eight CLI regression groups then failed before
+example edits (28 platform/command subcase failures). The CLI harness compiles
+the actual extracted query, parser, calibration-print, and self-test reporting
+code; scheduling, prompt, usage, and initialized-local checks are source guards.
+Neither harness executes an ESP32 scheduler or INA228 silicon.
+
+| Finding | Review and correction |
+| --- | --- |
+| A1 | Valid. Preserve synchronization and the energy epoch after inconclusive CONFIG/SHUNT_CAL preflight errors. Semantic mismatch or definite absence still invalidates, as do ambiguous or partial later writes. Tests cover both preflight registers, timeout, unknown-phase NACK, address NACK, and mismatch. |
+| A2 | Valid. Reject runtime jobs at start while latched, before arming or touching the bus. Scope the poll exemption to initialize/reinitialize/reset, which verify identity and MEMSTAT. Recovery still uses its existing 14-transfer bound. |
+| A3 | Valid. Compute the legacy CURRENT exceedance flag and reject it in bind, `setCalibration`, and `setAdcRange`. This adopts the report's rounded-request versus integer-plan milliamp comparison without changing the legacy calibration formula. It is conservative near full scale: conversion fixtures now request 9.999 A instead of 10 A while retaining SHUNT_CAL=4050 and all measurement expectations. Range-boundary fixtures use representable nearby values. The reproduced 500 microohm/100 mA input is rejected without I2C. |
+| A4 | Valid cache/API inconsistency. Chose the report's acknowledgement alternative: clear the same event bits in both public caches, retaining unrelated flags and allowing later re-observation. Keep unacknowledged evidence through recovery/invalidation instead of silently erasing it; correct the snapshot documentation. `latestRaw` remains a historical last-read value. |
+| A5 | Valid. Unknown enum values return `INVALID_PARAM` and leave the caller's limits unchanged. |
+| A6 | Valid. Driver-side buffer/callback/admission validation remains outside health tracking; callback-returned validation codes are tracked for both reads and writes with original detail. |
+| A7 | Valid. Track the legacy convenience's operation ID privately. It returns BUSY for externally started jobs/results, including token zero, and resumes or consumes only its own operation. Tests also cover mixed polling and cancellation. |
+| B1 | Scheduling risk supported by source; the claimed watchdog reset is not hardware-confirmed. Replace bare yields with Arduino `delay(1)` and native-IDF `sleepMs(1)` (at least one RTOS tick). See Espressif's [watchdog guidance](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/wdts.html). No HIL performed. |
+| B2 | Valid. Both `cal` and `cfg` derive displayed ohms/amps from the fixed-unit contract when selected, retaining legacy display support. |
+| B3 | Valid. All seven configuration queries reject uninitialized state before accessing cached defaults and set HIL status through `printStatus`. |
+| B4 | Valid. Failed self-test checks set non-OK HIL status while preserving an already reported error. |
+| B5 | Valid. Arduino bus-init failure prints help and prompt before returning. |
+| B6 | Valid parser defect; current caller bounds limited its impact. Skip leading whitespace before rejecting a minus sign, retaining full-token/range checks and unchanged output on failure. |
+| B7 | Valid usage mismatch. Advertise and enforce readiness budgets 1–255. |
+| B8 | Valid defensive initialization issue, without a demonstrated read of the old indeterminate values. Initialize both Arduino mode locals to SHUTDOWN. |
+| C1 | Valid. Record the reviewed commit and verified September 3 CI run; distinguish this new local worktree from that committed evidence. |
+| C2 | Valid. Retain the historical follow-up with a completion banner and the Tasks 1–9 dispositions above. Historical counts stay dated; current counts are below. |
+| C3 | Maintainer release preference requested. No version was inferred or bumped; changes remain under Unreleased at 3.0.3. |
+
+No transfer bound was widened, no core retry was added, and no new production
+abstraction was introduced. The new CLI regression tool has a concrete CI caller.
+
+### Fresh-sweep local validation
+
+| Gate | Result on 2026-09-09 |
+| --- | --- |
+| Native Unity | PASS, 134/134; seven new regression groups failed first. |
+| CLI regressions | PASS, eight groups across both examples; failed first (28 subcases). |
+| Arduino ESP32-S3 | PASS; 24,872 B RAM, 399,440 B flash. |
+| Arduino ESP32-S2 | PASS; 51,844 B RAM, 409,649 B flash. |
+| Four static contracts | PASS: CLI, IDF example, core timing, owner. |
+| HIL parser and plan | PASS: parser self-test, 11 standalone parser groups, exhaustive dry-run including NOT RUN and 100-iteration benchmarks. No device execution. |
+| Version, Python, Doxygen | PASS: version consistency, byte-compilation, Doxygen warnings-as-errors. |
+| Package | PASS: 37 entries, required public files/README links, all exclusions, standalone C++17 compile. |
+| Diff whitespace | PASS. |
+| Remote CI | Existing `2cc5874` run 33728387995 is green; no remote run covers these uncommitted edits. CI now includes the new CLI regression command. |
+| Native ESP-IDF locally | NOT RUN: no `idf.py` or `IDF_PATH`. |
+| HIL | NOT RUN: hardware unavailable; B1 watchdog reproduction remains unconfirmed. |
+
+Windows build validation used `scripts/pio.cmd` and VS Code-managed Core
+6.1.19. An inherited `PLATFORMIO_CORE_DIR=C:\pio` referenced mismatched local
+packages. The default package installation also encountered disabled Windows
+long-path support and an incomplete compiler install. Validation succeeded
+using a temporary `P:` mapping to the existing user `.platformio` directory,
+reinstalling the pinned compiler bootstrap, and adding that pinned compiler's
+`tools/toolchain-xtensa-esp-elf/bin` directory to the build process PATH.
+The drive mapping was removed afterward; no repository dependency pin or
+machine-wide Windows setting was changed.
+
+Local logs are in `.pio/fresh-sweep-*.log` (ignored build artifacts), including
+before/after regression results and the final Arduino build. These local logs
+and this disposition record do not substitute for a clean-commit CI/HIL run.

@@ -148,6 +148,7 @@ jobs:
           python tools/run_i2c_hil.py --parser-self-test 2>&1 | tee static-contract-logs/hil_parser_self_test.log
           python tools/run_i2c_hil.py --dry-run --suite exhaustive --include-not-run --benchmark-count 100 2>&1 | tee static-contract-logs/hil_exhaustive_dry_run.log
           python tools/test_run_i2c_hil_parser.py 2>&1 | tee static-contract-logs/hil_parser_regression_tests.log
+          python tools/test_cli_regressions.py 2>&1 | tee static-contract-logs/cli_regression_tests.log
           python tools/check_cli_contract.py 2>&1 | tee static-contract-logs/check_cli_contract.log
           python tools/check_idf_example_contract.py 2>&1 | tee static-contract-logs/check_idf_example_contract.log
           python tools/check_core_timing_guard.py 2>&1 | tee static-contract-logs/check_core_timing_guard.log

@@ -163,7 +163,9 @@ bool splitTwoArgs(const char* input, char* first, size_t firstLen, char* second,
 }
 
 bool parseU32(const char* token, uint32_t& out) {
-  if (token == nullptr || token[0] == '\0' || token[0] == '-') {
+  if (token == nullptr) return false;
+  while (std::isspace(static_cast<unsigned char>(*token))) ++token;
+  if (token[0] == '\0' || token[0] == '-') {
     return false;
   }
   errno = 0;
@@ -1082,6 +1084,7 @@ void printTimingInfo() {
 }
 
 void printSettings() {
+  const INA228::Config& cfg = device.getConfig();
   INA228::SettingsSnapshot snap;
   INA228::Status st = device.getSettings(snap);
   if (!st.ok()) {
@@ -1107,7 +1110,10 @@ void printSettings() {
   std::printf("  Temp compensation: %s  tempco=%u ppm/degC\n",
               boolStr(snap.tempCompEnabled), snap.shuntTempCoeffPpmC);
   std::printf("  Calibration:       Rshunt=%.6f ohm  MaxCurrent=%.6f A\n",
-              snap.shuntResistanceOhm, snap.maxExpectedCurrentA);
+              cfg.calibration.mode != INA228::CalibrationMode::NONE
+                    ? cfg.calibration.shuntMicroOhms * 1.0e-6 : cfg.shuntResistanceOhm,
+              cfg.calibration.mode != INA228::CalibrationMode::NONE
+                    ? cfg.calibration.maxCurrentMilliAmps * 1.0e-3 : cfg.maxExpectedCurrentA);
   std::printf("  Calibration state: calibrated=%s clamped=%s rangeExceeded=%s\n",
               boolStr(snap.calibrated),
               boolStr(snap.calibrationClamped),
@@ -1163,7 +1169,7 @@ void printHelp() {
   printHelpItem("charge", "Read accumulated charge (continuous accumulation only)");
   printHelpItem("ready", "Check if conversion is ready");
   printHelpItem("trigger [mode]", "Trigger single-shot conversion (1-7)");
-  printHelpItem("ready_step <budget>", "Poll readiness with maxInstructions budget");
+  printHelpItem("ready_step <1..255>", "Poll readiness with maxInstructions budget");
   printHelpItem("sample_step <budget>", "Start/advance sample by at most budget I2C transfers");
 
   std::printf("\n%s[Configuration]%s\n", COLOR_GREEN, COLOR_RESET);
@@ -1287,7 +1293,8 @@ void runStress(uint32_t count) {
       }
     }
     printStressProgress(i + 1U, count, ok, fail);
-    taskYIELD();
+    // Block briefly so the idle task can service its watchdog.
+    sleepMs(1);
   }
   const uint32_t elapsed = nowMs() - start;
   HealthSnapshot after;
@@ -1364,7 +1371,8 @@ void runStressMix(uint32_t count) {
       lastFailure = st;
     }
     printStressProgress(i + 1U, count, ok, fail);
-    taskYIELD();
+    // Block briefly so the idle task can service its watchdog.
+    sleepMs(1);
   }
   const uint32_t elapsed = nowMs() - start;
   HealthSnapshot after;
@@ -1395,6 +1403,9 @@ void reportSelftest(SelftestStats& stats, const char* name, bool passed, const c
     ++stats.pass;
   } else {
     ++stats.fail;
+    if (hilCommandStatus == INA228::Err::OK) {
+      hilCommandStatus = INA228::Err::INVALID_PARAM;
+    }
   }
   std::printf("  [%s] %s", passed ? "PASS" : "FAIL", name);
   if (note != nullptr && note[0] != '\0') {
@@ -1655,8 +1666,8 @@ void processCommand(char* cmd) {
     if (st.ok()) std::printf("Conversion ready: %s\n", boolStr(ready)); else printStatus(st);
   } else if ((arg = argAfter(cmd, "ready_step ")) != nullptr) {
     uint32_t budget = 0;
-    if (!parseU32(arg, budget) || budget > 255U) {
-      rejectInvalidCommand("Usage: ready_step <0..255>");
+    if (!parseU32(arg, budget) || budget == 0U || budget > 255U) {
+      rejectInvalidCommand("Usage: ready_step <1..255>");
       return;
     }
     bool ready = false;
@@ -1704,6 +1715,11 @@ void processCommand(char* cmd) {
     // acceptance, not failure.
     if (!(st.ok() || st.inProgress())) printStatus(st);
   } else if (std::strcmp(cmd, "convtime") == 0) {
+    if (!device.isInitialized()) {
+      printStatus(INA228::Status::Error(INA228::Err::NOT_INITIALIZED,
+                                       "Initialize device before querying settings"));
+      return;
+    }
     const INA228::Config& cfg = device.getConfig();
     std::printf("Conversion times: VBUS=%s  VSHUNT=%s  TEMP=%s\n",
                 convTimeToStr(cfg.vbusConvTime),
@@ -1737,6 +1753,11 @@ void processCommand(char* cmd) {
     std::printf("setConvTime(%s, %s): %s\n", which, convTimeToStr(ct), errToStr(st.code));
     if (!st.ok()) printStatus(st);
   } else if (std::strcmp(cmd, "averaging") == 0) {
+    if (!device.isInitialized()) {
+      printStatus(INA228::Status::Error(INA228::Err::NOT_INITIALIZED,
+                                       "Initialize device before querying settings"));
+      return;
+    }
     std::printf("Averaging: %s samples\n", avgToStr(device.getConfig().averaging));
   } else if ((arg = argAfter(cmd, "averaging ")) != nullptr) {
     uint32_t value = 0;
@@ -1749,6 +1770,11 @@ void processCommand(char* cmd) {
                 errToStr(st.code));
     if (!st.ok()) printStatus(st);
   } else if (std::strcmp(cmd, "adcrange") == 0) {
+    if (!device.isInitialized()) {
+      printStatus(INA228::Status::Error(INA228::Err::NOT_INITIALIZED,
+                                       "Initialize device before querying settings"));
+      return;
+    }
     std::printf("ADC range: %s\n", adcRangeToStr(device.getConfig().adcRange));
   } else if ((arg = argAfter(cmd, "adcrange ")) != nullptr) {
     uint32_t value = 0;
@@ -1761,9 +1787,17 @@ void processCommand(char* cmd) {
                 errToStr(st.code));
     if (!st.ok()) printStatus(st);
   } else if (std::strcmp(cmd, "cal") == 0) {
+    if (!device.isInitialized()) {
+      printStatus(INA228::Status::Error(INA228::Err::NOT_INITIALIZED,
+                                       "Initialize device before querying settings"));
+      return;
+    }
     const INA228::Config& cfg = device.getConfig();
     std::printf("Calibration: Rshunt=%.6f ohm  MaxCurrent=%.6f A  CURRENT_LSB=%.9f A\n",
-                cfg.shuntResistanceOhm, cfg.maxExpectedCurrentA, device.currentLsb());
+                cfg.calibration.mode != INA228::CalibrationMode::NONE
+                    ? cfg.calibration.shuntMicroOhms * 1.0e-6 : cfg.shuntResistanceOhm,
+              cfg.calibration.mode != INA228::CalibrationMode::NONE
+                    ? cfg.calibration.maxCurrentMilliAmps * 1.0e-3 : cfg.maxExpectedCurrentA, device.currentLsb());
   } else if ((arg = argAfter(cmd, "cal ")) != nullptr) {
     char shuntText[24] = {};
     char currentText[24] = {};
@@ -1780,6 +1814,11 @@ void processCommand(char* cmd) {
     std::printf("setCalibration(%.6f, %.6f): %s\n", shuntOhm, maxCurrentA, errToStr(st.code));
     if (!st.ok()) printStatus(st);
   } else if (std::strcmp(cmd, "tempco") == 0) {
+    if (!device.isInitialized()) {
+      printStatus(INA228::Status::Error(INA228::Err::NOT_INITIALIZED,
+                                       "Initialize device before querying settings"));
+      return;
+    }
     std::printf("Shunt temp coeff: %u ppm/degC\n", device.getConfig().shuntTempCoeffPpmC);
   } else if ((arg = argAfter(cmd, "tempco ")) != nullptr) {
     uint32_t ppm = 0;
@@ -1791,6 +1830,11 @@ void processCommand(char* cmd) {
     std::printf("setShuntTempCoeff(%lu): %s\n", static_cast<unsigned long>(ppm), errToStr(st.code));
     if (!st.ok()) printStatus(st);
   } else if (std::strcmp(cmd, "tempcomp") == 0) {
+    if (!device.isInitialized()) {
+      printStatus(INA228::Status::Error(INA228::Err::NOT_INITIALIZED,
+                                       "Initialize device before querying settings"));
+      return;
+    }
     std::printf("Temperature compensation: %s\n", boolStr(device.getConfig().tempCompEnabled));
   } else if ((arg = argAfter(cmd, "tempcomp ")) != nullptr) {
     bool value = false;
@@ -1802,6 +1846,11 @@ void processCommand(char* cmd) {
     std::printf("setTempCompensation(%s): %s\n", boolStr(value), errToStr(st.code));
     if (!st.ok()) printStatus(st);
   } else if (std::strcmp(cmd, "delay") == 0) {
+    if (!device.isInitialized()) {
+      printStatus(INA228::Status::Error(INA228::Err::NOT_INITIALIZED,
+                                       "Initialize device before querying settings"));
+      return;
+    }
     const INA228::Config& cfg = device.getConfig();
     std::printf("Conversion delay: %u x 2 ms (%u ms)\n",
                 cfg.convDelayMs2, static_cast<unsigned>(cfg.convDelayMs2) * 2U);

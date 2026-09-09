@@ -237,7 +237,8 @@ enum class DriverState : uint8_t {
 
 `HealthPolicy::PASSIVE` is the default: health is observed but never suppresses
 owner-requested I2C. `HealthPolicy::LATCH_OFFLINE` is a legacy opt-in that
-latches OFFLINE and requires `recover()`.
+latches OFFLINE; only verified initialize/reinitialize/reset jobs (including
+`recover()`) bypass admission. Runtime cooperative jobs obey the same latch.
 
 ### Transport Wrapper Architecture
 
@@ -260,7 +261,8 @@ Transport callbacks (Config::i2cWrite, i2cWriteRead)
 - `readReg*()`/`writeReg*()` use TRACKED wrappers -> health updated automatically.
 - `probe()` uses RAW wrappers -> no health tracking (diagnostic only).
 - Health transitions are guarded by `_initialized`, and are not applied to
-  config/param validation or precondition errors.
+  driver-side config/param validation or precondition errors. Every error
+  returned by an invoked transport callback is tracked.
 
 ### Health Tracking Fields
 

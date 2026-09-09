@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Instantaneous sample preflight timeouts preserve verified configuration and
+  accumulator epochs; proven register/presence failures still require resync.
+- Runtime cooperative jobs obey `LATCH_OFFLINE`, and adapter-returned
+  `INVALID_PARAM`/`INVALID_CONFIG` errors count toward transport health.
+- Legacy calibration rejects CURRENT-register range shortfalls during bind,
+  calibration changes, and ADC-range changes, using the integer plan's
+  milliamp limit. Near-full-scale legacy inputs can now require adjustment.
+- Diagnostic acknowledgement clears matching preserved snapshot bits. Recovery
+  retains unacknowledged history; the public documentation now states that policy.
+- Unknown job kinds return `INVALID_PARAM` without changing the limits output.
+  The legacy sample-step API only consumes jobs it started itself.
+- Both CLIs display fixed-unit calibration correctly, reject configuration
+  queries before initialization, propagate self-test failures to HIL status,
+  reject whitespace-prefixed negative unsigned inputs, and document readiness
+  budgets starting at one. Arduino startup exposes its prompt after bus-init
+  failure, and mode locals are initialized.
+- Stress loops block briefly to allow idle-task scheduling. The watchdog risk
+  was reviewed from source; no new hardware reproduction or HIL run is claimed.
+- CI runs host-compiled CLI reporting/parser regressions and source contracts
+  alongside the existing native suite. Audit dispositions and validation
+  evidence now record the successful CI run on `2cc5874`.
 - Triggered completion no longer rewrites cached MODE to shutdown: MODE mirrors
   `ADC_CONFIG`, while a separate flag records whether the one-shot is pending.
   Owners must select shutdown or a continuous mode before starting an

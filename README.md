@@ -198,6 +198,11 @@ reports the selected/effective LSB, register value, quantization, clamping,
 current-register range, and shunt-voltage range. Unsafe plans fail unless the
 caller explicitly sets `allowUnsafePlan`.
 
+Legacy float calibration also rejects a rounded milliamp request above the
+integer plan's representable CURRENT limit, including during calibration/range
+changes. Near-full-scale inputs previously accepted may now need adjustment;
+the legacy SHUNT_CAL formula itself is unchanged.
+
 Current, power, energy, charge, and power-threshold conversions are unavailable
 without valid calibration. Changing range, calibration, mode/timing, triggered
 operation, temperature-compensation state, or resetting the device invalidates
@@ -219,13 +224,17 @@ operations use deterministic configuration writes rather than an unsafe
 read-modify-write. `DiagnosticEvents` retains latest, newly observed, sticky,
 and first-observed timestamps in fixed storage. Reading or acknowledging this
 cache is bus-silent. Acknowledgement does not claim that hardware has been read.
+It also clears matching event bits in `DiagAlertSnapshot`; unacknowledged
+evidence survives recovery and may be older than current hardware status.
 
 ## Health, ownership, and concurrency
 
 `HealthPolicy::PASSIVE` is the default. Transfer counters and last
 success/error information remain diagnostic, but the library does not suppress
 an owner-requested transaction or take recovery authority. The legacy
-`LATCH_OFFLINE` policy is available only for compatibility.
+`LATCH_OFFLINE` policy is available only for compatibility. It blocks runtime
+jobs as well as scalar I2C calls; verified initialize/reinitialize/reset jobs
+(including `recover()`) can pass the latch.
 
 Instances are neither thread-safe nor ISR-safe. The application must serialize
 all calls and must not re-enter an instance from its transport or time callback.

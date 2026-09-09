@@ -133,8 +133,10 @@ struct DiagAlert {
 /// @note This snapshot does not touch I2C and may be older than the current
 /// hardware state. It exists so internal CNVRF polling does not discard alert
 /// evidence when a DIAG_ALRT read clears hardware status bits. Clearable/event
-/// evidence is sticky until the next begin()/recover()/reset path replaces the
-/// driver state; alert config bits and MEMSTAT reflect the latest captured read.
+/// evidence is sticky until acknowledgeDiagnosticEvents() clears matching bits
+/// or bind()/begin()/end() clears the cache. Recovery and reset preserve evidence;
+/// accumulator reset clears accumulator/CNVRF evidence. Alert config bits and
+/// MEMSTAT reflect the latest captured read.
 struct DiagAlertSnapshot {
   bool valid = false;       ///< True after the driver captured a DIAG_ALRT value
   uint16_t raw = 0;         ///< Preserved DIAG_ALRT evidence plus latest config/MEMSTAT bits
@@ -409,7 +411,8 @@ public:
   Status getDiagnosticEvents(DiagnosticEvents& out) const;
 
   /// Acknowledge retained event bits without reading DIAG_ALRT.
-  /// Bits outside the acknowledgeable event mask are ignored.
+  /// Clears matching preserved bits in DiagAlertSnapshot as well. Bits outside
+  /// the acknowledgeable event mask are ignored; latestRaw remains historical.
   /// @param mask DIAG_ALRT event bits to remove from sticky evidence
   /// @return Status::Ok()
   Status acknowledgeDiagnosticEvents(uint16_t mask);
@@ -648,6 +651,8 @@ public:
   /// reads VSHUNT, VBUS, DIETEMP, CURRENT, and POWER only; ENERGY and CHARGE
   /// are intentionally excluded. Outputs are committed only when OK is
   /// returned and remain unchanged while IN_PROGRESS is returned.
+  /// Only resumes jobs started by this convenience. An owner-started job or
+  /// result returns BUSY and remains available to that owner.
   /// @deprecated Prefer startInstantaneousSample(), pollJob(), and
   /// takeJobResult() so the owner supplies time, cancellation, and identity.
   /// @param rawOut Receives the committed raw sample on completion
@@ -1320,6 +1325,7 @@ private:
   JobResult _terminalResult{};
   bool _terminalResultAvailable = false;
   uint32_t _nextOperationId = 1;
+  uint32_t _legacySampleOperationId = 0;
   bool _jobPollActive = false;
   bool _jobHadSuccessfulWrite = false;
   uint64_t _jobTouchedRegisterMask = 0;

@@ -3,6 +3,7 @@
 /// @note This is an EXAMPLE, not part of the library
 
 #include <cerrno>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
@@ -710,13 +711,15 @@ void printVersionInfo() {
 }
 
 bool parseU32(const String& token, uint32_t& out) {
-  if (token.length() == 0U || token.charAt(0) == '-') {
+  const char* text = token.c_str();
+  while (std::isspace(static_cast<unsigned char>(*text))) ++text;
+  if (*text == '\0' || *text == '-') {
     return false;
   }
   errno = 0;
   char* end = nullptr;
-  const unsigned long value = strtoul(token.c_str(), &end, 0);
-  if (end == token.c_str() || *end != '\0' || errno == ERANGE ||
+  const unsigned long value = strtoul(text, &end, 0);
+  if (end == text || *end != '\0' || errno == ERANGE ||
       value > std::numeric_limits<uint32_t>::max()) {
     return false;
   }
@@ -1147,6 +1150,7 @@ void printTimingInfo() {
 }
 
 void printSettings() {
+  const INA228::Config& cfg = device.getConfig();
   INA228::SettingsSnapshot snap;
   INA228::Status st = device.getSettings(snap);
   if (!st.ok()) {
@@ -1175,8 +1179,10 @@ void printSettings() {
                 log_bool_str(snap.tempCompEnabled),
                 snap.shuntTempCoeffPpmC);
   Serial.printf("  Calibration:      Rshunt=%.6f ohm  MaxCurrent=%.6f A\n",
-                snap.shuntResistanceOhm,
-                snap.maxExpectedCurrentA);
+                cfg.calibration.mode != INA228::CalibrationMode::NONE
+                    ? cfg.calibration.shuntMicroOhms * 1.0e-6 : cfg.shuntResistanceOhm,
+                cfg.calibration.mode != INA228::CalibrationMode::NONE
+                    ? cfg.calibration.maxCurrentMilliAmps * 1.0e-3 : cfg.maxExpectedCurrentA);
   Serial.printf("  Calibration state:calibrated=%s clamped=%s rangeExceeded=%s\n",
                 log_bool_str(snap.calibrated),
                 log_bool_str(snap.calibrationClamped),
@@ -1324,7 +1330,8 @@ void runStress(int count) {
         Serial.printf("  [%d] failed: %s\n", i, errToStr(st.code));
       }
     }
-    yield();
+    // Block briefly so the idle task can service its watchdog.
+    delay(1);
   }
 
   finishStressStats();
@@ -1402,7 +1409,8 @@ void runStressMix(int count) {
         Serial.printf("  [%d] %s failed: %s\n", i, stats[op].name, errToStr(st.code));
       }
     }
-    yield();
+    // Block briefly so the idle task can service its watchdog.
+    delay(1);
   }
 
   const uint32_t elapsed = millis() - startMs;
@@ -1479,6 +1487,9 @@ void runSelfTest() {
       result.pass++;
     } else {
       result.fail++;
+      if (hilCommandStatus == INA228::Err::OK) {
+        hilCommandStatus = INA228::Err::INVALID_PARAM;
+      }
     }
   };
   auto reportCheck = [&](const char* name, bool ok, const char* note) {
@@ -1628,7 +1639,7 @@ void printHelp() {
   cli::printHelpItem("charge", "Read accumulated charge (continuous accumulation only)");
   cli::printHelpItem("ready", "Check if conversion is ready");
   cli::printHelpItem("trigger [mode]", "Trigger single-shot conversion (1-7)");
-  cli::printHelpItem("ready_step <budget>", "Poll readiness with maxInstructions budget");
+  cli::printHelpItem("ready_step <1..255>", "Poll readiness with maxInstructions budget");
   cli::printHelpItem("sample_step <budget>", "Start/advance sample by at most budget I2C transfers");
 
   cli::printHelpSection("Configuration");
@@ -1899,8 +1910,8 @@ void processCommand(const String& cmdLine) {
 
   if (cmd.startsWith("ready_step ")) {
     uint32_t budget = 0;
-    if (!parseU32(cmd.substring(11), budget) || budget > 255u) {
-      rejectInvalidCommand("Usage: ready_step <0..255>");
+    if (!parseU32(cmd.substring(11), budget) || budget == 0U || budget > 255u) {
+      rejectInvalidCommand("Usage: ready_step <1..255>");
       return;
     }
     bool ready = false;
@@ -1952,7 +1963,7 @@ void processCommand(const String& cmdLine) {
 
   // --- Configuration ---
   if (cmd == "mode") {
-    Mode mode;
+    Mode mode = Mode::SHUTDOWN;
     auto st = device.getMode(mode);
     if (st.ok()) {
       Serial.printf("Mode: %s (%u)\n", modeToStr(mode), static_cast<unsigned>(mode));
@@ -2016,6 +2027,11 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "convtime") {
+    if (!device.isInitialized()) {
+      printStatus(INA228::Status::Error(INA228::Err::NOT_INITIALIZED,
+                                       "Initialize device before querying settings"));
+      return;
+    }
     const auto& cfg = device.getConfig();
     Serial.printf("Conversion times: VBUS=%s  VSHUNT=%s  TEMP=%s\n",
                   convTimeToStr(cfg.vbusConvTime),
@@ -2025,6 +2041,11 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "averaging") {
+    if (!device.isInitialized()) {
+      printStatus(INA228::Status::Error(INA228::Err::NOT_INITIALIZED,
+                                       "Initialize device before querying settings"));
+      return;
+    }
     Serial.printf("Averaging: %s samples\n", avgToStr(device.getConfig().averaging));
     return;
   }
@@ -2044,6 +2065,11 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "adcrange") {
+    if (!device.isInitialized()) {
+      printStatus(INA228::Status::Error(INA228::Err::NOT_INITIALIZED,
+                                       "Initialize device before querying settings"));
+      return;
+    }
     Serial.printf("ADC range: %s\n", adcRangeToStr(device.getConfig().adcRange));
     return;
   }
@@ -2063,10 +2089,17 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "cal") {
+    if (!device.isInitialized()) {
+      printStatus(INA228::Status::Error(INA228::Err::NOT_INITIALIZED,
+                                       "Initialize device before querying settings"));
+      return;
+    }
     const auto& cfg = device.getConfig();
     Serial.printf("Calibration: Rshunt=%.6f ohm  MaxCurrent=%.6f A  CURRENT_LSB=%.9f A\n",
-                  cfg.shuntResistanceOhm,
-                  cfg.maxExpectedCurrentA,
+                  cfg.calibration.mode != INA228::CalibrationMode::NONE
+                    ? cfg.calibration.shuntMicroOhms * 1.0e-6 : cfg.shuntResistanceOhm,
+                  cfg.calibration.mode != INA228::CalibrationMode::NONE
+                    ? cfg.calibration.maxCurrentMilliAmps * 1.0e-3 : cfg.maxExpectedCurrentA,
                   device.currentLsb());
     return;
   }
@@ -2101,6 +2134,11 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "tempco") {
+    if (!device.isInitialized()) {
+      printStatus(INA228::Status::Error(INA228::Err::NOT_INITIALIZED,
+                                       "Initialize device before querying settings"));
+      return;
+    }
     LOGI("Shunt temp coeff: %u ppm/degC", device.getConfig().shuntTempCoeffPpmC);
     return;
   }
@@ -2120,6 +2158,11 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "tempcomp") {
+    if (!device.isInitialized()) {
+      printStatus(INA228::Status::Error(INA228::Err::NOT_INITIALIZED,
+                                       "Initialize device before querying settings"));
+      return;
+    }
     LOGI("Temperature compensation: %s", log_bool_str(device.getConfig().tempCompEnabled));
     return;
   }
@@ -2139,6 +2182,11 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "delay") {
+    if (!device.isInitialized()) {
+      printStatus(INA228::Status::Error(INA228::Err::NOT_INITIALIZED,
+                                       "Initialize device before querying settings"));
+      return;
+    }
     const auto& cfg = device.getConfig();
     LOGI("Conversion delay: %u x 2 ms (%u ms)",
          cfg.convDelayMs2,
@@ -2606,7 +2654,7 @@ void processCommand(const String& cmdLine) {
   // --- Diagnostics ---
   if (cmd == "drv") {
     printDriverHealth();
-    Mode mode;
+    Mode mode = Mode::SHUTDOWN;
     if (device.getMode(mode).ok()) {
       Serial.printf("  Mode: %s\n", modeToStr(mode));
     }
@@ -2717,6 +2765,8 @@ void setup() {
 
   if (!board::initI2c()) {
     LOGE("Failed to initialize I2C");
+    printHelp();
+    cli::printPrompt();
     return;
   }
   LOGI("I2C initialized (SDA=%d, SCL=%d)", board::I2C_SDA, board::I2C_SCL);
