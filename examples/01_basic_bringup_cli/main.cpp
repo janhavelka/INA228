@@ -1756,7 +1756,8 @@ void processCommand(const String& cmdLine) {
                   seq.c_str(),
                   errToStr(frameStatus),
                   static_cast<unsigned long>(millis() - startMs));
-    Serial.flush();
+    // The host waits for the complete trailer line. Keep TX queued in order:
+    // native USB flush can discard queued bytes during a connection-state flap.
     return;
   }
 

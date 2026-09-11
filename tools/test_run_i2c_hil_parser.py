@@ -89,6 +89,39 @@ def assert_true(value: bool, label: str) -> None:
         raise AssertionError(label)
 
 
+def test_frame_completion_requires_a_full_terminated_trailer() -> None:
+    frame = b"HIL_BEGIN token=T1 seq=7\nStatus: OK\nHIL_END token=T1 seq=7 status=OK elapsed_ms=15\n"
+    assert_true(runner.hilrun_end_re("T1", "7").search(frame[:-1].decode()) is None,
+                "unterminated trailer must not match end of current serial chunk")
+
+    class ChunkedSerial:
+        def __init__(self, chunks):
+            self.chunks = [bytearray(chunk) for chunk in chunks if chunk]
+
+        @property
+        def in_waiting(self):
+            return len(self.chunks[0]) if self.chunks else 0
+
+        def read(self, size):
+            if not self.chunks:
+                return b""
+            result = bytes(self.chunks[0][:size])
+            del self.chunks[0][:size]
+            if not self.chunks[0]:
+                self.chunks.pop(0)
+            return result
+
+    # Includes the real HIL split between elapsed_ms=1 and the remaining 5+LF.
+    for split in range(frame.index(b"HIL_END"), len(frame)):
+        port = ChunkedSerial([frame[:split], frame[split:]])
+        captured = runner.read_until_hilrun_end(port, 0.1, "T1", "7")
+        assert_equal(captured, frame.decode(), "complete capture across trailer split")
+        payload, trailing, complete = runner.strip_hilrun_frame(captured, "T1", "7")
+        assert_true(complete, "split frame complete")
+        assert_true("frame_elapsed_ms=15" in payload, "full elapsed value retained")
+        assert_equal(trailing, "", "elapsed suffix is not unexplained trailing output")
+
+
 def test_expected_rejection_is_fail_closed() -> None:
     step = runner.Step(
         "mode bad", ("INVALID_PARAM",), "negative command", expect_failure=True
@@ -547,6 +580,7 @@ def test_aborted_fixed_plan_preserves_failure_and_skips_dependent_phases() -> No
 
 def main() -> int:
     tests = (
+        test_frame_completion_requires_a_full_terminated_trailer,
         test_expected_rejection_is_fail_closed,
         test_failure_runs_reset_on_every_non_failure,
         test_executed_command_count_excludes_not_run_rows,

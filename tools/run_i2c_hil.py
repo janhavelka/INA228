@@ -898,7 +898,7 @@ def read_response(serial_port, timeout_s: float, idle_s: float,
 def hilrun_end_re(token: str, seq: str) -> re.Pattern[str]:
     return re.compile(
         rf"(?m)^HIL_END token={re.escape(token)} seq={re.escape(seq)} "
-        r"status=([A-Z0-9_]+) elapsed_ms=([0-9]+)\s*$"
+        r"status=([A-Z0-9_]+) elapsed_ms=([0-9]+)[ \t]*\n"
     )
 
 

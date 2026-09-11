@@ -342,3 +342,9 @@ alert-pin, reset/power-control, or an unrequested eight-hour soak. Use
 In generated reports, `Commands executed` excludes these explicit `NOT RUN`
 rows; `Commands recorded in detail` includes them so fixture gaps remain
 visible.
+
+
+HIL hosts must wait for the complete newline-terminated `HIL_END` record;
+end-of-current-read is not end-of-line. The Arduino example leaves its output
+queued in order instead of forcing `Serial.flush()`: Arduino-ESP32 native USB
+can discard queued output when that call observes a transient disconnect.

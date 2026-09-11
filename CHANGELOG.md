@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HIL trailer parsing now requires the line terminator, so a serial chunk ending
+  inside a multi-digit elapsed time cannot complete the frame prematurely.
+- The Arduino HIL command no longer calls `Serial.flush` after its trailer.
+  Instrumented three-board HIL proved native USB's transient-disconnected flush
+  path discarded a 36-byte trailer suffix. Queued writes preserve order and the
+  host waits for the complete trailer; no framework buffering policy is changed.
+
 - Successful verified initialization/reinitialization/reset now clears the
   current transport-failure streak after owner invalidation. Previously READY
   could retain an old nonzero streak and the legacy offline latch could trip
