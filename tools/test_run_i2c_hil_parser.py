@@ -89,6 +89,40 @@ def assert_true(value: bool, label: str) -> None:
         raise AssertionError(label)
 
 
+def test_serial_commands_require_full_write_without_host_drain() -> None:
+    args = types.SimpleNamespace(
+        drain_before_command_s=0.0, frame_prefix="TEST", no_command_framing=False,
+        timeout_s=0.01, idle_s=0.001, prompt_token=">", max_frame_bytes=4096,
+        post_frame_drain_s=0.0, require_framed=True, health_after_command=False,
+    )
+    step = runner.Step("vbus", ("Vbus",), "sample")
+    for base, unframed in ((FakeFramedSerial, False), (FakeUnframedSerial, True)):
+        args.no_command_framing = unframed
+
+        class NoDrainSerial(base):
+            def flush(self):
+                raise AssertionError("serial flush is an unbounded host drain")
+
+        result = runner.run_step(NoDrainSerial(b"", "Vbus: 12 V\n>"), step, args)
+        assert_equal(result.verdict, "PASS", "full write without host drain")
+
+        class ShortWriteSerial(NoDrainSerial):
+            def write(self, data):
+                self.writes.append(data.decode("ascii"))
+                return len(data) - 1
+
+            def read(self, size):
+                raise AssertionError("must not await a response after a partial command")
+
+        port = ShortWriteSerial(b"", "")
+        try:
+            runner.run_step(port, step, args)
+            raise AssertionError("short command write was accepted")
+        except OSError as exc:
+            assert_true("short serial write" in str(exc), "specific write failure retained")
+        assert_equal(len(port.writes), 1, "no command retry after partial write")
+
+
 def test_frame_completion_requires_a_full_terminated_trailer() -> None:
     frame = b"HIL_BEGIN token=T1 seq=7\nStatus: OK\nHIL_END token=T1 seq=7 status=OK elapsed_ms=15\n"
     assert_true(runner.hilrun_end_re("T1", "7").search(frame[:-1].decode()) is None,
@@ -607,6 +641,7 @@ def test_aborted_fixed_plan_preserves_failure_and_skips_dependent_phases() -> No
 
 def main() -> int:
     tests = (
+        test_serial_commands_require_full_write_without_host_drain,
         test_frame_completion_requires_a_full_terminated_trailer,
         test_expected_rejection_is_fail_closed,
         test_failure_runs_reset_on_every_non_failure,

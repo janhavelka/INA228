@@ -986,16 +986,18 @@ def run_step(serial_port, step: Step, args: argparse.Namespace, *,
     trailer_verdict: str | None = None
     stale = drain_input(serial_port, args.drain_before_command_s)
     if args.no_command_framing:
-        serial_port.write((step.command + "\n").encode("ascii"))
-        serial_port.flush()
+        payload = (step.command + "\n").encode("ascii")
+        if serial_port.write(payload) != len(payload):
+            raise OSError("short serial write while sending command")
         output = read_response(serial_port, args.timeout_s, args.idle_s, args.prompt_token)
     else:
         token = f"{args.frame_prefix}{time.monotonic_ns()}"
         sequence = getattr(args, "frame_sequence", 0)
         args.frame_sequence = sequence + 1
         seq = str(sequence)
-        serial_port.write((f"hilrun {token} {seq} {step.command}\n").encode("ascii"))
-        serial_port.flush()
+        payload = f"hilrun {token} {seq} {step.command}\n".encode("ascii")
+        if serial_port.write(payload) != len(payload):
+            raise OSError("short serial write while sending framed command")
         frame_output = read_until_hilrun_end(serial_port, args.timeout_s, token, seq,
                                              args.max_frame_bytes)
         output, inline_trailer, frame_ok = strip_hilrun_frame(frame_output, token, seq)
