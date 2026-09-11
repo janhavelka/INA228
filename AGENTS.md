@@ -230,8 +230,8 @@ forces a verified reinitialization before those values are trusted again.
 enum class DriverState : uint8_t {
   UNINIT,    // bind()/begin() not completed, or end() called
   READY,     // Operational, consecutiveFailures == 0
-  DEGRADED,  // 1 <= consecutiveFailures < offlineThreshold
-  OFFLINE    // consecutiveFailures >= offlineThreshold
+  DEGRADED,  // Transport failures; PASSIVE does not escalate to OFFLINE
+  OFFLINE    // LATCH_OFFLINE only: consecutiveFailures >= offlineThreshold
 };
 ```
 

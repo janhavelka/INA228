@@ -236,6 +236,11 @@ an owner-requested transaction or take recovery authority. The legacy
 jobs as well as scalar I2C calls; verified initialize/reinitialize/reset jobs
 (including `recover()`) can pass the latch.
 
+Under `PASSIVE`, failed transfers report `DEGRADED` even after the configured
+offline threshold. Only `LATCH_OFFLINE` escalates to `OFFLINE`. Successful I/O
+or verified recovery returns `READY` and clears the current failure streak;
+recovery preserves lifetime counters and recorded error history.
+
 Instances are neither thread-safe nor ISR-safe. The application must serialize
 all calls and must not re-enter an instance from its transport or time callback.
 The core owns no task, queue, mutex, allocation, delay, retry loop, or bus.

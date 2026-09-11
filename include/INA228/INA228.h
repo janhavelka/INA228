@@ -21,8 +21,8 @@ namespace INA228 {
 enum class DriverState : uint8_t {
   UNINIT,    ///< begin() not called or end() called
   READY,     ///< Operational, consecutiveFailures == 0
-  DEGRADED,  ///< 1 <= consecutiveFailures < offlineThreshold
-  OFFLINE    ///< consecutiveFailures >= offlineThreshold
+  DEGRADED,  ///< Transport failures; PASSIVE stays here until successful I/O/recovery
+  OFFLINE    ///< LATCH_OFFLINE only: consecutiveFailures >= offlineThreshold
 };
 
 /// @brief Converted measurement result.
