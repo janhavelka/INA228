@@ -18,6 +18,17 @@
 
 namespace transport {
 
+/// Apply the supplied callback timeout to the selected ESP32 Wire instance.
+inline void applyWireTimeout(TwoWire* wire, uint32_t timeoutMs) {
+#if defined(ARDUINO_ARCH_ESP32)
+  const uint32_t clamped = timeoutMs > 0xFFFFU ? 0xFFFFU : timeoutMs;
+  wire->setTimeOut(static_cast<uint16_t>(clamped));
+#else
+  (void)wire;
+  (void)timeoutMs;
+#endif
+}
+
 /// Largest single-transfer payload the underlying Wire buffer can hold.
 #if defined(I2C_BUFFER_LENGTH)
 static constexpr size_t WIRE_BUFFER_LIMIT = I2C_BUFFER_LENGTH;
@@ -68,19 +79,18 @@ inline INA228::Status mapWireResult(uint8_t result, const char* context) {
  * @brief Wire-based I2C write implementation.
  *
  * Pass to Config::i2cWrite, and pass &Wire (or a custom TwoWire*) to i2cUser.
- * The timeout parameter is advisory; bus timeout ownership stays with initWire().
+ * The supplied timeout is applied to this callback on ESP32. Other platforms
+ * retain their externally configured bus timeout.
  *
  * @param addr I2C 7-bit address
  * @param data Data buffer to send
  * @param len Number of bytes
- * @param timeoutMs Timeout requested by the driver (advisory only)
+ * @param timeoutMs Timeout requested by the driver
  * @param user Pointer to TwoWire instance
  * @return Status OK on success, I2C error on failure
  */
 inline INA228::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
                                 uint32_t timeoutMs, void* user) {
-  (void)timeoutMs;
-
   TwoWire* wire = static_cast<TwoWire*>(user);
   if (wire == nullptr) {
     return INA228::Status::Error(INA228::Err::INVALID_CONFIG, "Wire instance is null");
@@ -95,6 +105,7 @@ inline INA228::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
   }
 
   transferStatsStorage().write++;
+  applyWireTimeout(wire, timeoutMs);
   wire->beginTransmission(addr);
   size_t written = wire->write(data, len);
   if (written != len) {
@@ -115,22 +126,21 @@ inline INA228::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
  * @brief Wire-based I2C write-read implementation.
  *
  * Pass to Config::i2cWriteRead, and pass &Wire (or a custom TwoWire*) to i2cUser.
- * The timeout parameter is advisory; bus timeout ownership stays with initWire().
+ * The supplied timeout is applied to this callback on ESP32. Other platforms
+ * retain their externally configured bus timeout.
  *
  * @param addr I2C 7-bit address
  * @param tx TX buffer to send
  * @param txLen TX length
  * @param rx RX buffer for readback
  * @param rxLen RX length
- * @param timeoutMs Timeout requested by the driver (advisory only)
+ * @param timeoutMs Timeout requested by the driver
  * @param user Pointer to TwoWire instance
  * @return Status OK on success, I2C error on failure
  */
 inline INA228::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLen,
                                     uint8_t* rx, size_t rxLen, uint32_t timeoutMs,
                                     void* user) {
-  (void)timeoutMs;
-
   TwoWire* wire = static_cast<TwoWire*>(user);
   if (wire == nullptr) {
     return INA228::Status::Error(INA228::Err::INVALID_CONFIG, "Wire instance is null");
@@ -146,6 +156,7 @@ inline INA228::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLe
   }
 
   transferStatsStorage().read++;
+  applyWireTimeout(wire, timeoutMs);
   wire->beginTransmission(addr);
   size_t written = wire->write(tx, txLen);
   if (written != txLen) {

@@ -1063,7 +1063,24 @@ void test_recover_replay_failures_mark_dirty_for_each_write_position() {
 // Transport helper tests (example layer)
 // ===========================================================================
 
-void test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init() {
+void test_example_transport_applies_read_timeout_to_supplied_bus() {
+  TwoWire selected;
+  selected.setTimeOut(77);
+  Wire.setTimeOut(88);
+  const uint8_t tx = 0;
+  uint8_t rx = 0;
+  TEST_ASSERT_TRUE(transport::wireWriteRead(0x40, &tx, 1, &rx, 1, 3, &selected).ok());
+  TEST_ASSERT_EQUAL_UINT32(3u, selected.getTimeOut());
+  TEST_ASSERT_EQUAL_UINT32(88u, Wire.getTimeOut());
+  TEST_ASSERT_TRUE(transport::wireWriteRead(0x40, &tx, 1, &rx, 1, 70000, &selected).ok());
+  TEST_ASSERT_EQUAL_UINT32(65535u, selected.getTimeOut());
+  TEST_ASSERT_TRUE(transport::wireWrite(0x40, &tx, 1, 2, &selected).ok());
+  TEST_ASSERT_EQUAL_UINT32(2u, selected.getTimeOut());
+  TEST_ASSERT_TRUE(transport::wireWrite(0x40, &tx, 1, 70000, &selected).ok());
+  TEST_ASSERT_EQUAL_UINT32(65535u, selected.getTimeOut());
+}
+
+void test_example_transport_maps_wire_errors_and_applies_callback_timeout() {
   Wire._clearEndTransmissionResult();
   Wire._clearRequestFromOverride();
 
@@ -1081,13 +1098,13 @@ void test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init() {
   Status st = transport::wireWrite(0x40, &byte, 1, 123, &Wire);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
                           static_cast<uint8_t>(st.code));
-  TEST_ASSERT_EQUAL_UINT32(77u, Wire.getTimeOut());
+  TEST_ASSERT_EQUAL_UINT32(123u, Wire.getTimeOut());
 
   Wire._setEndTransmissionResult(3);
   st = transport::wireWrite(0x40, &byte, 1, 999, &Wire);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
                           static_cast<uint8_t>(st.code));
-  TEST_ASSERT_EQUAL_UINT32(77u, Wire.getTimeOut());
+  TEST_ASSERT_EQUAL_UINT32(999u, Wire.getTimeOut());
 
   Wire._setEndTransmissionResult(4);
   st = transport::wireWrite(0x40, &byte, 1, 999, &Wire);
@@ -5568,7 +5585,8 @@ int main() {
   RUN_TEST(test_probe_preserves_transport_errors_without_health_tracking);
   RUN_TEST(test_recover_failure_updates_health_once);
   RUN_TEST(test_recover_replay_failures_mark_dirty_for_each_write_position);
-  RUN_TEST(test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init);
+  RUN_TEST(test_example_transport_applies_read_timeout_to_supplied_bus);
+  RUN_TEST(test_example_transport_maps_wire_errors_and_applies_callback_timeout);
   RUN_TEST(test_example_transport_validates_params_and_handles_write_read);
   RUN_TEST(test_conversion_time_estimate);
   RUN_TEST(test_conversion_time_with_averaging);
