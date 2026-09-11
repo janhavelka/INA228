@@ -13,7 +13,9 @@ SerialClass Serial;
 TwoWire Wire;
 
 #include "INA228/INA228.h"
+#define ARDUINO_ARCH_ESP32 1
 #include "common/I2cTransport.h"
+#undef ARDUINO_ARCH_ESP32
 
 static_assert(std::is_default_constructible<::INA228::INA228>::value,
               "INA228 must remain default constructible");
@@ -441,6 +443,35 @@ void queueNthReadFailure(FakeBus& bus, uint8_t reg, uint8_t nthMatch) {
 
 
 }  // namespace
+
+
+void test_example_bus_clear_releases_lines_and_bounds_stuck_clock() {
+  const int stuckPins[] = {-1, 8, 9};
+  for (int stuckPin : stuckPins) {
+    Wire = TwoWire{};
+    resetStubPins();
+    gMicrosValue = UINT32_MAX - 1000U;
+    const uint32_t startedUs = gMicrosValue;
+    if (stuckPin >= 0) gStubPins[stuckPin].heldLow = true;
+    TEST_ASSERT_EQUAL(stuckPin < 0, transport::initWire(8, 9, 400000, 3));
+    TEST_ASSERT_EQUAL_UINT32(stuckPin < 0 ? 1U : 0U, Wire._beginCalls);
+    TEST_ASSERT_EQUAL_UINT32(0, gActiveHighWrites);
+    TEST_ASSERT_EQUAL_INT(OUTPUT_OPEN_DRAIN, gStubPins[8].mode);
+    TEST_ASSERT_EQUAL_INT(OUTPUT_OPEN_DRAIN, gStubPins[9].mode);
+    TEST_ASSERT_EQUAL_INT(HIGH, gStubPins[8].level);
+    TEST_ASSERT_EQUAL_INT(HIGH, gStubPins[9].level);
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32(3000U, gMicrosValue - startedUs);
+  }
+  Wire = TwoWire{};
+  resetStubPins();
+  gMicrosValue = 0;
+  gStubPins[9].lowReadsRemaining = 2;
+  TEST_ASSERT_TRUE(transport::initWire(8, 9, 400000, 3));
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(2000U, gMicrosValue);
+  TEST_ASSERT_EQUAL_UINT32(0, gActiveHighWrites);
+  resetStubPins();
+  Wire = TwoWire{};
+}
 
 void setUp() {
   setMillis(0);
@@ -5508,6 +5539,7 @@ void test_uncalibrated_adc_range_change_updates_plan_full_scale() {
 
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_example_bus_clear_releases_lines_and_bounds_stuck_clock);
   RUN_TEST(test_status_ok);
   RUN_TEST(test_status_error);
   RUN_TEST(test_status_in_progress);

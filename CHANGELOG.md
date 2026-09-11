@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Example startup bus clear now releases SDA/SCL with open-drain outputs,
+  bounds all SCL-release waits with one timeout, and rejects either held-low
+  line before Wire initialization. Native GPIO regressions reproduce the old
+  active-HIGH drive and verify held lines, transient stretch, and clock wrap.
+
 - The HIL stop flag now covers fixed plans and benchmarks as well as the soak.
   Framing loss always stops further commands; skipped dependent phases remain
   explicit `NOT RUN` evidence and the failing response stays in the live log.
