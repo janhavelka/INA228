@@ -10,8 +10,10 @@ public:
   // arduino-esp32's TwoWire::begin(sda, scl) returns bool; match it so the
   // example transport's error handling compiles the same way under test.
   uint32_t _beginCalls = 0;
-  bool begin(int sda = -1, int scl = -1) { (void)sda; (void)scl; ++_beginCalls; return _beginResult; }
-  bool setClock(uint32_t freq) { (void)freq; return true; }
+  uint32_t _beginFrequency = 0;
+  uint32_t _clockCalls = 0;
+  bool begin(int sda = -1, int scl = -1, uint32_t frequency = 0) { (void)sda; (void)scl; ++_beginCalls; _beginFrequency = frequency; return _beginResult; }
+  bool setClock(uint32_t freq) { (void)freq; ++_clockCalls; return true; }
   void setTimeOut(uint32_t timeoutMs) { _timeoutMs = timeoutMs; }
   uint32_t getTimeOut() const { return _timeoutMs; }
   
