@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HIL health capture now requires every complete documented status/counter/time
+  line and error details when present. A reproduced USB byte deletion could
+  previously remove success-rate/last-success evidence while the smaller
+  required-field subset still passed; the captured failing response is covered
+  by a host regression.
+
 - HIL trailer parsing now requires the line terminator, so a serial chunk ending
   inside a multi-digit elapsed time cannot complete the frame prematurely.
 - The Arduino HIL command no longer calls `Serial.flush` after its trailer.

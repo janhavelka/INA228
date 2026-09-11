@@ -466,8 +466,10 @@ def test_health_capture_retains_errors_and_requires_complete_evidence() -> None:
         require_framed=True, health_after_command=True,
     )
     health = (
-        "=== Driver Health ===\nState: DEGRADED\nOnline: true\n"
+        "=== Driver Health ===\nConfigured address: 0x41\nState: DEGRADED\nOnline: true\n"
         "Consecutive failures: 1\nTotal success: 4\nTotal failures: 1\n"
+        "Success rate: 80.0%\nLast OK: 2 ms ago (at 10 ms)\n"
+        "Last error: 1 ms ago (at 11 ms)\n"
         "Error code: I2C_NACK_ADDR\nError detail: 2\n"
     )
 
@@ -499,6 +501,31 @@ def test_health_capture_retains_errors_and_requires_complete_evidence() -> None:
         assert_true("command_utc=" in result.output, "UTC timestamp retained")
         if snapshot is not None:
             assert_true(snapshot.strip() in result.output, "cached error history retained")
+
+
+def test_health_capture_rejects_deleted_or_partial_lines() -> None:
+    health = (
+        "=== Driver Health ===\n  Configured address: 0x41\n  State: READY\n"
+        "  Online: yes\n  Consecutive failures: 0\n  Total success: 722223\n"
+        "  Total failures: 0\n  Success rate: 100.0%\n"
+        "  Last OK: 2 ms ago (at 444584 ms)\n  Last error: never\n"
+        "[runner] frame_status=OK frame_elapsed_ms=1\n"
+    )
+    step = runner.Step("drv", ("Driver Health",), "snapshot", "health-snapshot")
+    # Actual COM13 HIL deletion preserved all the old validator's fields.
+    corrupted = health.replace(
+        "  Success rate: 100.0%\n  Last OK: 2 ms ago (at 444584 ms)\n", "584 ms)\n")
+    assert_equal(runner.classify_step(corrupted, step), "FAIL",
+                 "deleted health details cannot pass capture validation")
+    assert_equal(runner.classify_step(health, step), "PASS", "complete health")
+    for line in health.splitlines(keepends=True):
+        assert_equal(runner.classify_step(health.replace(line, ""), step), "FAIL",
+                     "missing health line: " + line.strip())
+    for broken in ("  Last OK: 2 ms ago (at\n", "  Last error: nev\n"):
+        label = broken.split(":", 1)[0] + ":"
+        original = next(line for line in health.splitlines(keepends=True) if line.startswith(label))
+        assert_equal(runner.classify_step(health.replace(original, broken), step), "FAIL",
+                     "partial health line")
 
 
 def test_health_capture_does_not_follow_lost_framing_or_reset() -> None:
@@ -593,6 +620,7 @@ def main() -> int:
         test_repeated_clock_tokens_still_get_unique_sequences,
         test_interrupted_compressed_soak_preserves_unstored_summary,
         test_health_capture_retains_errors_and_requires_complete_evidence,
+        test_health_capture_rejects_deleted_or_partial_lines,
         test_health_capture_does_not_follow_lost_framing_or_reset,
         test_aborted_fixed_plan_preserves_failure_and_skips_dependent_phases,
     )

@@ -583,14 +583,27 @@ def classify_step(output: str, step: Step) -> str:
     if step.suite == "health-snapshot":
         # Cached history is evidence, including expected negative-path errors.
         # This validates capture completeness, not device readiness.
-        if ("=== Driver Health ===" not in text or
-                not re.search(r"\bState:\s*(UNINIT|READY|DEGRADED|OFFLINE)\b", text)):
-            return "FAIL"
-        for label in ("Consecutive failures", "Total success", "Total failures"):
-            if not re.search(rf"\b{label}:\s*\d+\b", text):
+        required_lines = (
+            r"=== Driver Health ===",
+            r"Configured address: 0x[0-9A-Fa-f]{2}",
+            r"State: (?:UNINIT|READY|DEGRADED|OFFLINE)",
+            r"Online: (?i:yes|no|true|false)",
+            r"Consecutive failures: \d+",
+            r"Total success: \d+",
+            r"Total failures: \d+",
+            r"Success rate: \d+\.\d+%",
+            r"Last OK: (?:never|\d+ ms ago \(at \d+ ms\))",
+            r"Last error: (?:never|\d+ ms ago \(at \d+ ms\))",
+            r"\[runner\] frame_status=OK frame_elapsed_ms=\d+",
+        )
+        for pattern in required_lines:
+            if len(re.findall(rf"(?m)^[ \t]*{pattern}[ \t]*$", text)) != 1:
                 return "FAIL"
-        return "PASS" if re.search(
-            r"(?m)^\[runner\] frame_status=OK frame_elapsed_ms=\d+$", text) else "FAIL"
+        if (re.search(r"(?m)^[ \t]*Last error: \d", text) or "Error code:" in text):
+            for pattern in (r"Error code: [A-Z0-9_]+", r"Error detail: -?\d+"):
+                if len(re.findall(rf"(?m)^[ \t]*{pattern}[ \t]*$", text)) != 1:
+                    return "FAIL"
+        return "PASS"
     scanned = (
         HISTORICAL_HEALTH_RE.sub("", text)
         if "=== Driver Health ===" in text
