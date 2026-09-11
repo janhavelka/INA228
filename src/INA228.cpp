@@ -1177,6 +1177,9 @@ Status INA228::_pollJobTransfer(uint32_t nowMs) {
       if (!st.ok()) return _failJob(st, false, nowMs);
       _hardwareState = HardwareState::SYNCHRONIZED;
       _initialized = true;
+      // Full verification is a successful recovery even when invalidation
+      // suppressed transport-health updates during reinitialization.
+      _consecutiveFailures = 0;
       _driverState = DriverState::READY;
       _deviceIdentity = _jobIdentityScratch;
       _deviceIdentityValid = true;

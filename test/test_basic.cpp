@@ -5295,6 +5295,58 @@ void test_retained_reset_and_replay_wrappers_are_bounded_or_restricted() {
   }
 }
 
+void test_verified_reinitialization_clears_failure_streak_after_invalidation() {
+  for (HealthPolicy policy : {HealthPolicy::PASSIVE, HealthPolicy::LATCH_OFFLINE}) {
+    for (uint8_t path = 0; path < 3; ++path) {
+      FakeBus bus;
+      INA228::INA228 dev;
+      Config cfg = makeCooperativeConfig(bus);
+      cfg.healthPolicy = policy;
+      cfg.offlineThreshold = 3;
+      TEST_ASSERT_TRUE(dev.bind(cfg).ok());
+      (void)initializeCooperativeDevice(dev, bus);
+      float value = 0.0f;
+      bus.readError = Status::Error(Err::I2C_ERROR, "observed transport failure", -27);
+      bus.readErrorRemaining = 3;
+      for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+        TEST_ASSERT_TRUE(dev.readBusVoltage(value).is(Err::I2C_ERROR));
+      }
+      TEST_ASSERT_EQUAL_UINT8(3, dev.consecutiveFailures());
+      const uint32_t failures = dev.totalFailures();
+      const uint32_t errorMs = dev.lastErrorMs();
+      TEST_ASSERT_TRUE(dev.invalidateHardwareState(Status::Ok()).ok());
+      // A failed recovery must not erase the existing error streak/history.
+      bus.readErrorRemaining = 1;
+      TEST_ASSERT_TRUE(dev.recover().is(Err::I2C_ERROR));
+      TEST_ASSERT_EQUAL_UINT8(3, dev.consecutiveFailures());
+      TEST_ASSERT_EQUAL_UINT32(failures, dev.totalFailures());
+      uint32_t id = 0;
+      if (path == 0) {
+        TEST_ASSERT_TRUE(dev.recover().ok());
+      } else {
+        TEST_ASSERT_TRUE((path == 1 ? dev.startInitialize(42, id)
+                                  : dev.startReinitialize(42, id)).ok());
+        TEST_ASSERT_TRUE(pollCooperativeToTerminal(dev, bus).ok());
+        JobResult result{};
+        TEST_ASSERT_TRUE(dev.takeJobResult(id, result).ok());
+      }
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
+                              static_cast<uint8_t>(dev.state()));
+      TEST_ASSERT_EQUAL_UINT8(0, dev.consecutiveFailures());
+      TEST_ASSERT_EQUAL_UINT32(failures, dev.totalFailures());
+      TEST_ASSERT_EQUAL_UINT32(errorMs, dev.lastErrorMs());
+      TEST_ASSERT_EQUAL_INT32(-27, dev.lastError().detail);
+      // A new failure starts a new streak; legacy latch must not re-trip early.
+      bus.readErrorRemaining = 1;
+      TEST_ASSERT_TRUE(dev.readBusVoltage(value).is(Err::I2C_ERROR));
+      TEST_ASSERT_EQUAL_UINT8(1, dev.consecutiveFailures());
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                              static_cast<uint8_t>(dev.state()));
+      TEST_ASSERT_TRUE(dev.readBusVoltage(value).ok());
+    }
+  }
+}
+
 void test_latched_offline_policy_remains_explicit_legacy_opt_in() {
   FakeBus bus;
   INA228::INA228 dev;
@@ -5689,6 +5741,7 @@ int main() {
   RUN_TEST(test_revision_policy_and_declared_alert_defaults_are_verified);
   RUN_TEST(test_retained_configuration_setters_preserve_success_and_failure_contracts);
   RUN_TEST(test_retained_reset_and_replay_wrappers_are_bounded_or_restricted);
+  RUN_TEST(test_verified_reinitialization_clears_failure_streak_after_invalidation);
   RUN_TEST(test_latched_offline_policy_remains_explicit_legacy_opt_in);
   RUN_TEST(test_passive_health_never_suppresses_owner_requested_transport);
   RUN_TEST(test_wait_origin_newer_than_caller_timestamp_does_not_skip_wait);

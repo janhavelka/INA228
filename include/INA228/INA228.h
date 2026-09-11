@@ -542,7 +542,7 @@ public:
   /// @return Last tracked transport error
   Status lastError() const { return _lastError; }
 
-  /// Consecutive failures since last success
+  /// Consecutive failures since the last tracked success or verified reinitialization
   /// @return Saturating consecutive-failure counter
   uint8_t consecutiveFailures() const { return _consecutiveFailures; }
 

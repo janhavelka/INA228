@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Successful verified initialization/reinitialization/reset now clears the
+  current transport-failure streak after owner invalidation. Previously READY
+  could retain an old nonzero streak and the legacy offline latch could trip
+  early on the next failure. Lifetime counters and recorded error history stay
+  available; failed recovery does not clear the streak.
+
 - Arduino read failures no longer issue a second address probe or infer the
   failed read's cause from that later transaction. When `requestFrom` hides the
   original phase, the callback preserves a generic `I2C_ERROR` and the short
