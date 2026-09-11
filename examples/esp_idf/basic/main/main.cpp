@@ -719,7 +719,7 @@ void printDriverHealth() {
   const uint32_t now = nowMs();
   const uint32_t ok = device.totalSuccess();
   const uint32_t fail = device.totalFailures();
-  const uint32_t total = ok + fail;
+  const uint64_t total = static_cast<uint64_t>(ok) + fail;
   const float successRate = total > 0U ? (100.0f * static_cast<float>(ok)) /
                                              static_cast<float>(total)
                                        : 0.0f;
