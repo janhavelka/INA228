@@ -244,3 +244,15 @@ machine-wide Windows setting was changed.
 Local logs are in `.pio/fresh-sweep-*.log` (ignored build artifacts), including
 before/after regression results and the final Arduino build. These local logs
 and this disposition record do not substitute for a clean-commit CI/HIL run.
+
+
+### Later HIL adapter correction (2026-09-11)
+
+The former E6 short-read address re-probe used another complete timeout and
+could attribute a later probe failure to the original read. The Arduino adapter
+now returns generic `I2C_ERROR` with the received byte count when `requestFrom`
+does not expose the original phase, without re-probing. Direct Wire statuses
+retain their precise mapping. Explicit address scans/probes remain available as
+separate diagnostics; missing-device read failures are no longer forced into
+`DEVICE_NOT_FOUND` by this adapter. Native regressions verify one read callback,
+zero extra probe transfers, and that a hypothetical later NACK stays unconsumed.

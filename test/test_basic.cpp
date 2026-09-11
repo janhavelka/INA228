@@ -1150,10 +1150,8 @@ void test_example_transport_validates_params_and_handles_write_read() {
   TEST_ASSERT_EQUAL_UINT32(1u, transport::transferStats().read);
   TEST_ASSERT_EQUAL_UINT32(0u, transport::transferStats().write);
 
-  // A short read re-probes the address to recover the phase that
-  // endTransmission(false) cannot report on arduino-esp32. The device still
-  // acknowledges here, so the Arduino API cannot recover the failed phase or
-  // cause. Report a generic transport failure rather than inventing a NACK.
+  // Arduino hides the failed read phase. Preserve a generic error without
+  // adding a second transaction or attributing a later probe to this read.
   Wire._setRequestFromResult(0);
   Wire._queueEndTransmissionResult(0);
   Wire._queueEndTransmissionResult(0);
@@ -1162,18 +1160,19 @@ void test_example_transport_validates_params_and_handles_write_read() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_UINT32(1u, transport::transferStats().read);
-  TEST_ASSERT_EQUAL_UINT32(1u, transport::transferStats().write);
+  TEST_ASSERT_EQUAL_UINT32(0u, transport::transferStats().write);
 
-  // When the re-probe also NACKs, the absent device is reported precisely.
+  // A hypothetical later probe NACK must remain unconsumed: it cannot
+  // identify the cause or phase of the completed failed read.
   Wire._clearEndTransmissionResult();
   Wire._queueEndTransmissionResult(0);
   Wire._queueEndTransmissionResult(2);
   transport::resetTransferStats();
   st = transport::wireWriteRead(0x40, &tx, 1, &rx, 1, 50, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_UINT32(1u, transport::transferStats().read);
-  TEST_ASSERT_EQUAL_UINT32(1u, transport::transferStats().write);
+  TEST_ASSERT_EQUAL_UINT32(0u, transport::transferStats().write);
   Wire._clearEndTransmissionResult();
   Wire._clearRequestFromOverride();
 

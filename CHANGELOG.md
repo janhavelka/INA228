@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Arduino read failures no longer issue a second address probe or infer the
+  failed read's cause from that later transaction. When `requestFrom` hides the
+  original phase, the callback preserves a generic `I2C_ERROR` and the short
+  byte count, using one bounded physical read attempt.
+
 - ESP32 example Wire callbacks now apply each supplied timeout to the selected
   bus instead of silently retaining the startup timeout. Values wider than
   Wire's 16-bit timeout are clamped without wrapping. Native regressions cover

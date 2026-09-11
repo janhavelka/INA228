@@ -174,16 +174,8 @@ inline INA228::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLe
 
   size_t read = wire->requestFrom(addr, static_cast<uint8_t>(rxLen));
   if (read != rxLen) {
-    // On arduino-esp32 endTransmission(false) only latches the repeated-start
-    // flag; the whole write+read is issued by requestFrom(), so the phase
-    // information is lost here. Re-probe the address so a removed or NACKing
-    // device is still reported precisely instead of as a generic I2C error.
-    transferStatsStorage().write++;
-    wire->beginTransmission(addr);
-    const uint8_t probe = wire->endTransmission(true);
-    if (probe != 0) {
-      return mapWireResult(probe, "I2C read failed");
-    }
+    // Arduino does not expose the failed phase here. A later probe cannot
+    // recover that evidence and would spend a second full callback timeout.
     return INA228::Status::Error(INA228::Err::I2C_ERROR,
                                  "I2C requestFrom failed; cause unavailable",
                                  static_cast<int32_t>(read));
