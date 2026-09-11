@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Removed unnecessary scanner console flushes. The native USB flush API can
+  discard queued text on a transient disconnected observation; normal queued
+  writes retain ordering. This is the same audited console hazard as the
+  reproduced INA228 HIL trailer loss, not a claimed scanner hardware failure.
+
 - HIL health capture now requires every complete documented status/counter/time
   line and error details when present. A reproduced USB byte deletion could
   previously remove success-rate/last-success evidence while the smaller
