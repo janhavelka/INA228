@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in HIL health capture after each framed command retains timestamped
+  cache-only state/counter/error evidence without bus access or job advancement.
+  Missing capture fails the associated command, preserving its original error;
+  lost framing or a target reset suppresses the extra diagnostic command.
+
 ### Fixed
 
+- The HIL stop flag now covers fixed plans and benchmarks as well as the soak.
+  Framing loss always stops further commands; skipped dependent phases remain
+  explicit `NOT RUN` evidence and the failing response stays in the live log.
 - Instantaneous sample preflight timeouts preserve verified configuration and
   accumulator epochs; proven register/presence failures still require resync.
 - Runtime cooperative jobs obey `LATCH_OFFLINE`, and adapter-returned

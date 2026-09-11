@@ -426,6 +426,125 @@ def test_interrupted_compressed_soak_preserves_unstored_summary() -> None:
     assert_equal(len(results), 0, "compressed result rows")
 
 
+def test_health_capture_retains_errors_and_requires_complete_evidence() -> None:
+    args = types.SimpleNamespace(
+        drain_before_command_s=0.0, frame_prefix="TEST", no_command_framing=False,
+        timeout_s=0.01, max_frame_bytes=4096, post_frame_drain_s=0.0,
+        require_framed=True, health_after_command=True,
+    )
+    health = (
+        "=== Driver Health ===\nState: DEGRADED\nOnline: true\n"
+        "Consecutive failures: 1\nTotal success: 4\nTotal failures: 1\n"
+        "Error code: I2C_NACK_ADDR\nError detail: 2\n"
+    )
+
+    class HealthSerial(FakeFramedSerial):
+        def __init__(self, response: str, snapshot: str | None):
+            super().__init__(b"", response)
+            self.response = response
+            self.snapshot = snapshot
+
+        def write(self, data: bytes) -> int:
+            is_health = data.decode("ascii").split(" ", 3)[3].strip() == "drv"
+            if is_health and self.snapshot is None:
+                raise OSError("test serial loss during health capture")
+            self.payload = self.snapshot if is_health else self.response
+            return super().write(data)
+
+    for response, snapshot, expected in (
+        ("Vbus: 12 V", health, "PASS"),
+        ("Status: I2C_TIMEOUT", health, "FAIL"),
+        ("Vbus: 12 V", "=== Driver Health ===\nState: READY", "FAIL"),
+        ("Status: I2C_TIMEOUT", None, "FAIL"),
+    ):
+        serial = HealthSerial(response, snapshot)
+        result = runner.run_step(serial, runner.Step("vbus", ("Vbus",), "sample"), args)
+        assert_equal(result.verdict, expected, "health capture verdict")
+        assert_equal(len(serial.writes), 2 if snapshot is not None else 1,
+                     "one bounded health capture")
+        assert_true(response in result.output, "original command retained")
+        assert_true("command_utc=" in result.output, "UTC timestamp retained")
+        if snapshot is not None:
+            assert_true(snapshot.strip() in result.output, "cached error history retained")
+
+
+def test_health_capture_does_not_follow_lost_framing_or_reset() -> None:
+    args = types.SimpleNamespace(
+        drain_before_command_s=0.0, frame_prefix="TEST", no_command_framing=False,
+        timeout_s=0.01, max_frame_bytes=4096, post_frame_drain_s=0.0,
+        require_framed=True, health_after_command=True,
+    )
+    for serial in (
+        FakeUnframedSerial(b"", "Vbus: 12 V"),
+        FakeFramedSerial(b"", "Vbus: 12 V\nESP-ROM:esp32s3"),
+    ):
+        result = runner.run_step(serial, runner.Step("vbus", ("Vbus",), "sample"), args)
+        assert_equal(result.verdict, "FAIL", "lost framing/reset fails command")
+        assert_true(result.framing_lost, "framing loss must stop the caller")
+        assert_equal(len(serial.writes), 1, "no health command after framing loss/reset")
+        assert_true("health NOT RUN" in result.output, "skipped capture reason retained")
+
+
+def test_aborted_fixed_plan_preserves_failure_and_skips_dependent_phases() -> None:
+    class FakePort:
+        def open(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+    args = types.SimpleNamespace(
+        suite="smoke", soak_seconds=1.0, soak_hours=0.0, transcript=None,
+        report=None, port="TEST", baud=115200, boot_settle_s=0.0,
+        boot_capture_s=0.0, idle_s=0.001, prompt_token=None, verbose=False,
+        command_pause_s=0.0, benchmark_count=1, include_not_run=False,
+        fail_on_unknown=True,
+    )
+    original_serial = sys.modules.get("serial")
+    originals = {name: getattr(runner, name) for name in
+                 ("selected_steps", "read_response", "run_step", "run_benchmarks", "run_soak")}
+    sys.modules["serial"] = types.SimpleNamespace(Serial=FakePort, SerialException=OSError)
+    steps = (runner.Step("vbus", ("Vbus",), "first"),
+             runner.Step("current", ("Current",), "second"))
+    runner.selected_steps = lambda _suite: steps
+    runner.read_response = lambda *_args: ""
+
+    def forbidden_phase(*_args):
+        raise AssertionError("dependent hardware phase executed after abort")
+
+    runner.run_benchmarks = forbidden_phase
+    runner.run_soak = forbidden_phase
+    try:
+        for stop_flag, framing_lost in ((True, False), (False, True)):
+            args.stop_on_non_pass = stop_flag
+            calls = []
+
+            def failed_step(_serial, step, _args):
+                calls.append(step.command)
+                return runner.Result(step, "FAIL", 0.01,
+                                     "Status: I2C_TIMEOUT original evidence", framing_lost)
+
+            runner.run_step = failed_step
+            output = io.StringIO()
+            with redirect_stdout(output):
+                assert_equal(runner.run_serial(args), 1, "failed run exit")
+            assert_equal(calls, ["vbus"], "remaining fixed commands skipped")
+            assert_true("I2C_TIMEOUT original evidence" in output.getvalue(),
+                        "root failure retained in live output without verbose")
+            assert_true("dependent phases NOT RUN" in output.getvalue(),
+                        "aborted dependencies are explicit")
+    finally:
+        for name, value in originals.items():
+            setattr(runner, name, value)
+        if original_serial is None:
+            del sys.modules["serial"]
+        else:
+            sys.modules["serial"] = original_serial
+
+
 def main() -> int:
     tests = (
         test_expected_rejection_is_fail_closed,
@@ -439,6 +558,9 @@ def main() -> int:
         test_local_modes_skip_git_provenance_and_keep_report_plan_parity,
         test_repeated_clock_tokens_still_get_unique_sequences,
         test_interrupted_compressed_soak_preserves_unstored_summary,
+        test_health_capture_retains_errors_and_requires_complete_evidence,
+        test_health_capture_does_not_follow_lost_framing_or_reset,
+        test_aborted_fixed_plan_preserves_failure_and_skips_dependent_phases,
     )
     for test in tests:
         test()

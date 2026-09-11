@@ -20,6 +20,7 @@ from typing import Iterable, Sequence
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 PROMPT_RE = re.compile(r"(?m)^>\s*$")
+REBOOT_MARKERS = ("ESP-ROM:", "rst:0x", "=== INA228 Bringup Example ===")
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class Result:
     verdict: str
     elapsed_s: float
     output: str
+    framing_lost: bool = False
 
 
 @dataclass
@@ -578,6 +580,17 @@ def has_failure(text: str) -> bool:
 
 def classify_step(output: str, step: Step) -> str:
     text = clean_output(output)
+    if step.suite == "health-snapshot":
+        # Cached history is evidence, including expected negative-path errors.
+        # This validates capture completeness, not device readiness.
+        if ("=== Driver Health ===" not in text or
+                not re.search(r"\bState:\s*(UNINIT|READY|DEGRADED|OFFLINE)\b", text)):
+            return "FAIL"
+        for label in ("Consecutive failures", "Total success", "Total failures"):
+            if not re.search(rf"\b{label}:\s*\d+\b", text):
+                return "FAIL"
+        return "PASS" if re.search(
+            r"(?m)^\[runner\] frame_status=OK frame_elapsed_ms=\d+$", text) else "FAIL"
     scanned = (
         HISTORICAL_HEALTH_RE.sub("", text)
         if "=== Driver Health ===" in text
@@ -952,8 +965,10 @@ def missing_frame_verdict(require_framed: bool) -> str:
     return "FAIL" if require_framed else "UNKNOWN"
 
 
-def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
+def run_step(serial_port, step: Step, args: argparse.Namespace, *,
+             capture_health: bool = True) -> Result:
     start = time.monotonic()
+    started_at = dt.datetime.now(dt.timezone.utc).isoformat()
     marker_missing = False
     trailer_verdict: str | None = None
     stale = drain_input(serial_port, args.drain_before_command_s)
@@ -1010,7 +1025,36 @@ def run_step(serial_port, step: Step, args: argparse.Namespace) -> Result:
         if provenance_errors:
             verdict = "FAIL"
             output += "\n[runner] provenance failure: " + "; ".join(provenance_errors)
-    return Result(step=step, verdict=verdict, elapsed_s=elapsed, output=clean_output(output))
+    reset_observed = any(marker in output for marker in REBOOT_MARKERS)
+    framing_lost = marker_missing or reset_observed
+    if reset_observed:
+        verdict = "FAIL"
+    if getattr(args, "health_after_command", False):
+        output = f"[runner] command_utc={started_at}\n" + output
+        if framing_lost:
+            verdict = "FAIL"
+            output += "\n[runner] health NOT RUN: command framing lost or target reset"
+        elif capture_health and step.command != "drv":
+            # `drv` reads cached state/counters/errors only: no bus access,
+            # polling, DIAG_ALRT read, or terminal-result consumption.
+            health_step = Step("drv", ("Driver Health",),
+                               "cache-only health capture", "health-snapshot")
+            try:
+                health = run_step(serial_port, health_step, args,
+                                  capture_health=False)
+                output += (f"\n[runner] health_capture={health.verdict}\n"
+                           + health.output)
+                if health.verdict != "PASS":
+                    verdict = "FAIL"
+                framing_lost = health.framing_lost
+            except OSError as exc:
+                # Preserve the completed command, including its original error,
+                # when the subsequent diagnostic transfer loses the port.
+                verdict = "FAIL"
+                framing_lost = True
+                output += f"\n[runner] health capture failed: {exc!r}"
+    return Result(step=step, verdict=verdict, elapsed_s=elapsed,
+                  output=clean_output(output), framing_lost=framing_lost)
 
 
 def write_transcript(path: pathlib.Path, results: Sequence[Result], boot_output: str) -> None:
@@ -1266,7 +1310,7 @@ def run_soak(serial_port, args: argparse.Namespace, results: list[Result],
             print(result.output.rstrip())
         elif args.verbose and print_result:
             print(result.output.rstrip())
-        if result.verdict == "FAIL" or (
+        if result.framing_lost or result.verdict == "FAIL" or (
                 args.stop_on_non_pass and result.verdict != "PASS"):
             print("Stopping soak after non-PASS verdict")
             break
@@ -1277,9 +1321,9 @@ def run_soak(serial_port, args: argparse.Namespace, results: list[Result],
     return summary
 
 
-def run_benchmarks(serial_port, args: argparse.Namespace, results: list[Result]) -> None:
+def run_benchmarks(serial_port, args: argparse.Namespace, results: list[Result]) -> bool:
     if args.benchmark_count <= 0:
-        return
+        return True
     for step in BENCHMARK_STEPS:
         latencies: list[float] = []
         non_pass = 0
@@ -1289,9 +1333,16 @@ def run_benchmarks(serial_port, args: argparse.Namespace, results: list[Result])
             latencies.append(result.elapsed_s)
             if result.verdict != "PASS":
                 non_pass += 1
-            if args.verbose:
+            if args.verbose or result.verdict != "PASS":
                 print(f"[{result.verdict}] {step.command} ({step.label}) "
                       f"{result.elapsed_s:.3f}s")
+                print(result.output.rstrip())
+            if result.framing_lost or (args.stop_on_non_pass and result.verdict != "PASS"):
+                print("Stopping benchmarks after non-PASS verdict or framing loss")
+                results.append(Result(
+                    Step("<remaining benchmarks>", (), "benchmark phase aborted", "not-run"),
+                    "NOT RUN", 0.0, "Not attempted after the preceding benchmark failed"))
+                return False
             pause_s = max(args.command_pause_s, result.step.pause_after_s)
             if pause_s > 0.0:
                 time.sleep(pause_s)
@@ -1299,6 +1350,7 @@ def run_benchmarks(serial_port, args: argparse.Namespace, results: list[Result])
             mean = sum(latencies) / len(latencies)
             print(f"[BENCH] {step.command}: count={len(latencies)} non_pass={non_pass} "
                   f"min/mean/max={min(latencies):.3f}/{mean:.3f}/{max(latencies):.3f}s")
+    return True
 
 
 def run_serial(args: argparse.Namespace) -> int:
@@ -1342,19 +1394,38 @@ def run_serial(args: argparse.Namespace) -> int:
             time.sleep(args.boot_settle_s)
             boot_output = read_response(serial_port, args.boot_capture_s, args.idle_s,
                                         args.prompt_token)
-            for step in steps:
+            fixed_plan_completed = True
+            for step_index, step in enumerate(steps):
                 result = run_step(serial_port, step, args)
                 results.append(result)
                 print(f"[{result.verdict}] {step.command} ({step.label}) {result.elapsed_s:.3f}s")
-                if args.verbose:
+                if args.verbose or result.verdict != "PASS":
                     print(result.output.rstrip())
+                if result.framing_lost or (args.stop_on_non_pass and result.verdict != "PASS"):
+                    print("Stopping fixed plan after non-PASS verdict or framing loss; dependent phases NOT RUN")
+                    fixed_plan_completed = False
+                    results.extend(Result(skipped, "NOT RUN", 0.0,
+                                          "Not attempted after the fixed plan stopped")
+                                   for skipped in steps[step_index + 1:])
+                    break
                 pause_s = max(args.command_pause_s, result.step.pause_after_s)
                 if pause_s > 0.0:
                     time.sleep(pause_s)
-            run_benchmarks(serial_port, args, results)
+            benchmarks_completed = False
+            if fixed_plan_completed:
+                benchmarks_completed = run_benchmarks(serial_port, args, results)
+            elif args.benchmark_count > 0:
+                results.append(Result(
+                    Step("<benchmarks>", (), "fixed plan aborted", "not-run"),
+                    "NOT RUN", 0.0, "Not attempted after the fixed plan stopped"))
             if soak_seconds > 0.0:
-                soak_summary = SoakSummary()
-                run_soak(serial_port, args, results, soak_seconds, soak_summary)
+                if fixed_plan_completed and benchmarks_completed:
+                    soak_summary = SoakSummary()
+                    run_soak(serial_port, args, results, soak_seconds, soak_summary)
+                else:
+                    results.append(Result(
+                        Step("<duration soak>", (), "prerequisite phase aborted", "not-run"),
+                        "NOT RUN", 0.0, "Not attempted after a preceding phase stopped"))
     except (serial.SerialException, OSError, KeyboardInterrupt) as exc:
         # Never discard the evidence collected so far; a long soak that dies
         # mid-run is exactly when the partial report matters most.
@@ -1464,9 +1535,11 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--fail-on-unknown", action="store_true",
                         help="Return nonzero when any step is UNKNOWN")
     parser.add_argument("--stop-on-non-pass", action="store_true",
-                        help="Also stop soak after UNKNOWN; FAIL always stops it")
+                        help="Stop fixed/benchmark phases after any non-PASS and soak after UNKNOWN; FAIL always stops soak, framing loss always stops every phase")
     parser.add_argument("--verbose", action="store_true",
                         help="Print command responses during hardware run")
+    parser.add_argument("--health-after-command", action="store_true",
+                        help="Capture framed cache-only drv health after each command; use -u --verbose for live timestamped responses")
     args = parser.parse_args(argv)
 
     if args.timeout_s <= 0.0 or args.idle_s <= 0.0 or args.boot_settle_s < 0.0:
@@ -1486,6 +1559,8 @@ def main(argv: Sequence[str]) -> int:
         parser.error("max frame bytes must be positive")
     if args.require_framed and args.no_command_framing:
         parser.error("--require-framed cannot be combined with raw framing")
+    if args.health_after_command and args.no_command_framing:
+        parser.error("--health-after-command requires command framing")
     soak_seconds = args.soak_seconds
     if args.soak_hours > 0.0:
         soak_seconds = args.soak_hours * 3600.0

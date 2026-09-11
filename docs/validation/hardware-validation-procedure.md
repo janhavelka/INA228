@@ -41,6 +41,21 @@ release run starts from a clean checkout; the runner validates the firmware's
 library version, exact 12-character Git commit identity, source status, and exact
 profile framework tokens before accepting the `version` step.
 
+For cache-only health/error evidence after each framed command, add
+`--health-after-command --verbose` and run Python with `-u` (unbuffered stdout).
+Capture that output to a UTF-8 runner log while the test is active, as well as
+retaining the canonical final `--transcript` artifact. Each command and health
+snapshot includes a UTC timestamp. Snapshots issue only `drv`; they do not
+poll jobs, consume results, or read destructive diagnostic registers. Missing
+snapshot evidence fails the associated command without discarding its original
+response. No extra snapshot is sent after a lost frame or detected target reset.
+Snapshot rows are attached evidence and do not inflate workload counts or
+command-only latency measurements.
+`--stop-on-non-pass` stops fixed, benchmark, and soak work on a non-PASS result.
+Loss of framing always stops further commands, even without that flag. Remaining
+fixed steps and dependent phases are recorded as `NOT RUN`, preserving the first
+failure response in the live log and final transcript.
+
 Arduino ESP32-S3:
 
 ```powershell
