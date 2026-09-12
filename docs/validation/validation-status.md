@@ -8,8 +8,8 @@ production readiness or electrical safety.
 
 ## Current software baseline
 
-Commit `187253d23a063b01f6e6f9dd17badf6d06177536` passed
-[CI run 34684794950](https://github.com/janhavelka/INA228/actions/runs/34684794950)
+Release-content commit `c96602fb64e083e7aa7870d8b5cb9cfff1e7db46` passed
+[CI run 34690901676](https://github.com/janhavelka/INA228/actions/runs/34690901676)
 on 2026-09-12. The exact commit passed all configured jobs:
 
 - 138 native tests;
@@ -31,7 +31,7 @@ The current local source tree based on that commit was also checked on
 | Arduino ESP32-S2 | PASS with PIOArduino 55.03.311: 51,844 B RAM and 409,693 B flash. |
 | API documentation | PASS: Doxygen completed with warnings treated as errors. |
 | Package | PASS: 37 entries, required files and exclusions verified, and exported `INA228.cpp` compiled standalone as C++17. |
-| Native ESP-IDF locally | NOT RUN: `idf.py` is unavailable in this shell. The exact base commit passed both native ESP-IDF targets in CI. |
+| Native ESP-IDF locally | NOT RUN: `idf.py` is unavailable in this shell. The exact release-content commit passed both native ESP-IDF targets in CI. |
 | Physical HIL | NOT RUN for this worktree. |
 
 Native fake-bus tests prove driver logic, transaction order, bounded transfer
