@@ -4,6 +4,20 @@ Framework-neutral C++17 driver for the Texas Instruments INA228 power monitor.
 Version 3 introduces one bounded cooperative operation model for applications
 whose I2C bus is owned by an external scheduler or task.
 
+The latest published release is
+[v3.0.3](https://github.com/janhavelka/INA228/releases/tag/v3.0.3). This README
+describes the current source, including [Unreleased changes](CHANGELOG.md#unreleased).
+Use the documentation at that tag when consuming the released version.
+
+### Migration From v3.0.3 To Unreleased
+
+Current development retains the cooperative API but corrects conversion/reset
+waits, sample validity and dirty-state reporting. After a triggered conversion,
+select shutdown or a continuous mode before starting an instantaneous sample;
+cached MODE continues to reflect `ADC_CONFIG`. Keep honoring operation results
+and hardware synchronization diagnostics. Review the Unreleased notes and
+rebuild against the chosen source commit.
+
 The library does not create, configure, lock, retry, or recover an I2C bus. The
 application injects bounded transport callbacks and retains authority over pins,
 bus handles, serialization, transfer timeouts, operation deadlines, retries,

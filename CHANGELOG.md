@@ -219,15 +219,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   also recorded there as local, partial evidence; release-grade hardware
   validation is not claimed.
 
-## [3.0.2] - 2026-08-03
+### Earlier development work
 
-### Changed
+Includes earlier development work that had no separate published release.
+
+#### Changed
 
 - Valid triggered `Config::mode` values can now be initialized and verified;
   the cooperative instantaneous-sample job continues to require a shutdown or
   continuous active base mode because it owns its one-shot trigger.
 
-### Fixed
+#### Fixed
 
 - Cooperative sample, reset, and configured-trigger time origins are now
   established only after the successful blocking register write completes.
@@ -241,7 +243,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Device wait durations, transfer budgets, retry behavior, and public APIs are
   unchanged.
 
-### Validation
+#### Validation
 
 - Native fake-bus regressions cover exact post-write boundaries for sample,
   reset, configured-trigger initialization/reinitialization, hookless anchoring,
@@ -581,8 +583,7 @@ converted values.
 - Bringup `scan` now includes an INA228-specific address probe, and startup can auto-detect a single healthy INA228 on `0x40..0x4F`.
 
 [Unreleased]: https://github.com/janhavelka/INA228/compare/v3.0.3...HEAD
-[3.0.3]: https://github.com/janhavelka/INA228/compare/v3.0.2...v3.0.3
-[3.0.2]: https://github.com/janhavelka/INA228/compare/v3.0.1...v3.0.2
+[3.0.3]: https://github.com/janhavelka/INA228/compare/v3.0.1...v3.0.3
 [3.0.1]: https://github.com/janhavelka/INA228/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/janhavelka/INA228/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/janhavelka/INA228/compare/v1.3.0...v2.0.0

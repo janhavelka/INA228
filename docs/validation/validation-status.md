@@ -22,7 +22,8 @@ The clean base commit `cb3eb2bc6d5cc63380683cc603c46cc5dfe915c5` passed
 [CI run 30902376574](https://github.com/janhavelka/INA228/actions/runs/30902376574)
 on 2026-08-04, including native tests, both Arduino builds,
 package/documentation validation, and native ESP-IDF builds for ESP32-S2/S3.
-The exact v3.0.2 release commit also passed
+The earlier development commit `7e280de37927ceff824e6ea30a8fd2f37ac77016`,
+formerly tagged `v3.0.2` without a published GitHub release, also passed
 [CI run 30815246708](https://github.com/janhavelka/INA228/actions/runs/30815246708).
 The v3.0.3 release-content commit
 `dc05bd7257929b7d2d7ad2b47b00e7adbbab9b82` passed
