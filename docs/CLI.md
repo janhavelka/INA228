@@ -305,6 +305,14 @@ The runner defaults the expected library version from `library.json`, the
 expected commit from the current 12-character `HEAD`, and expected status to
 `clean`; the explicit arguments above make the evidence contract visible.
 
+Add `--health-after-command --verbose` when diagnosing intermittent failures.
+After each successfully framed command, the runner issues a separate framed
+`drv` command and requires its complete cache-only state, counters, timestamps,
+success rate, and last-error details. A missing or malformed snapshot fails the
+original command without replacing its original status. Health capture is
+skipped after framing loss or a detected target reset because another command
+could no longer be correlated safely.
+
 The current profile defaults require these `version` output tokens:
 
 - `arduino`: `Arduino-ESP32: 3.3.11` and `ESP-IDF: v5.5.5`
@@ -347,4 +355,6 @@ visible.
 HIL hosts must wait for the complete newline-terminated `HIL_END` record;
 end-of-current-read is not end-of-line. The Arduino example leaves its output
 queued in order instead of forcing `Serial.flush()`: Arduino-ESP32 native USB
-can discard queued output when that call observes a transient disconnect.
+can discard queued output when that call observes a transient disconnect. Host
+command writes are timeout-bounded, must complete in full, and do not drain
+device output between partial write attempts.

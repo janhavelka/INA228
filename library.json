@@ -1,6 +1,6 @@
 {
   "name": "INA228",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "description": "Framework-neutral INA228 power monitor with bounded owner-driven cooperative operations.",
   "keywords": [
     "ina228",
@@ -55,14 +55,12 @@
       "scripts",
       "test",
       "tools",
+      "*.orig",
       ".clang-format",
       ".editorconfig",
       ".gitattributes",
       ".gitignore",
       "AGENTS.md",
-      "docs/CODE_AUDIT.md",
-      "docs/CODE_AUDIT_RESOLUTION.md",
-      "docs/CODE_AUDIT_FOLLOWUP.md",
       "CODEOWNERS",
       "CONTRIBUTING.md",
       "Doxyfile",

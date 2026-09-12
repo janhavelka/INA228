@@ -39,6 +39,10 @@ Do not expose `esp_err_t` or an IDF handle through a public INA228 type. Do not
 reconfigure or recover the bus inside a driver callback. A callback is one
 physical transfer attempt and must honor `timeoutMs`.
 
+Handle removal is also fallible. Do not clear or overwrite an owned device/bus
+handle until ESP-IDF confirms its removal; retain it for one bounded later
+cleanup attempt and surface the original `esp_err_t` through `Status::detail`.
+
 ## Fixed-unit configuration
 
 This fragment assumes application-defined `write`, `writeRead`, `transport`,

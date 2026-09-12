@@ -30,6 +30,10 @@ differs. On startup the example scans the bus and all valid INA228 addresses.
 If the device is not at `0x40`, use `addr 0x4x` followed by `init`, or
 `init 0x4x`.
 
+The example's startup recovery releases SDA/SCL as open-drain lines and bounds
+held-low waits. Its transport applies the configured timeout to every `Wire`
+callback; each callback makes one physical transfer attempt.
+
 The runtime `cal <shunt_ohm> <max_current_a>` form is intentionally rejected by
 this fixed-unit profile. `cal` without arguments displays the active contract.
 

@@ -4,9 +4,9 @@ This file is the retained summary of dated HIL runs. It records what was
 measured, on which revision and fixture, and nothing stronger. Claim rules and
 the outstanding release gates live in [validation-status.md](validation-status.md).
 
-The generated per-run report files are not kept in the repository: they were
-machine-produced transcripts of dirty worktrees that cannot be reproduced. The
-durable facts from each run are the table rows below.
+Generated per-run reports and raw serial transcripts are not kept in the
+repository. The durable, claim-relevant facts from each reviewed run are the
+table rows below.
 
 ## Current v3 Migration Evidence
 
@@ -26,6 +26,20 @@ controlled fault injection, ALERT-pin capture, reference-instrument accuracy
 measurements, controlled MCU/INA228 power cycling, the alternate low-current
 profile needed to exercise ADCRANGE=1 physically, ESP32-S2/ESP-IDF physical
 runs, or a clean 8-hour soak. It is not release-grade hardware validation.
+
+## Later v3.0.3-era evidence
+
+These 2026-08-04 Arduino ESP32-S3 runs used the same low-voltage COM21 fixture.
+Their temporary ignored reports and transcripts were removed after review.
+
+| Run | Source | PASS | FAIL | UNKNOWN | NOT RUN | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| Framed targeted suite | clean `cb3eb2bc6d5c` | 189 | 0 | 0 | 5 | Covered the targeted feature and rejection suite, but predates the CLI-output fix and final v3.0.3 cleanup. |
+| CLI-output smoke | dirty worktree based on `cb3eb2bc6d5c` | 8 | 0 | 0 | 0 | Confirmed that successful status output no longer included a redundant `Message: OK`; it was smoke-only and has no clean-commit claim. |
+
+Neither run validates current `main`, the ESP32-S2 or native ESP-IDF examples,
+fault handling, measurement accuracy, high-voltage operation, or long-duration
+behavior.
 
 ## Historical v2 Evidence
 

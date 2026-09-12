@@ -4,19 +4,19 @@ Framework-neutral C++17 driver for the Texas Instruments INA228 power monitor.
 Version 3 introduces one bounded cooperative operation model for applications
 whose I2C bus is owned by an external scheduler or task.
 
-The latest published release is
-[v3.0.3](https://github.com/janhavelka/INA228/releases/tag/v3.0.3). This README
-describes the current source, including [Unreleased changes](CHANGELOG.md#unreleased).
-Use the documentation at that tag when consuming the released version.
+The current release is
+[v3.0.4](https://github.com/janhavelka/INA228/releases/tag/v3.0.4). This README
+describes that release; ongoing development is recorded under
+[Unreleased](CHANGELOG.md#unreleased).
 
-### Migration From v3.0.3 To Unreleased
+### Updating from v3.0.3
 
-Current development retains the cooperative API but corrects conversion/reset
-waits, sample validity and dirty-state reporting. After a triggered conversion,
-select shutdown or a continuous mode before starting an instantaneous sample;
-cached MODE continues to reflect `ADC_CONFIG`. Keep honoring operation results
-and hardware synchronization diagnostics. Review the Unreleased notes and
-rebuild against the chosen source commit.
+Version 3.0.4 is source-compatible with v3.0.3 and corrects timed waits, sample
+validity, dirty-state reporting, transport health, and the example/HIL adapters.
+One behavior is worth calling out: after a triggered conversion, cached MODE
+continues to reflect `ADC_CONFIG`; select shutdown or a continuous mode before
+starting an instantaneous sample. Continue to inspect terminal job status/effect
+and hardware synchronization state. See the [v3.0.4 changes](CHANGELOG.md#304---2026-09-12).
 
 The library does not create, configure, lock, retry, or recover an I2C bus. The
 application injects bounded transport callbacks and retains authority over pins,
@@ -45,7 +45,7 @@ For a PlatformIO application, pin the current release tag in `platformio.ini`:
 
 ```ini
 lib_deps =
-  https://github.com/janhavelka/INA228.git#v3.0.3
+  https://github.com/janhavelka/INA228.git#v3.0.4
 build_unflags =
   -std=gnu++11
 build_flags =
@@ -345,7 +345,10 @@ python tools/check_core_timing_guard.py
 python tools/check_owner_contract.py
 python tools/check_cli_contract.py
 python tools/check_idf_example_contract.py
+python tools/test_cli_regressions.py
 python tools/test_run_i2c_hil_parser.py
+python tools/run_i2c_hil.py --parser-self-test
+python tools/run_i2c_hil.py --dry-run --suite exhaustive --include-not-run --benchmark-count 100
 python scripts/generate_version.py check
 doxygen Doxyfile
 ```

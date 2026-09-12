@@ -278,7 +278,7 @@ def _expected_outputs(project_root: Path) -> Dict[Path, str]:
     outputs: Dict[Path, str] = {
         namespace_dir / "Version.h": _render_version_header(namespace, version),
         idf_component: _replace_required(
-            r'^version:\s*"[^"]*"\s*$',
+            r'''^version:\s*(?:"[^"]*"|'[^']*'|[^\s#]+)\s*(?:#.*)?$''',
             f'version: "{version}"',
             _read_text(idf_component),
             "idf_component.yml version",

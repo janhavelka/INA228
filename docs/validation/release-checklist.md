@@ -73,8 +73,8 @@ Before merging or tagging, verify a completed CI run for the final branch or PR:
 
 - README install and integration instructions are current.
 - `docs/validation/validation-status.md` reflects current evidence.
-- `docs/validation/hardware-evidence.md` lists checked-in HIL reports and
-  marks partial evidence separately from release-grade validation.
+- `docs/validation/hardware-evidence.md` summarizes dated HIL runs and marks
+  partial evidence separately from release-grade validation.
 - `docs/validation/hardware-validation-procedure.md` matches the CLI examples.
 - The release HIL gate is one framed `exhaustive` run with no FAIL/UNKNOWN rows;
   `targeted` and `transfer` are diagnostic subsets, not additional gates.

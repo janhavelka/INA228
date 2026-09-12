@@ -39,6 +39,16 @@ Thank you for considering contributing to this project!
 - Use PlatformIO Core 6.1.19; do not install a second Core beside the
   VS Code-managed installation on Windows.
 
+### Documentation
+
+- Keep durable user guidance in `README.md`, public API contracts in Doxygen
+  comments, and integration/reference/validation material under `docs/`.
+- Do not commit review prompts, completed audit scratchpads, generated Doxygen,
+  HIL reports, or raw serial transcripts. Preserve only concise conclusions or
+  dated evidence summaries that remain useful to users and maintainers.
+- Keep vendor PDFs only when they are directly relevant and indexed in
+  `docs/reference/application-notes.md` or the device reference.
+
 ### What We Accept
 - Bug fixes
 - Documentation improvements

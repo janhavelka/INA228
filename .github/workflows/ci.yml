@@ -199,7 +199,6 @@ jobs:
             .pio/ \
             .vscode/ \
             docs/doxygen/ \
-            docs/CODE_AUDIT \
             docs/reference/vendor/ \
             docs/validation/hardware/ \
             scripts/ \
@@ -207,6 +206,7 @@ jobs:
             tools/; do
             ! grep -Fq "$prefix" package-contents.log
           done
+          ! grep -Eq '(^|/).*\.orig$' package-contents.log
           mkdir package-smoke
           tar -xzf "$archive" -C package-smoke
           g++ -std=c++17 -Wall -Wextra -Werror=return-type \

@@ -7,32 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.4] - 2026-09-12
+
 ### Added
 
-- Opt-in HIL health capture after each framed command retains timestamped
-  cache-only state/counter/error evidence without bus access or job advancement.
-  Missing capture fails the associated command, preserving its original error;
-  lost framing or a target reset suppresses the extra diagnostic command.
+- Opt-in HIL health capture after each framed command retains a complete,
+  timestamped, cache-only state/counter/error snapshot without bus access or job
+  advancement. Missing or malformed capture fails the associated command while
+  preserving its original error.
+
+### Changed
+
+- Completed triggered conversions keep the configured `ADC_CONFIG.MODE` value
+  in the cache and clear only `triggeredConversionPending`. An instantaneous
+  sample must therefore start from shutdown or a continuous base mode.
+- Read-only configuration verification preserves synchronized state and the
+  accumulator epoch after inconclusive transport failures. Definite absence,
+  identity/revision/MEMSTAT failures, and register mismatches still require
+  verified reinitialization.
+- Diagnostic acknowledgement clears matching bits from both preserved event
+  caches. Unacknowledged evidence survives recovery and invalidation.
+- Instantaneous samples include a bounded whole-device timing margin before
+  their single conversion-ready check. Transfer limits and retry counts are
+  unchanged.
 
 ### Fixed
 
-- Removed unnecessary scanner console flushes. The native USB flush API can
-  discard queued text on a transient disconnected observation; normal queued
-  writes retain ordering. This is the same audited console hazard as the
-  reproduced INA228 HIL trailer loss, not a claimed scanner hardware failure.
-
-- HIL health capture now requires every complete documented status/counter/time
-  line and error details when present. A reproduced USB byte deletion could
-  previously remove success-rate/last-success evidence while the smaller
-  required-field subset still passed; the captured failing response is covered
-  by a host regression.
-
-- HIL trailer parsing now requires the line terminator, so a serial chunk ending
-  inside a multi-digit elapsed time cannot complete the frame prematurely.
-- The Arduino HIL command no longer calls `Serial.flush` after its trailer.
-  Instrumented three-board HIL proved native USB's transient-disconnected flush
-  path discarded a 36-byte trailer suffix. Queued writes preserve order and the
-  host waits for the complete trailer; no framework buffering policy is changed.
+- HIL framing requires a complete newline-terminated trailer, uses bounded
+  full-command host writes, and retains queued Arduino USB output without
+  `Serial.flush()`. Scanner output likewise remains queued in order.
 
 - Successful verified initialization/reinitialization/reset now clears the
   current transport-failure streak after owner invalidation. Previously READY
@@ -47,19 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - ESP32 example Wire callbacks now apply each supplied timeout to the selected
   bus instead of silently retaining the startup timeout. Values wider than
-  Wire's 16-bit timeout are clamped without wrapping. Native regressions cover
-  read/write calls, changing budgets, and an independently supplied bus.
+  Wire's 16-bit timeout are clamped without wrapping.
 
 - ESP32 example startup supplies the desired frequency directly to `Wire.begin`.
   This avoids Arduino-ESP32 3.3.11's false `setClock` failure on a newly opened
-  bus with no device handles, which previously stopped initialization before
-  any sensor transfer. Native coverage verifies the initialization frequency.
-
-
+  bus with no device handles, which could stop initialization before any sensor
+  transfer.
 - Example startup bus clear now releases SDA/SCL with open-drain outputs,
   bounds all SCL-release waits with one timeout, and rejects either held-low
-  line before Wire initialization. Native GPIO regressions reproduce the old
-  active-HIGH drive and verify held lines, transient stretch, and clock wrap.
+  line before Wire initialization.
 
 - The HIL stop flag now covers fixed plans and benchmarks as well as the soak.
   Framing loss always stops further commands; skipped dependent phases remain
@@ -71,8 +70,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Legacy calibration rejects CURRENT-register range shortfalls during bind,
   calibration changes, and ADC-range changes, using the integer plan's
   milliamp limit. Near-full-scale legacy inputs can now require adjustment.
-- Diagnostic acknowledgement clears matching preserved snapshot bits. Recovery
-  retains unacknowledged history; the public documentation now states that policy.
 - Unknown job kinds return `INVALID_PARAM` without changing the limits output.
   The legacy sample-step API only consumes jobs it started itself.
 - Both CLIs display fixed-unit calibration correctly, reject configuration
@@ -80,34 +77,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reject whitespace-prefixed negative unsigned inputs, and document readiness
   budgets starting at one. Arduino startup exposes its prompt after bus-init
   failure, and mode locals are initialized.
-- Stress loops block briefly to allow idle-task scheduling. The watchdog risk
-  was reviewed from source; no new hardware reproduction or HIL run is claimed.
-- CI runs host-compiled CLI reporting/parser regressions and source contracts
-  alongside the existing native suite. Audit dispositions and validation
-  evidence now record the successful CI run on `2cc5874`.
-- Triggered completion no longer rewrites cached MODE to shutdown: MODE mirrors
-  `ADC_CONFIG`, while a separate flag records whether the one-shot is pending.
-  Owners must select shutdown or a continuous mode before starting an
-  instantaneous sample after a triggered conversion. A failed destructive DIAG
-  read during verification now clears uncertain trigger timing without
-  invalidating otherwise verified configuration.
-- Instantaneous samples include a bounded whole-device timing margin before the
-  single CNVRF check, with no new transfers or retries.
-- Read-only configuration verification preserves synchronized hardware and the
-  accumulator epoch after inconclusive transport errors, while identity,
-  presence, revision, MEMSTAT, and register mismatches still require verified
-  reinitialization.
+- Stress loops block briefly to allow idle-task scheduling.
+- A failed destructive DIAG read during verification clears uncertain trigger
+  timing without invalidating otherwise verified configuration.
 - MATHOF errors and public Doxygen consistently describe the latch, its
   `MATH_OVERFLOW` result, and which DIAG_ALRT flags a destructive read does and
   does not clear.
 - Hardware APIs distinguish an active cooperative owner from an unconsumed
   terminal result in `BUSY` diagnostics.
+- Health success percentages use widened arithmetic, avoiding overflow in long
+  sessions on both example CLIs.
 - Conversion and reset waits are no longer skipped when the monotonic clock
-  advances during the blocking register write that arms them. The wait origin is
-  sampled after the write returns, so it can be newer than the timestamp the
-  caller sampled before `pollJob()`; the unsigned comparison underflowed and
-  consumed the whole wait, letting an instantaneous-sample job read all five
-  channels before the conversion completed and commit them as verified.
+  advances during the blocking register write that arms them. A caller timestamp
+  older than the post-write origin no longer underflows into an elapsed wait.
 - Software and raw `CONFIG.RST` resets mark all reset-restored registers and
   alert thresholds dirty before an ambiguous write can return. Invalidation
   preserves the first dirty cause and register set; MEMSTAT sample failures,
@@ -116,9 +98,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Examples: an operation-deadline timeout no longer wedges the CLI permanently in
   `BUSY`; `mode 1`–`mode 7` report `IN_PROGRESS` as acceptance rather than
   failure; the ESP-IDF poll loop no longer busy-spins at the default FreeRTOS
-  tick rate; the Arduino transport re-probes the address on a short read so an
-  absent device is reported as an address NACK instead of a generic I2C error;
-  and a raw `wreg16` write invalidates cached hardware state.
+  tick rate; Arduino short reads preserve their original generic error without a
+  second probe or physical read; and a raw `wreg16` write invalidates cached
+  hardware state.
 - Example limit queries consistently warn when engineering-unit thresholds need
   reapplication, and verbose stress mode reports failures on both platforms.
   Arduino counts short-read probes and partial-buffer discard transactions as
@@ -132,17 +114,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   framework includes in core code.
 - Importing `scripts/generate_version.py` from ordinary Python is read-only;
   automatic synchronization is limited to PlatformIO pre-build use or explicit
-  commands. Internal audit records are excluded from exported packages and
-  guarded by CI.
+  commands.
+- Version synchronization accepts and canonicalizes quoted or unquoted ESP-IDF
+  manifest versions, so an external YAML rewrite cannot break the next clean
+  build. Release packaging excludes `.orig` tool backups, and CI rejects them.
 
 ### Removed
 
 - Retired `hilmark` CLI commands and the runner's unused legacy-marker mode.
-- Generated per-run hardware reports under `docs/validation/hardware/`, which
-  described an unreconstructable dirty worktree based on a reachable commit.
-  `docs/validation/hardware-evidence.md` retains the durable summary of each run.
+- Generated per-run hardware reports and raw transcripts; the compact dated
+  evidence summary remains under `docs/validation/`.
 - `tools/INA228_HIL_COMMAND_SEQUENCE.md`; its unique transfer-budget command
   sequences moved into `docs/validation/hardware-validation-procedure.md`.
+- Completed internal code-audit reports; lasting findings and verification
+  evidence are reflected in the changelog and maintained documentation.
 
 ## [3.0.3] - 2026-08-04
 
@@ -582,7 +567,8 @@ converted values.
 - `recover()` now re-validates manufacturer ID, device ID, and MEMSTAT before reapplying cached configuration and calibration.
 - Bringup `scan` now includes an INA228-specific address probe, and startup can auto-detect a single healthy INA228 on `0x40..0x4F`.
 
-[Unreleased]: https://github.com/janhavelka/INA228/compare/v3.0.3...HEAD
+[Unreleased]: https://github.com/janhavelka/INA228/compare/v3.0.4...HEAD
+[3.0.4]: https://github.com/janhavelka/INA228/compare/v3.0.3...v3.0.4
 [3.0.3]: https://github.com/janhavelka/INA228/compare/v3.0.1...v3.0.3
 [3.0.1]: https://github.com/janhavelka/INA228/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/janhavelka/INA228/compare/v2.0.0...v3.0.0
