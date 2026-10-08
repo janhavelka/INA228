@@ -1,5 +1,7 @@
 # AGENTS.md - INA228 Contributor Guidelines
 
+Always synchronize Git with the intended upstream branch before starting work by fetching and fast-forwarding safely, preserving existing local changes and reporting any divergence, conflict, or synchronization failure.
+
 These are the binding engineering rules for this repository. `CONTRIBUTING.md`
 covers the day-to-day workflow; this file covers the design constraints that
 changes must respect.
