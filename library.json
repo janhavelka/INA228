@@ -33,7 +33,7 @@
     "url": "https://github.com/janhavelka/INA228.git"
   },
   "license": "MIT",
-  "homepage": "https://www.thymos.cz",
+  "homepage": "https://github.com/janhavelka/INA228",
   "frameworks": [
     "arduino",
     "espidf"
