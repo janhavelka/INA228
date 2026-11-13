@@ -1,6 +1,8 @@
 version: "3.0.4"
 description: "Framework-neutral INA228 power monitor with bounded owner-driven cooperative operations."
 license: "MIT"
+maintainers:
+  - "Jan Havelka (THYMOS Solution s.r.o.) <info@thymos.cz>"
 url: "https://github.com/janhavelka/INA228"
 repository: "https://github.com/janhavelka/INA228.git"
 targets:
